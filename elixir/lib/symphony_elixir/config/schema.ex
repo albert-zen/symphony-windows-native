@@ -5,6 +5,8 @@ defmodule SymphonyElixir.Config.Schema do
 
   import Ecto.Changeset
 
+  alias SymphonyElixir.PathSafety
+
   @primary_key false
 
   @type t :: %__MODULE__{}
@@ -278,6 +280,18 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  @spec resolve_runtime_turn_sandbox_policy(%__MODULE__{}, Path.t() | nil) ::
+          {:ok, map()} | {:error, term()}
+  def resolve_runtime_turn_sandbox_policy(settings, workspace \\ nil) do
+    case settings.codex.turn_sandbox_policy do
+      %{} = policy ->
+        {:ok, policy}
+
+      _ ->
+        default_runtime_turn_sandbox_policy(workspace || settings.workspace.root)
+    end
+  end
+
   @spec normalize_issue_state(String.t()) :: String.t()
   def normalize_issue_state(state_name) when is_binary(state_name) do
     String.downcase(state_name)
@@ -455,6 +469,16 @@ defmodule SymphonyElixir.Config.Schema do
       "excludeTmpdirEnvVar" => false,
       "excludeSlashTmp" => false
     }
+  end
+
+  defp default_runtime_turn_sandbox_policy(workspace_root) when is_binary(workspace_root) do
+    with {:ok, canonical_workspace_root} <- PathSafety.canonicalize(workspace_root) do
+      {:ok, default_turn_sandbox_policy(canonical_workspace_root)}
+    end
+  end
+
+  defp default_runtime_turn_sandbox_policy(workspace_root) do
+    {:error, {:unsafe_turn_sandbox_policy, {:invalid_workspace_root, workspace_root}}}
   end
 
   defp format_errors(changeset) do

@@ -31,6 +31,8 @@ defmodule SymphonyElixir.Orchestrator do
       :max_concurrent_agents,
       :next_poll_due_at_ms,
       :poll_check_in_progress,
+      :tick_timer_ref,
+      :tick_token,
       running: %{},
       completed: MapSet.new(),
       claimed: MapSet.new(),
@@ -56,20 +58,48 @@ defmodule SymphonyElixir.Orchestrator do
       max_concurrent_agents: config.agent.max_concurrent_agents,
       next_poll_due_at_ms: now_ms,
       poll_check_in_progress: false,
+      tick_timer_ref: nil,
+      tick_token: nil,
       codex_totals: @empty_codex_totals,
       codex_rate_limits: nil
     }
 
     run_terminal_workspace_cleanup()
-    :ok = schedule_tick(0)
+    state = schedule_tick(state, 0)
 
     {:ok, state}
   end
 
   @impl true
+  def handle_info({:tick, tick_token}, %{tick_token: tick_token} = state)
+      when is_reference(tick_token) do
+    state = refresh_runtime_config(state)
+
+    state = %{
+      state
+      | poll_check_in_progress: true,
+        next_poll_due_at_ms: nil,
+        tick_timer_ref: nil,
+        tick_token: nil
+    }
+
+    notify_dashboard()
+    :ok = schedule_poll_cycle_start()
+    {:noreply, state}
+  end
+
+  def handle_info({:tick, _tick_token}, state), do: {:noreply, state}
+
   def handle_info(:tick, state) do
     state = refresh_runtime_config(state)
-    state = %{state | poll_check_in_progress: true, next_poll_due_at_ms: nil}
+
+    state = %{
+      state
+      | poll_check_in_progress: true,
+        next_poll_due_at_ms: nil,
+        tick_timer_ref: nil,
+        tick_token: nil
+    }
 
     notify_dashboard()
     :ok = schedule_poll_cycle_start()
@@ -79,11 +109,8 @@ defmodule SymphonyElixir.Orchestrator do
   def handle_info(:run_poll_cycle, state) do
     state = refresh_runtime_config(state)
     state = maybe_dispatch(state)
-    now_ms = System.monotonic_time(:millisecond)
-    next_poll_due_at_ms = now_ms + state.poll_interval_ms
-    :ok = schedule_tick(state.poll_interval_ms)
-
-    state = %{state | poll_check_in_progress: false, next_poll_due_at_ms: next_poll_due_at_ms}
+    state = schedule_tick(state, state.poll_interval_ms)
+    state = %{state | poll_check_in_progress: false}
 
     notify_dashboard()
     {:noreply, state}
@@ -155,9 +182,9 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_info({:codex_worker_update, _issue_id, _update}, state), do: {:noreply, state}
 
-  def handle_info({:retry_issue, issue_id}, state) do
+  def handle_info({:retry_issue, issue_id, retry_token}, state) do
     result =
-      case pop_retry_attempt_state(state, issue_id) do
+      case pop_retry_attempt_state(state, issue_id, retry_token) do
         {:ok, attempt, metadata, state} -> handle_retry_issue(state, issue_id, attempt, metadata)
         :missing -> {:noreply, state}
       end
@@ -165,6 +192,8 @@ defmodule SymphonyElixir.Orchestrator do
     notify_dashboard()
     result
   end
+
+  def handle_info({:retry_issue, _issue_id}, state), do: {:noreply, state}
 
   def handle_info(msg, state) do
     Logger.debug("Orchestrator ignored message: #{inspect(msg)}")
@@ -231,12 +260,13 @@ defmodule SymphonyElixir.Orchestrator do
     else
       case Tracker.fetch_issue_states_by_ids(running_ids) do
         {:ok, issues} ->
-          reconcile_running_issue_states(
-            issues,
+          issues
+          |> reconcile_running_issue_states(
             state,
             active_state_set(),
             terminal_state_set()
           )
+          |> reconcile_missing_running_issue_ids(running_ids, issues)
 
         {:error, reason} ->
           Logger.debug("Failed to refresh running issue states: #{inspect(reason)}; keeping active workers")
@@ -310,6 +340,40 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp reconcile_issue_state(_issue, state, _active_states, _terminal_states), do: state
+
+  defp reconcile_missing_running_issue_ids(%State{} = state, requested_issue_ids, issues)
+       when is_list(requested_issue_ids) and is_list(issues) do
+    visible_issue_ids =
+      issues
+      |> Enum.flat_map(fn
+        %Issue{id: issue_id} when is_binary(issue_id) -> [issue_id]
+        _ -> []
+      end)
+      |> MapSet.new()
+
+    Enum.reduce(requested_issue_ids, state, fn issue_id, state_acc ->
+      if MapSet.member?(visible_issue_ids, issue_id) do
+        state_acc
+      else
+        log_missing_running_issue(state_acc, issue_id)
+        terminate_running_issue(state_acc, issue_id, false)
+      end
+    end)
+  end
+
+  defp reconcile_missing_running_issue_ids(state, _requested_issue_ids, _issues), do: state
+
+  defp log_missing_running_issue(%State{} = state, issue_id) when is_binary(issue_id) do
+    case Map.get(state.running, issue_id) do
+      %{identifier: identifier} ->
+        Logger.info("Issue no longer visible during running-state refresh: issue_id=#{issue_id} issue_identifier=#{identifier}; stopping active agent")
+
+      _ ->
+        Logger.info("Issue no longer visible during running-state refresh: issue_id=#{issue_id}; stopping active agent")
+    end
+  end
+
+  defp log_missing_running_issue(_state, _issue_id), do: :ok
 
   defp refresh_running_issue_state(%State{} = state, %Issue{} = issue) do
     case Map.get(state.running, issue.id) do
@@ -669,6 +733,7 @@ defmodule SymphonyElixir.Orchestrator do
     next_attempt = if is_integer(attempt), do: attempt, else: previous_retry.attempt + 1
     delay_ms = retry_delay(next_attempt, metadata)
     old_timer = Map.get(previous_retry, :timer_ref)
+    retry_token = make_ref()
     due_at_ms = System.monotonic_time(:millisecond) + delay_ms
     identifier = pick_retry_identifier(issue_id, previous_retry, metadata)
     error = pick_retry_error(previous_retry, metadata)
@@ -677,7 +742,7 @@ defmodule SymphonyElixir.Orchestrator do
       Process.cancel_timer(old_timer)
     end
 
-    timer_ref = Process.send_after(self(), {:retry_issue, issue_id}, delay_ms)
+    timer_ref = Process.send_after(self(), {:retry_issue, issue_id, retry_token}, delay_ms)
 
     error_suffix = if is_binary(error), do: " error=#{error}", else: ""
 
@@ -689,6 +754,7 @@ defmodule SymphonyElixir.Orchestrator do
           Map.put(state.retry_attempts, issue_id, %{
             attempt: next_attempt,
             timer_ref: timer_ref,
+            retry_token: retry_token,
             due_at_ms: due_at_ms,
             identifier: identifier,
             error: error
@@ -696,9 +762,9 @@ defmodule SymphonyElixir.Orchestrator do
     }
   end
 
-  defp pop_retry_attempt_state(%State{} = state, issue_id) do
+  defp pop_retry_attempt_state(%State{} = state, issue_id, retry_token) when is_reference(retry_token) do
     case Map.get(state.retry_attempts, issue_id) do
-      %{attempt: attempt} = retry_entry ->
+      %{attempt: attempt, retry_token: ^retry_token} = retry_entry ->
         metadata = %{
           identifier: Map.get(retry_entry, :identifier),
           error: Map.get(retry_entry, :error)
@@ -960,10 +1026,7 @@ defmodule SymphonyElixir.Orchestrator do
     now_ms = System.monotonic_time(:millisecond)
     already_due? = is_integer(state.next_poll_due_at_ms) and state.next_poll_due_at_ms <= now_ms
     coalesced = state.poll_check_in_progress == true or already_due?
-
-    unless coalesced do
-      :ok = schedule_tick(0)
-    end
+    state = if coalesced, do: state, else: schedule_tick(state, 0)
 
     {:reply,
      %{
@@ -1048,9 +1111,20 @@ defmodule SymphonyElixir.Orchestrator do
     }
   end
 
-  defp schedule_tick(delay_ms) do
-    :timer.send_after(delay_ms, self(), :tick)
-    :ok
+  defp schedule_tick(%State{} = state, delay_ms) when is_integer(delay_ms) and delay_ms >= 0 do
+    if is_reference(state.tick_timer_ref) do
+      Process.cancel_timer(state.tick_timer_ref)
+    end
+
+    tick_token = make_ref()
+    timer_ref = Process.send_after(self(), {:tick, tick_token}, delay_ms)
+
+    %{
+      state
+      | tick_timer_ref: timer_ref,
+        tick_token: tick_token,
+        next_poll_due_at_ms: System.monotonic_time(:millisecond) + delay_ms
+    }
   end
 
   defp schedule_poll_cycle_start do

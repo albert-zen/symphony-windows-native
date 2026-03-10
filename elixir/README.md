@@ -14,7 +14,7 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 ## How it works
 
 1. Polls Linear for candidate work
-2. Creates an isolated workspace per issue
+2. Creates a workspace per issue
 3. Launches Codex in [App Server mode](https://developers.openai.com/codex/app-server/) inside the
    workspace
 4. Sends a workflow prompt to Codex
@@ -116,8 +116,9 @@ Notes:
   - `codex.turn_sandbox_policy` defaults to a `workspaceWrite` policy rooted at the current issue workspace
 - Supported `codex.approval_policy` values depend on the targeted Codex app-server version. In the current local Codex schema, string values include `untrusted`, `on-failure`, `on-request`, and `never`, and object-form `reject` is also supported.
 - Supported `codex.thread_sandbox` values: `read-only`, `workspace-write`, `danger-full-access`.
-- Supported `codex.turn_sandbox_policy.type` values: `dangerFullAccess`, `readOnly`,
-  `externalSandbox`, `workspaceWrite`.
+- When `codex.turn_sandbox_policy` is set explicitly, Symphony passes the map through to Codex
+  unchanged. Compatibility then depends on the targeted Codex app-server version rather than local
+  Symphony validation.
 - `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
@@ -144,7 +145,9 @@ codex:
   command: "$CODEX_BIN app-server --model gpt-5.3-codex"
 ```
 
-- If `WORKFLOW.md` is missing or has invalid YAML, startup and scheduling are halted until fixed.
+- If `WORKFLOW.md` is missing or has invalid YAML at startup, Symphony does not boot.
+- If a later reload fails, Symphony keeps running with the last known good workflow and logs the
+  reload error until the file is fixed.
 - `server.port` or CLI `--port` enables the optional Phoenix LiveView dashboard and JSON API at
   `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
 
