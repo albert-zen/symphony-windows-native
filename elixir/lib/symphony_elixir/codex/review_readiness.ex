@@ -181,55 +181,53 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
 
   defp executable_graphql(query) do
     query
-    |> String.graphemes()
-    |> executable_graphql(:normal, [])
+    |> executable_graphql([])
     |> IO.iodata_to_binary()
   end
 
-  defp executable_graphql([], _mode, acc), do: Enum.reverse(acc)
+  defp executable_graphql(<<>>, acc), do: Enum.reverse(acc)
 
-  defp executable_graphql(["\"", "\"", "\"" | rest], :normal, acc) do
+  defp executable_graphql(<<"\"\"\"", rest::binary>>, acc) do
     {rest, acc} = blank_block_string(rest, ["\"\"\"" | acc])
-    executable_graphql(rest, :normal, acc)
+    executable_graphql(rest, acc)
   end
 
-  defp executable_graphql(["\"" | rest], :normal, acc) do
+  defp executable_graphql(<<"\"", rest::binary>>, acc) do
     {rest, acc} = blank_string(rest, ["\"" | acc])
-    executable_graphql(rest, :normal, acc)
+    executable_graphql(rest, acc)
   end
 
-  defp executable_graphql(["#", "\n" | rest], :normal, acc) do
-    executable_graphql(rest, :normal, [" " | acc])
+  defp executable_graphql(<<"#", rest::binary>>, acc) do
+    {rest, acc} = blank_graphql_comment(rest, [" " | acc])
+    executable_graphql(rest, acc)
   end
 
-  defp executable_graphql(["#" | rest], :normal, acc) do
-    {rest, acc} = drop_graphql_comment(rest, acc)
-    executable_graphql(rest, :normal, acc)
+  defp executable_graphql(<<0xEF, 0xBB, 0xBF, rest::binary>>, acc) do
+    executable_graphql(rest, ["   " | acc])
   end
 
-  defp executable_graphql([char | rest], :normal, acc)
-       when char in ["\uFEFF", "\t", "\n", "\r", ","] do
-    executable_graphql(rest, :normal, [" " | acc])
+  defp executable_graphql(<<char, rest::binary>>, acc) when char in [?\t, ?\n, ?\r, ?,] do
+    executable_graphql(rest, [" " | acc])
   end
 
-  defp executable_graphql([char | rest], mode, acc) do
-    executable_graphql(rest, mode, [char | acc])
+  defp executable_graphql(<<char, rest::binary>>, acc) do
+    executable_graphql(rest, [<<char>> | acc])
   end
 
-  defp drop_graphql_comment([], acc), do: {[], acc}
-  defp drop_graphql_comment(["\n" | rest], acc), do: {rest, [" " | acc]}
-  defp drop_graphql_comment(["\r", "\n" | rest], acc), do: {rest, [" " | acc]}
-  defp drop_graphql_comment(["\r" | rest], acc), do: {rest, [" " | acc]}
-  defp drop_graphql_comment([_char | rest], acc), do: drop_graphql_comment(rest, acc)
+  defp blank_graphql_comment(<<>>, acc), do: {<<>>, acc}
+  defp blank_graphql_comment(<<"\r\n", rest::binary>>, acc), do: {rest, ["  " | acc]}
+  defp blank_graphql_comment(<<"\n", rest::binary>>, acc), do: {rest, [" " | acc]}
+  defp blank_graphql_comment(<<"\r", rest::binary>>, acc), do: {rest, [" " | acc]}
+  defp blank_graphql_comment(<<_char, rest::binary>>, acc), do: blank_graphql_comment(rest, [" " | acc])
 
-  defp blank_string([], acc), do: {[], acc}
-  defp blank_string(["\\", _escaped | rest], acc), do: blank_string(rest, ["  " | acc])
-  defp blank_string(["\"" | rest], acc), do: {rest, ["\"" | acc]}
-  defp blank_string([_char | rest], acc), do: blank_string(rest, [" " | acc])
+  defp blank_string(<<>>, acc), do: {<<>>, acc}
+  defp blank_string(<<"\\", _escaped, rest::binary>>, acc), do: blank_string(rest, ["  " | acc])
+  defp blank_string(<<"\"", rest::binary>>, acc), do: {rest, ["\"" | acc]}
+  defp blank_string(<<_char, rest::binary>>, acc), do: blank_string(rest, [" " | acc])
 
-  defp blank_block_string([], acc), do: {[], acc}
-  defp blank_block_string(["\"", "\"", "\"" | rest], acc), do: {rest, ["\"\"\"" | acc]}
-  defp blank_block_string([_char | rest], acc), do: blank_block_string(rest, [" " | acc])
+  defp blank_block_string(<<>>, acc), do: {<<>>, acc}
+  defp blank_block_string(<<"\"\"\"", rest::binary>>, acc), do: {rest, ["\"\"\"" | acc]}
+  defp blank_block_string(<<_char, rest::binary>>, acc), do: blank_block_string(rest, [" " | acc])
 
   defp explicit_state_id?(query) do
     String.contains?(query, "stateId")
