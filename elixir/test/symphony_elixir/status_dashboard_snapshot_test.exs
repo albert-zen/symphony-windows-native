@@ -267,6 +267,21 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
     assert rate_limit_header(snapshot_data) =~ "Rate Limits: unavailable (no worker rate-limit data)"
   end
 
+  test "rate-limit header does not mask active unknown workers with global data" do
+    snapshot_data =
+      {:ok,
+       %{
+         running: [running_entry(%{identifier: "MT-501"})],
+         retrying: [],
+         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         rate_limits: %{primary: %{usedPercent: 91, windowDurationMins: 300}}
+       }}
+
+    header = rate_limit_header(snapshot_data)
+    assert header =~ "Rate Limits: unavailable (no worker rate-limit data)"
+    refute header =~ "91% / 300m"
+  end
+
   defp render_snapshot(snapshot_data, tps) do
     StatusDashboard.format_snapshot_content_for_test(snapshot_data, tps, @terminal_columns)
   end
