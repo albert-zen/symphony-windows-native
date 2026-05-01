@@ -1175,6 +1175,36 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert_received {:steer_worker_called, "MT-HTTP", "Use the narrower UI fix.", "thread-http"}
   end
 
+  test "worker detail liveview rejects missing or blank steer session ids" do
+    orchestrator_name = Module.concat(__MODULE__, :WorkerDetailSteerSessionGuardOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        parent: self(),
+        snapshot: static_snapshot()
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, view, _html} = live(build_conn(), "/workers/MT-HTTP")
+
+    render_submit(view, "steer", %{
+      "steer" => %{
+        "message" => "Do not send without a session."
+      }
+    })
+
+    render_submit(view, "steer", %{
+      "steer" => %{
+        "message" => "Do not send with a blank session.",
+        "session_id" => "   "
+      }
+    })
+
+    refute_received {:steer_worker_called, "MT-HTTP", _message, _session_id}
+  end
+
   test "worker detail projections redact secret-like raw event values" do
     orchestrator_name = Module.concat(__MODULE__, :WorkerDetailRedactionOrchestrator)
 

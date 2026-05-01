@@ -1574,12 +1574,16 @@ defmodule SymphonyElixir.Orchestrator do
        when is_pid(pid) and is_binary(session_id) do
     cond do
       !Process.alive?(pid) -> {:error, :worker_not_running}
+      !non_blank_binary?(expected_session_id) -> {:error, :session_mismatch}
       is_binary(expected_session_id) and expected_session_id != session_id -> {:error, :session_mismatch}
       true -> {:ok, session_id}
     end
   end
 
   defp validate_running_session(_running_entry, _expected_session_id), do: {:error, :worker_not_running}
+
+  defp non_blank_binary?(value) when is_binary(value), do: String.trim(value) != ""
+  defp non_blank_binary?(_value), do: false
 
   defp schedule_tick(%State{} = state, delay_ms) when is_integer(delay_ms) and delay_ms >= 0 do
     if is_reference(state.tick_timer_ref) do

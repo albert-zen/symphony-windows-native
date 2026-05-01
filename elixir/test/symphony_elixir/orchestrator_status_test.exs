@@ -640,6 +640,17 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert {:error, :worker_not_running} =
              Orchestrator.steer_worker(orchestrator_name, "MT-MISSING", "message", "thread-failure-turn-failure")
 
+    assert {:error, :session_mismatch} =
+             Orchestrator.steer_worker(orchestrator_name, "MT-243", "message", nil)
+
+    assert {:error, :session_mismatch} =
+             Orchestrator.steer_worker(orchestrator_name, "MT-243", "message", "")
+
+    assert {:error, :session_mismatch} =
+             Orchestrator.steer_worker(orchestrator_name, "MT-243", "message", "   ")
+
+    refute_received {:codex_steer, _session_id, _message}
+
     Process.exit(worker_pid, :kill)
     wait_until_dead(worker_pid)
 

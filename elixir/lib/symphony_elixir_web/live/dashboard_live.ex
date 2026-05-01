@@ -80,15 +80,19 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp submit_steer(socket, issue_identifier, message, session_id) do
-    case Presenter.steer_payload(issue_identifier, message, session_id, orchestrator()) do
-      {:ok, _payload} ->
-        {:noreply,
-         socket
-         |> put_flash(:info, "Steer message queued for #{issue_identifier}.")
-         |> assign_detail_payload(issue_identifier)}
+    if non_blank_binary?(session_id) do
+      case Presenter.steer_payload(issue_identifier, message, session_id, orchestrator()) do
+        {:ok, _payload} ->
+          {:noreply,
+           socket
+           |> put_flash(:info, "Steer message queued for #{issue_identifier}.")
+           |> assign_detail_payload(issue_identifier)}
 
-      {:error, reason} ->
-        {:noreply, put_flash(socket, :error, steer_error_message(reason))}
+        {:error, reason} ->
+          {:noreply, put_flash(socket, :error, steer_error_message(reason))}
+      end
+    else
+      {:noreply, put_flash(socket, :error, steer_error_message(:session_mismatch))}
     end
   end
 
@@ -521,6 +525,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
       {:error, :invalid_steer_token}
     end
   end
+
+  defp non_blank_binary?(value) when is_binary(value), do: String.trim(value) != ""
+  defp non_blank_binary?(_value), do: false
 
   defp steer_locked?(true, false), do: true
   defp steer_locked?(_required, _configured), do: false
