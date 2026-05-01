@@ -1450,12 +1450,34 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "Windows workflow profile examples parse with expected safety posture" do
+    examples = [
+      {"WORKFLOW.windows.safe.example.md", "workspace-write", :reject, nil},
+      {"WORKFLOW.windows.trusted.example.md", "danger-full-access", "never", %{"type" => "dangerFullAccess"}}
+    ]
+
+    for {filename, thread_sandbox, approval_policy, turn_sandbox_policy} <- examples do
+      path = Path.expand(Path.join([__DIR__, "..", "..", filename]))
+
+      assert {:ok, workflow} = Workflow.load(path)
+      assert {:ok, settings} = Schema.parse(workflow.config)
+      assert settings.codex.thread_sandbox == thread_sandbox
+      assert_approval_policy(settings.codex.approval_policy, approval_policy)
+      assert settings.codex.turn_sandbox_policy == turn_sandbox_policy
+      assert workflow.prompt =~ "## Codex Workpad"
+      assert settings.workspace.root =~ "symphony-"
+    end
+  end
+
   test "workflow prompt is used when building base prompt" do
     workflow_prompt = "Workflow prompt body used as codex instruction."
 
     write_workflow_file!(Workflow.workflow_file_path(), prompt: workflow_prompt)
     assert Config.workflow_prompt() == workflow_prompt
   end
+
+  defp assert_approval_policy(%{"reject" => reject}, :reject) when is_map(reject), do: assert(map_size(reject) > 0)
+  defp assert_approval_policy(actual, expected), do: assert(actual == expected)
 
   test "remote workspace lifecycle uses ssh host aliases from worker config" do
     if windows?() do
