@@ -5,12 +5,13 @@ defmodule SymphonyElixir.Linear.Adapter do
 
   @behaviour SymphonyElixir.Tracker
 
-  alias SymphonyElixir.Linear.Client
+  alias SymphonyElixir.{Config, Linear.Client}
 
   @claim_ttl_seconds 4 * 60 * 60
   @claim_settle_ms 250
   @claim_marker "## Symphony Claim Lease"
   @claim_release_marker "## Symphony Claim Release"
+  @claim_signature_version "v1"
 
   @create_comment_mutation """
   mutation SymphonyCreateComment($issueId: String!, $body: String!) {
@@ -81,7 +82,8 @@ defmodule SymphonyElixir.Linear.Adapter do
     token = claim_token()
     body = claim_body(identifier, owner, token, now, expires_at)
 
-    with {:ok, claim} <- create_claim_comment(issue_id, body, owner, token, now, expires_at) do
+    with :ok <- preflight_issue_claim(issue_id),
+         {:ok, claim} <- create_claim_comment(issue_id, body, owner, token, now, expires_at) do
       verify_issue_claim(issue_id, claim)
     end
   end
@@ -95,11 +97,12 @@ defmodule SymphonyElixir.Linear.Adapter do
   def release_issue_claim(issue_id, nil) when is_binary(issue_id), do: :ok
 
   def release_issue_claim(issue_id, claim) when is_binary(issue_id) do
+    id = claim_value(claim, :id)
     owner = claim_value(claim, :owner)
     token = claim_value(claim, :token)
 
-    if is_binary(owner) and is_binary(token) do
-      body = release_body(owner, token, DateTime.utc_now())
+    if is_binary(id) and is_binary(owner) and is_binary(token) do
+      body = release_body(id, owner, token, DateTime.utc_now())
 
       with {:ok, response} <- client_module().graphql(@create_comment_mutation, %{issueId: issue_id, body: body}),
            true <- get_in(response, ["data", "commentCreate", "success"]) == true do
@@ -145,18 +148,32 @@ defmodule SymphonyElixir.Linear.Adapter do
     Application.get_env(:symphony_elixir, :linear_client_module, Client)
   end
 
+  defp preflight_issue_claim(issue_id) do
+    case fetch_claim_comments(issue_id) do
+      {:ok, claims} ->
+        case winning_claim(claims, DateTime.utc_now()) do
+          {:ok, winner} -> {:error, {:issue_claimed, winner}}
+          {:error, :claim_not_visible} -> :ok
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   defp create_claim_comment(issue_id, body, owner, token, now, expires_at) do
     with {:ok, response} <- client_module().graphql(@create_comment_mutation, %{issueId: issue_id, body: body}),
          true <- get_in(response, ["data", "commentCreate", "success"]) == true do
       comment = get_in(response, ["data", "commentCreate", "comment"]) || %{}
+      claimed_at = parse_datetime(comment["createdAt"]) || now
 
       {:ok,
        %{
          id: comment["id"],
          owner: owner,
          token: token,
-         claimed_at: parse_datetime(comment["createdAt"]) || now,
-         expires_at: expires_at
+         claimed_at: claimed_at,
+         expires_at: clamp_expires_at(expires_at, claimed_at)
        }}
     else
       false -> {:error, :claim_create_failed}
@@ -243,27 +260,38 @@ defmodule SymphonyElixir.Linear.Adapter do
 
     cond do
       String.starts_with?(body, @claim_marker) ->
+        claimed_at = trusted_claimed_at(Map.get(fields, "claimed_at"), comment_created_at)
+
         claim = %{
           type: :claim,
           id: id,
           owner: Map.get(fields, "owner"),
           token: Map.get(fields, "token"),
-          claimed_at: parse_datetime(Map.get(fields, "claimed_at")) || comment_created_at,
-          expires_at: parse_datetime(Map.get(fields, "expires_at"))
+          claimed_at: claimed_at,
+          expires_at:
+            fields
+            |> Map.get("expires_at")
+            |> parse_datetime()
+            |> clamp_expires_at(claimed_at),
+          signature: Map.get(fields, "signature")
         }
 
-        if valid_claim?(claim), do: [claim], else: []
+        if valid_claim?(claim) and valid_signature?(:claim, fields), do: [claim], else: []
 
       String.starts_with?(body, @claim_release_marker) ->
+        released_at = comment_created_at || parse_datetime(Map.get(fields, "released_at"))
+
         release = %{
           type: :release,
           id: id,
+          claim_id: Map.get(fields, "claim_id"),
           owner: Map.get(fields, "owner"),
           token: Map.get(fields, "token"),
-          released_at: parse_datetime(Map.get(fields, "released_at")) || comment_created_at
+          released_at: released_at,
+          signature: Map.get(fields, "signature")
         }
 
-        if valid_release?(release), do: [release], else: []
+        if valid_release?(release) and valid_signature?(:release, fields), do: [release], else: []
 
       true ->
         []
@@ -286,27 +314,28 @@ defmodule SymphonyElixir.Linear.Adapter do
     end)
   end
 
-  defp valid_claim?(%{owner: owner, claimed_at: %DateTime{}, expires_at: %DateTime{}})
-       when is_binary(owner),
-       do: String.trim(owner) != ""
+  defp valid_claim?(%{id: id, owner: owner, token: token, claimed_at: %DateTime{}, expires_at: %DateTime{}})
+       when is_binary(id) and is_binary(owner) and is_binary(token),
+       do: String.trim(id) != "" and String.trim(owner) != "" and String.trim(token) != ""
 
   defp valid_claim?(_claim), do: false
 
-  defp valid_release?(%{owner: owner, token: token, released_at: %DateTime{}})
-       when is_binary(owner) and is_binary(token),
-       do: String.trim(owner) != "" and String.trim(token) != ""
+  defp valid_release?(%{claim_id: claim_id, owner: owner, token: token, released_at: %DateTime{}})
+       when is_binary(claim_id) and is_binary(owner) and is_binary(token),
+       do: String.trim(claim_id) != "" and String.trim(owner) != "" and String.trim(token) != ""
 
   defp valid_release?(_release), do: false
 
   defp claim_expired?(%{expires_at: expires_at}, now), do: DateTime.compare(expires_at, now) != :gt
 
-  defp claim_released?(%{owner: owner, token: token, claimed_at: claimed_at}, releases) do
+  defp claim_released?(%{id: claim_id, owner: owner, token: token, claimed_at: claimed_at}, releases) do
     releases
     |> Map.get(owner, [])
     |> Enum.any?(fn release ->
       release_token = Map.get(release, :token)
 
-      release_token == token and DateTime.compare(release.released_at, claimed_at) in [:gt, :eq]
+      release.claim_id == claim_id and
+        release_token == token and DateTime.compare(release.released_at, claimed_at) in [:gt, :eq]
     end)
   end
 
@@ -319,29 +348,121 @@ defmodule SymphonyElixir.Linear.Adapter do
   defp claim_value(_claim, _key), do: nil
 
   defp claim_body(identifier, owner, token, claimed_at, expires_at) do
+    fields = %{
+      "owner" => owner,
+      "token" => token,
+      "issue" => identifier || "unknown",
+      "claimed_at" => DateTime.to_iso8601(claimed_at),
+      "expires_at" => DateTime.to_iso8601(expires_at)
+    }
+
     [
       @claim_marker,
       "",
-      "owner: #{owner}",
-      "token: #{token}",
-      "issue: #{identifier || "unknown"}",
-      "claimed_at: #{DateTime.to_iso8601(claimed_at)}",
-      "expires_at: #{DateTime.to_iso8601(expires_at)}",
+      "version: #{@claim_signature_version}",
+      "owner: #{fields["owner"]}",
+      "token: #{fields["token"]}",
+      "issue: #{fields["issue"]}",
+      "claimed_at: #{fields["claimed_at"]}",
+      "expires_at: #{fields["expires_at"]}",
+      "signature: #{signature_for(:claim, fields)}",
       "",
       "Symphony dispatch lease. A newer worker must not dispatch this issue while this lease is unexpired unless this owner has released it."
     ]
     |> Enum.join("\n")
   end
 
-  defp release_body(owner, token, released_at) do
+  defp release_body(claim_id, owner, token, released_at) do
+    fields = %{
+      "claim_id" => claim_id,
+      "owner" => owner,
+      "token" => token,
+      "released_at" => DateTime.to_iso8601(released_at)
+    }
+
     [
       @claim_release_marker,
       "",
-      "owner: #{owner}",
-      "token: #{token}",
-      "released_at: #{DateTime.to_iso8601(released_at)}"
+      "version: #{@claim_signature_version}",
+      "claim_id: #{fields["claim_id"]}",
+      "owner: #{fields["owner"]}",
+      "token: #{fields["token"]}",
+      "released_at: #{fields["released_at"]}",
+      "signature: #{signature_for(:release, fields)}"
     ]
     |> Enum.join("\n")
+  end
+
+  defp trusted_claimed_at(_raw_claimed_at, %DateTime{} = comment_created_at), do: comment_created_at
+
+  defp trusted_claimed_at(raw_claimed_at, _comment_created_at), do: parse_datetime(raw_claimed_at)
+
+  defp clamp_expires_at(%DateTime{} = expires_at, %DateTime{} = claimed_at) do
+    max_expires_at = DateTime.add(claimed_at, @claim_ttl_seconds, :second)
+
+    if DateTime.compare(expires_at, max_expires_at) == :gt do
+      max_expires_at
+    else
+      expires_at
+    end
+  end
+
+  defp clamp_expires_at(_expires_at, _claimed_at), do: nil
+
+  defp valid_signature?(type, fields) when is_map(fields) do
+    signature = Map.get(fields, "signature")
+
+    is_binary(signature) and secure_compare(signature, signature_for(type, fields))
+  end
+
+  defp signature_for(type, fields) when is_map(fields) do
+    :hmac
+    |> :crypto.mac(:sha256, claim_signing_secret(), canonical_signature_payload(type, fields))
+    |> Base.encode16(case: :lower)
+  end
+
+  defp canonical_signature_payload(type, fields) do
+    keys =
+      case type do
+        :claim -> ["version", "owner", "token", "issue", "claimed_at", "expires_at"]
+        :release -> ["version", "claim_id", "owner", "token", "released_at"]
+      end
+
+    signed_fields =
+      fields
+      |> Map.put_new("version", @claim_signature_version)
+
+    [
+      "symphony-linear-claim",
+      Atom.to_string(type)
+      | Enum.map(keys, fn key -> "#{key}=#{Map.get(signed_fields, key, "")}" end)
+    ]
+    |> Enum.join("\n")
+  end
+
+  defp claim_signing_secret do
+    case Config.settings!().tracker.api_key do
+      token when is_binary(token) and token != "" -> token
+      _ -> "missing-linear-api-token"
+    end
+  end
+
+  defp secure_compare(left, right) when is_binary(left) and is_binary(right) do
+    byte_size(left) == byte_size(right) and :crypto.hash_equals(left, right)
+  end
+
+  defp secure_compare(_left, _right), do: false
+
+  @doc false
+  @spec claim_body_for_test(String.t() | nil, String.t(), String.t(), DateTime.t(), DateTime.t()) :: String.t()
+  def claim_body_for_test(identifier, owner, token, claimed_at, expires_at) do
+    claim_body(identifier, owner, token, claimed_at, expires_at)
+  end
+
+  @doc false
+  @spec release_body_for_test(String.t(), String.t(), String.t(), DateTime.t()) :: String.t()
+  def release_body_for_test(claim_id, owner, token, released_at) do
+    release_body(claim_id, owner, token, released_at)
   end
 
   defp claim_owner do

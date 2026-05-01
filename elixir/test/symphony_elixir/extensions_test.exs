@@ -352,18 +352,26 @@ defmodule SymphonyElixir.ExtensionsTest do
            }}
 
         String.contains?(query, "SymphonyIssueClaimComments") ->
+          claim_body = Process.get(:claim_body)
+
           {:ok,
            %{
              "data" => %{
                "issue" => %{
                  "comments" => %{
-                   "nodes" => [
-                     %{
-                       "id" => "claim-own",
-                       "body" => Process.get(:claim_body),
-                       "createdAt" => DateTime.to_iso8601(now)
-                     }
-                   ]
+                   "nodes" =>
+                     if claim_body do
+                       [
+                         %{
+                           "id" => "claim-own",
+                           "body" => claim_body,
+                           "createdAt" => DateTime.to_iso8601(now)
+                         }
+                       ]
+                     else
+                       []
+                     end,
+                   "pageInfo" => %{"hasNextPage" => false}
                  }
                }
              }
@@ -399,17 +407,7 @@ defmodule SymphonyElixir.ExtensionsTest do
            }}
 
         String.contains?(query, "SymphonyIssueClaimComments") ->
-          competitor_body =
-            [
-              "## Symphony Claim Lease",
-              "",
-              "owner: other-worker",
-              "token: older-token",
-              "issue: ALB-CLAIM",
-              "claimed_at: #{DateTime.to_iso8601(older)}",
-              "expires_at: #{DateTime.to_iso8601(expires_at)}"
-            ]
-            |> Enum.join("\n")
+          competitor_body = signed_claim_body("ALB-CLAIM", "other-worker", "older-token", older, expires_at)
 
           {:ok,
            %{
@@ -429,6 +427,109 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert {:error, {:issue_claimed, %{id: "claim-other", owner: "other-worker"}}} =
              Adapter.acquire_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+
+    refute Process.get(:claim_body)
+  end
+
+  test "linear adapter ignores unsigned spoofed claims before dispatch" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+    older = DateTime.add(DateTime.utc_now(), -60, :second)
+    newer = DateTime.add(older, 1, :second)
+    expires_at = DateTime.add(older, 4, :hour)
+
+    Process.put({FakeLinearClient, :graphql_result}, fn query, variables ->
+      cond do
+        String.contains?(query, "commentCreate") ->
+          Process.put(:claim_body, variables.body)
+
+          {:ok,
+           %{
+             "data" => %{
+               "commentCreate" => %{
+                 "success" => true,
+                 "comment" => %{"id" => "claim-own", "createdAt" => DateTime.to_iso8601(newer)}
+               }
+             }
+           }}
+
+        String.contains?(query, "SymphonyIssueClaimComments") ->
+          spoofed_body =
+            [
+              "## Symphony Claim Lease",
+              "",
+              "owner: spoofed-worker",
+              "token: copied-token",
+              "issue: ALB-CLAIM",
+              "claimed_at: #{DateTime.to_iso8601(older)}",
+              "expires_at: #{DateTime.to_iso8601(expires_at)}"
+            ]
+            |> Enum.join("\n")
+
+          claim_body = Process.get(:claim_body)
+
+          {:ok,
+           %{
+             "data" => %{
+               "issue" => %{
+                 "comments" => %{
+                   "nodes" =>
+                     [%{"id" => "claim-spoofed", "body" => spoofed_body, "createdAt" => DateTime.to_iso8601(older)}] ++
+                       if claim_body do
+                         [%{"id" => "claim-own", "body" => claim_body, "createdAt" => DateTime.to_iso8601(newer)}]
+                       else
+                         []
+                       end,
+                   "pageInfo" => %{"hasNextPage" => false}
+                 }
+               }
+             }
+           }}
+      end
+    end)
+
+    assert {:ok, %{id: "claim-own"}} =
+             Adapter.acquire_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+  end
+
+  test "linear adapter ignores unsigned spoofed releases for visible tokens" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+    claimed_at = DateTime.add(DateTime.utc_now(), -60, :second)
+    released_at = DateTime.add(claimed_at, 10, :second)
+    expires_at = DateTime.add(claimed_at, 4, :hour)
+    claim_body = signed_claim_body("ALB-CLAIM", "other-worker", "visible-token", claimed_at, expires_at)
+
+    spoofed_release =
+      [
+        "## Symphony Claim Release",
+        "",
+        "claim_id: claim-other",
+        "owner: other-worker",
+        "token: visible-token",
+        "released_at: #{DateTime.to_iso8601(released_at)}"
+      ]
+      |> Enum.join("\n")
+
+    Process.put({FakeLinearClient, :graphql_result}, fn query, _variables ->
+      assert String.contains?(query, "SymphonyIssueClaimComments")
+
+      {:ok,
+       %{
+         "data" => %{
+           "issue" => %{
+             "comments" => %{
+               "nodes" => [
+                 %{"id" => "claim-other", "body" => claim_body, "createdAt" => DateTime.to_iso8601(claimed_at)},
+                 %{"id" => "release-spoofed", "body" => spoofed_release, "createdAt" => DateTime.to_iso8601(released_at)}
+               ],
+               "pageInfo" => %{"hasNextPage" => false}
+             }
+           }
+         }
+       }}
+    end)
+
+    assert {:error, {:issue_claimed, %{id: "claim-other", owner: "other-worker"}}} =
+             Adapter.acquire_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
   end
 
   test "linear adapter releases its claim when verification cannot read claim comments" do
@@ -436,6 +537,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     now = DateTime.utc_now()
 
     Process.put({FakeLinearClient, :graphql_results}, [
+      empty_claim_comments(),
       {:ok,
        %{
          "data" => %{
@@ -473,32 +575,32 @@ defmodule SymphonyElixir.ExtensionsTest do
     )
 
     assert {:error, :claim_release_failed} =
-             Adapter.release_issue_claim("issue-claim", %{owner: "worker", token: "token"})
+             Adapter.release_issue_claim("issue-claim", %{id: "claim-1", owner: "worker", token: "token"})
 
     Process.put({FakeLinearClient, :graphql_result}, {:error, :release_timeout})
 
     assert {:error, :release_timeout} =
-             Adapter.release_issue_claim("issue-claim", %{owner: "worker", token: "token"})
+             Adapter.release_issue_claim("issue-claim", %{id: "claim-1", owner: "worker", token: "token"})
 
     Process.put({FakeLinearClient, :graphql_result}, :unexpected)
 
     assert {:error, :claim_release_failed} =
-             Adapter.release_issue_claim("issue-claim", %{owner: "worker", token: "token"})
+             Adapter.release_issue_claim("issue-claim", %{id: "claim-1", owner: "worker", token: "token"})
 
-    Process.put(
-      {FakeLinearClient, :graphql_result},
+    Process.put({FakeLinearClient, :graphql_results}, [
+      empty_claim_comments(),
       {:ok, %{"data" => %{"commentCreate" => %{"success" => false}}}}
-    )
+    ])
 
     assert {:error, :claim_create_failed} =
              Adapter.acquire_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
 
-    Process.put({FakeLinearClient, :graphql_result}, {:error, :create_timeout})
+    Process.put({FakeLinearClient, :graphql_results}, [empty_claim_comments(), {:error, :create_timeout}])
 
     assert {:error, :create_timeout} =
              Adapter.acquire_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
 
-    Process.put({FakeLinearClient, :graphql_result}, :unexpected)
+    Process.put({FakeLinearClient, :graphql_results}, [empty_claim_comments(), :unexpected])
 
     assert {:error, :claim_create_failed} =
              Adapter.acquire_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
@@ -508,7 +610,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
     now = DateTime.utc_now()
 
+    malformed_comments = malformed_claim_comments()
+
     Process.put({FakeLinearClient, :graphql_results}, [
+      malformed_comments,
       {:ok,
        %{
          "data" => %{
@@ -518,22 +623,7 @@ defmodule SymphonyElixir.ExtensionsTest do
            }
          }
        }},
-      {:ok,
-       %{
-         "data" => %{
-           "issue" => %{
-             "comments" => %{
-               "nodes" => [
-                 %{"id" => "noise", "body" => "not a claim", "createdAt" => "not-a-date"},
-                 %{"id" => "bad-claim", "body" => "## Symphony Claim Lease\nowner: \nclaimed_at: nope", "createdAt" => "nope"},
-                 %{"id" => "bad-release", "body" => "## Symphony Claim Release\nowner: worker", "createdAt" => "nope"},
-                 %{}
-               ],
-               "pageInfo" => %{"hasNextPage" => false}
-             }
-           }
-         }
-       }},
+      malformed_comments,
       {:ok, %{"data" => %{"commentCreate" => %{"success" => true}}}}
     ])
 
@@ -541,6 +631,7 @@ defmodule SymphonyElixir.ExtensionsTest do
              Adapter.acquire_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
 
     Process.put({FakeLinearClient, :graphql_results}, [
+      empty_claim_comments(),
       {:ok,
        %{
          "data" => %{
@@ -593,17 +684,7 @@ defmodule SymphonyElixir.ExtensionsTest do
            }}
 
         String.contains?(query, "SymphonyIssueClaimComments") and variables.after == "cursor-1" ->
-          competitor_body =
-            [
-              "## Symphony Claim Lease",
-              "",
-              "owner: other-worker",
-              "token: older-token",
-              "issue: ALB-CLAIM",
-              "claimed_at: #{DateTime.to_iso8601(older)}",
-              "expires_at: #{DateTime.to_iso8601(expires_at)}"
-            ]
-            |> Enum.join("\n")
+          competitor_body = signed_claim_body("ALB-CLAIM", "other-worker", "older-token", older, expires_at)
 
           {:ok,
            %{
@@ -624,11 +705,13 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert {:error, {:issue_claimed, %{id: "claim-other", owner: "other-worker"}}} =
              Adapter.acquire_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+
+    refute Process.get(:claim_body)
   end
 
   test "linear adapter ignores released and expired claims when selecting the lease owner" do
     Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
-    expired_at = ~U[2026-05-02 00:00:00Z]
+    expired_at = DateTime.add(DateTime.utc_now(), -30, :second)
     released_at = DateTime.add(expired_at, 10, :second)
     now = DateTime.add(expired_at, 30, :second)
 
@@ -648,49 +731,37 @@ defmodule SymphonyElixir.ExtensionsTest do
            }}
 
         String.contains?(query, "SymphonyIssueClaimComments") ->
-          expired_body =
-            [
-              "## Symphony Claim Lease",
-              "",
-              "owner: expired-worker",
-              "token: expired-token",
-              "claimed_at: #{DateTime.to_iso8601(expired_at)}",
-              "expires_at: #{DateTime.to_iso8601(expired_at)}"
-            ]
-            |> Enum.join("\n")
+          expired_body = signed_claim_body("ALB-CLAIM", "expired-worker", "expired-token", expired_at, expired_at)
 
           released_claim_body =
-            [
-              "## Symphony Claim Lease",
-              "",
-              "owner: released-worker",
-              "token: released-token",
-              "claimed_at: #{DateTime.to_iso8601(expired_at)}",
-              "expires_at: #{DateTime.to_iso8601(DateTime.add(expired_at, 4, :hour))}"
-            ]
-            |> Enum.join("\n")
+            signed_claim_body(
+              "ALB-CLAIM",
+              "released-worker",
+              "released-token",
+              expired_at,
+              DateTime.add(expired_at, 4, :hour)
+            )
 
-          release_body =
-            [
-              "## Symphony Claim Release",
-              "",
-              "owner: released-worker",
-              "token: released-token",
-              "released_at: #{DateTime.to_iso8601(released_at)}"
-            ]
-            |> Enum.join("\n")
+          release_body = signed_release_body("claim-released", "released-worker", "released-token", released_at)
+          claim_body = Process.get(:claim_body)
 
           {:ok,
            %{
              "data" => %{
                "issue" => %{
                  "comments" => %{
-                   "nodes" => [
-                     %{"id" => "claim-expired", "body" => expired_body, "createdAt" => DateTime.to_iso8601(expired_at)},
-                     %{"id" => "claim-released", "body" => released_claim_body, "createdAt" => DateTime.to_iso8601(expired_at)},
-                     %{"id" => "release-released", "body" => release_body, "createdAt" => DateTime.to_iso8601(released_at)},
-                     %{"id" => "claim-own", "body" => Process.get(:claim_body), "createdAt" => DateTime.to_iso8601(now)}
-                   ]
+                   "nodes" =>
+                     [
+                       %{"id" => "claim-expired", "body" => expired_body, "createdAt" => DateTime.to_iso8601(expired_at)},
+                       %{"id" => "claim-released", "body" => released_claim_body, "createdAt" => DateTime.to_iso8601(expired_at)},
+                       %{"id" => "release-released", "body" => release_body, "createdAt" => DateTime.to_iso8601(released_at)}
+                     ] ++
+                       if claim_body do
+                         [%{"id" => "claim-own", "body" => claim_body, "createdAt" => DateTime.to_iso8601(now)}]
+                       else
+                         []
+                       end,
+                   "pageInfo" => %{"hasNextPage" => false}
                  }
                }
              }
@@ -1119,6 +1190,47 @@ defmodule SymphonyElixir.ExtensionsTest do
   end
 
   defp assert_eventually(_fun, 0), do: flunk("condition not met in time")
+
+  defp empty_claim_comments do
+    {:ok,
+     %{
+       "data" => %{
+         "issue" => %{
+           "comments" => %{
+             "nodes" => [],
+             "pageInfo" => %{"hasNextPage" => false}
+           }
+         }
+       }
+     }}
+  end
+
+  defp malformed_claim_comments do
+    {:ok,
+     %{
+       "data" => %{
+         "issue" => %{
+           "comments" => %{
+             "nodes" => [
+               %{"id" => "noise", "body" => "not a claim", "createdAt" => "not-a-date"},
+               %{"id" => "bad-claim", "body" => "## Symphony Claim Lease\nowner: \nclaimed_at: nope", "createdAt" => "nope"},
+               %{"id" => "bad-release", "body" => "## Symphony Claim Release\nowner: worker", "createdAt" => "nope"},
+               %{}
+             ],
+             "pageInfo" => %{"hasNextPage" => false}
+           }
+         }
+       }
+     }}
+  end
+
+  defp signed_claim_body(identifier, owner, token, claimed_at, expires_at) do
+    Adapter.claim_body_for_test(identifier, owner, token, claimed_at, expires_at)
+  end
+
+  defp signed_release_body(claim_id, owner, token, released_at) do
+    Adapter.release_body_for_test(claim_id, owner, token, released_at)
+  end
 
   defp ensure_workflow_store_running do
     if Process.whereis(WorkflowStore) do
