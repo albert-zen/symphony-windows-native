@@ -792,7 +792,7 @@ defmodule SymphonyElixir.AppServerTest do
             ;;
           5)
             steer_id=$(printf '%s' "$line" | sed -n 's/.*"id":\\([0-9][0-9]*\\).*/\\1/p')
-            printf '%s\\n' "{\"id\":${steer_id},\"result\":{\"turnId\":\"turn-720\"}}"
+            printf '{"id":%s,"result":{"turnId":"turn-720"}}\\n' "$steer_id"
             printf '%s\\n' '{"method":"turn/completed"}'
             exit 0
             ;;
