@@ -38,7 +38,7 @@ test:
 	$(MIX) test
 
 windows-native-test:
-	$(MIX) test test/symphony_elixir/local_shell_test.exs test/symphony_elixir/workspace_and_config_test.exs test/symphony_elixir/windows_preflight_test.exs test/symphony_elixir/ssh_test.exs test/mix/tasks/workspace_before_remove_test.exs test/mix/tasks/pr_body_check_test.exs test/symphony_elixir/specs_check_test.exs
+	$(MIX) test test/symphony_elixir/local_shell_test.exs test/symphony_elixir/workspace_and_config_test.exs test/symphony_elixir/windows_preflight_test.exs test/symphony_elixir/windows_lifecycle_scripts_test.exs test/symphony_elixir/ssh_test.exs test/mix/tasks/workspace_before_remove_test.exs test/mix/tasks/pr_body_check_test.exs test/symphony_elixir/specs_check_test.exs
 
 dialyzer:
 	$(MIX) deps.get

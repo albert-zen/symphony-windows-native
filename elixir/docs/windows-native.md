@@ -78,7 +78,31 @@ gh auth login
 
 ## Configure a workflow
 
-Copy the example and edit it for your Linear project and target repository:
+Start from the profile that matches the trust boundary for the run:
+
+- `WORKFLOW.windows.safe.example.md`: recommended first-run profile. Codex runs with workspace-write
+  thread sandboxing, approval escalations are rejected, and Symphony resolves each turn sandbox to
+  the generated issue workspace with network access disabled.
+- `WORKFLOW.windows.trusted.example.md`: unattended automation profile for trusted repositories and
+  dedicated workspace roots. Codex runs with `approval_policy: never`, `danger-full-access`, and an
+  explicit `dangerFullAccess` turn sandbox policy.
+- `WORKFLOW.windows.example.md`: compact general example for adapting your own local policy.
+
+For a safer first run:
+
+```powershell
+Copy-Item .\WORKFLOW.windows.safe.example.md .\WORKFLOW.windows.md
+notepad .\WORKFLOW.windows.md
+```
+
+For trusted unattended automation:
+
+```powershell
+Copy-Item .\WORKFLOW.windows.trusted.example.md .\WORKFLOW.windows.md
+notepad .\WORKFLOW.windows.md
+```
+
+You can still start from the compact example:
 
 ```powershell
 Copy-Item .\WORKFLOW.windows.example.md .\WORKFLOW.windows.md
@@ -113,6 +137,31 @@ Keep secrets out of the workflow file:
 tracker:
   api_key: $LINEAR_API_KEY
 ```
+
+### Choosing safe vs trusted profiles
+
+The safe profile is intended for evaluating a repository or workflow prompt before giving an agent
+broad local control. It still runs Symphony workspace hooks on the host, so inspect
+`hooks.after_create` before starting the service, but Codex turns fail closed when they need
+approval or access outside the generated issue workspace.
+
+The trusted profile is for production-like automation after you trust all three boundaries:
+
+- The Linear project only routes work you intend to automate.
+- The repository cloned by `hooks.after_create` is trusted to contribute local `.codex` project
+  configuration, hooks, and skills.
+- `workspace.root` is a dedicated disposable automation directory, not a personal development
+  checkout and not a directory shared with unrelated repositories.
+
+The trusted profile includes a PowerShell trust step that writes a Codex project entry for the
+current generated issue workspace after verifying that the workspace lives under the configured
+trusted root. This avoids per-issue warnings such as `.codex` project configuration being disabled
+for a newly generated workspace. If you change `workspace.root`, update the matching
+`$TrustedWorkspaceRoot` value in `hooks.after_create`.
+
+Do not add a broad trust entry for a drive root, home directory, or normal source tree. Trust only
+the dedicated workspace root or the specific generated workspaces you are willing to let unattended
+automation control.
 
 ## Run preflight
 
@@ -171,6 +220,13 @@ Use the helper script:
 .\scripts\start-windows-native.ps1 -WorkflowPath .\WORKFLOW.windows.md -Port 4011
 ```
 
+The script writes PID metadata to `$env:LOCALAPPDATA\Symphony\logs\symphony.pid.json` by default.
+Use `-Background` when you want the launcher to return after starting a hidden PowerShell process:
+
+```powershell
+.\scripts\start-windows-native.ps1 -WorkflowPath .\WORKFLOW.windows.md -Port 4011 -Background
+```
+
 Or run the escript directly:
 
 ```powershell
@@ -183,6 +239,56 @@ Open the dashboard:
 ```text
 http://127.0.0.1:4011/
 ```
+
+## Stop Symphony
+
+Stop a launcher started by `start-windows-native.ps1`:
+
+```powershell
+.\scripts\stop-windows-native.ps1 -Force
+```
+
+The stop script reads the PID metadata and verifies that the target command line is a
+`start-windows-native.ps1` process before terminating that process tree. If the PID file is missing,
+pass `-WorkflowPath` to locate a matching launcher process:
+
+```powershell
+.\scripts\stop-windows-native.ps1 -WorkflowPath .\WORKFLOW.windows.md -Force
+```
+
+## Install a Windows long-running task
+
+The recommended Windows-native long-running setup is Task Scheduler. It runs under the same
+interactive Windows account that already has Codex, GitHub CLI, and `LINEAR_API_KEY` configured:
+
+```powershell
+.\scripts\install-windows-native-service.ps1 -WorkflowPath .\WORKFLOW.windows.md -Port 4011
+Start-ScheduledTask -TaskName "Symphony Windows Native"
+```
+
+Remove the task with:
+
+```powershell
+.\scripts\install-windows-native-service.ps1 -Uninstall
+```
+
+This script intentionally installs a scheduled task rather than a Windows service wrapper. That keeps
+the Codex and GitHub authentication context tied to the user account and avoids adding a service-host
+dependency such as NSSM.
+
+## Cleanup
+
+Use the cleanup helper for explicit maintenance tasks:
+
+```powershell
+.\scripts\cleanup-windows-native.ps1 -WorkflowPath .\WORKFLOW.windows.md -IssueIdentifier ALB-11
+.\scripts\cleanup-windows-native.ps1 -WorkflowPath .\WORKFLOW.windows.md -AllWorkspaces
+.\scripts\cleanup-windows-native.ps1 -Logs
+.\scripts\cleanup-windows-native.ps1 -BuildArtifacts
+```
+
+Cleanup refuses to treat the source checkout, a Git checkout, the current directory, the user profile,
+or a drive root as a workspace/log root. Use `-WhatIf` to preview removals before deleting.
 
 ## Linear state flow
 
@@ -318,6 +424,9 @@ issue in `In Progress` unless a manager explicitly chooses another state.
 
 When the issue moves to a terminal state such as `Done`, Symphony stops the
 active agent and runs `hooks.before_remove` before removing the workspace.
+At startup, Symphony also queries terminal states and removes matching issue workspaces under the
+configured `workspace.root`. The cleanup script above is for manual retention cleanup, log cleanup,
+and operator-initiated workspace cleanup.
 
 ## Known Windows limitations
 
@@ -352,6 +461,8 @@ make windows-native-test
 Agent PRs should also follow the [agent quality flywheel](agent-quality-flywheel.md): keep one
 Linear workpad, use Conventional Commits, record validation in the PR body, and wait for required
 GitHub checks before moving the Linear issue to review.
+For the small-team manager and agent operating model, see the
+[small-team agentic build flywheel playbook](small-team-agentic-flywheel.md).
 
 ## Troubleshooting
 

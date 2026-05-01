@@ -2,8 +2,10 @@ param(
   [string]$WorkflowPath = ".\WORKFLOW.windows.md",
   [int]$Port = 4011,
   [string]$LogsRoot = "$env:LOCALAPPDATA\Symphony\logs",
+  [string]$PidFile = "",
   [string]$Mise = "",
-  [switch]$TerminalDashboard
+  [switch]$TerminalDashboard,
+  [switch]$Background
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,6 +21,98 @@ try {
 
 if (Get-Command chcp.com -ErrorAction SilentlyContinue) {
   & chcp.com 65001 | Out-Null
+}
+
+if (-not $PidFile) {
+  $PidFile = Join-Path $LogsRoot "symphony.pid.json"
+}
+
+function Resolve-SymphonyPath {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Path
+  )
+
+  $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+}
+
+function Test-SymphonyProcessAlive {
+  param([string]$Path)
+
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    return $false
+  }
+
+  try {
+    $metadata = Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
+    if (-not $metadata.ProcessId) {
+      return $false
+    }
+
+    return [bool](Get-Process -Id ([int]$metadata.ProcessId) -ErrorAction SilentlyContinue)
+  } catch {
+    return $false
+  }
+}
+
+function Join-SymphonyArguments {
+  param([string[]]$Arguments)
+
+  ($Arguments | ForEach-Object {
+    if ($_ -match "[\s`"]") {
+      '"' + ($_.Replace('"', '\"')) + '"'
+    } else {
+      $_
+    }
+  }) -join " "
+}
+
+$WorkflowPath = Resolve-SymphonyPath $WorkflowPath
+$LogsRoot = Resolve-SymphonyPath $LogsRoot
+$PidFile = Resolve-SymphonyPath $PidFile
+
+if ($Background) {
+  if (Test-SymphonyProcessAlive $PidFile) {
+    throw "Symphony already appears to be running according to PID file: $PidFile"
+  }
+
+  New-Item -ItemType Directory -Force -Path $LogsRoot | Out-Null
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $PidFile) | Out-Null
+
+  $stdoutPath = Join-Path $LogsRoot "symphony.stdout.log"
+  $stderrPath = Join-Path $LogsRoot "symphony.stderr.log"
+  $scriptPath = $PSCommandPath
+  $pwsh = (Get-Process -Id $PID).Path
+  $arguments = @(
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    $scriptPath,
+    "-WorkflowPath",
+    $WorkflowPath,
+    "-Port",
+    $Port,
+    "-LogsRoot",
+    $LogsRoot,
+    "-PidFile",
+    $PidFile
+  )
+
+  if ($Mise) {
+    $arguments += @("-Mise", $Mise)
+  }
+
+  if ($TerminalDashboard) {
+    $arguments += "-TerminalDashboard"
+  }
+
+  $process = Start-Process -FilePath $pwsh -ArgumentList (Join-SymphonyArguments $arguments) -WorkingDirectory (Get-Location).Path -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -PassThru
+  Write-Host "Symphony background launcher PID: $($process.Id)"
+  Write-Host "PID metadata: $PidFile"
+  Write-Host "Stdout: $stdoutPath"
+  Write-Host "Stderr: $stderrPath"
+  exit 0
 }
 
 if ($TerminalDashboard) {
@@ -49,12 +143,43 @@ if (-not $Mise) {
 }
 
 New-Item -ItemType Directory -Force -Path $LogsRoot | Out-Null
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $PidFile) | Out-Null
+
+if (Test-SymphonyProcessAlive $PidFile) {
+  throw "Symphony already appears to be running according to PID file: $PidFile"
+}
 
 $AuditLog = Join-Path $LogsRoot "log\symphony.log"
 Write-Host "Symphony audit log: $AuditLog"
+Write-Host "PID metadata: $PidFile"
 Write-Host "Terminal dashboard: $(if ($TerminalDashboard) { 'enabled' } else { "disabled; open http://127.0.0.1:$Port/ or pass -TerminalDashboard" })"
 
-& $Mise exec -- escript .\bin\symphony $WorkflowPath `
-  --port $Port `
-  --logs-root $LogsRoot `
-  --i-understand-that-this-will-be-running-without-the-usual-guardrails
+$metadata = [ordered]@{
+  ProcessId = $PID
+  StartedAt = (Get-Date).ToUniversalTime().ToString("o")
+  WorkflowPath = $WorkflowPath
+  LogsRoot = $LogsRoot
+  Port = $Port
+  ScriptPath = $PSCommandPath
+  Kind = "symphony-windows-native"
+}
+
+$metadata | ConvertTo-Json | Set-Content -LiteralPath $PidFile -Encoding UTF8
+
+try {
+  & $Mise exec -- escript .\bin\symphony $WorkflowPath `
+    --port $Port `
+    --logs-root $LogsRoot `
+    --i-understand-that-this-will-be-running-without-the-usual-guardrails
+} finally {
+  if (Test-Path -LiteralPath $PidFile -PathType Leaf) {
+    try {
+      $existing = Get-Content -Raw -LiteralPath $PidFile | ConvertFrom-Json
+      if ([int]$existing.ProcessId -eq $PID) {
+        Remove-Item -LiteralPath $PidFile -Force
+      }
+    } catch {
+      Write-Warning "Unable to remove PID metadata $PidFile`: $($_.Exception.Message)"
+    }
+  }
+}
