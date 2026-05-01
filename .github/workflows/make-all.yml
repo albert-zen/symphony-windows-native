@@ -65,4 +65,8 @@ jobs:
             ${{ runner.os }}-mix-
 
       - name: Verify Windows-native profile
-        run: mix test test/symphony_elixir/local_shell_test.exs test/symphony_elixir/workspace_and_config_test.exs
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+          mix deps.get
+          mix test test/symphony_elixir/local_shell_test.exs test/symphony_elixir/workspace_and_config_test.exs
