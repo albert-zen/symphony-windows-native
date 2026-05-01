@@ -174,6 +174,24 @@ defmodule SymphonyElixir.CoreTest do
     assert Config.settings!().tracker.assignee == env_assignee
   end
 
+  test "manager steer token resolves from SYMPHONY_STEER_TOKEN env var" do
+    previous_steer_token = System.get_env("SYMPHONY_STEER_TOKEN")
+    env_steer_token = "test-steer-token"
+
+    on_exit(fn -> restore_env("SYMPHONY_STEER_TOKEN", previous_steer_token) end)
+    System.put_env("SYMPHONY_STEER_TOKEN", env_steer_token)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: "project",
+      codex_command: "/bin/sh app-server"
+    )
+
+    assert Config.settings!().observability.steer_token == env_steer_token
+
+    System.put_env("SYMPHONY_STEER_TOKEN", "   ")
+    assert Config.settings!().observability.steer_token == nil
+  end
+
   test "workflow file path defaults to WORKFLOW.md in the current working directory when app env is unset" do
     original_workflow_path = Workflow.workflow_file_path()
 

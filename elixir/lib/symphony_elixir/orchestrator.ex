@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, Config, Redactor, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Codex.CommandWatchdog
   alias SymphonyElixir.Linear.Issue
 
@@ -15,12 +15,21 @@ defmodule SymphonyElixir.Orchestrator do
   @failure_retry_base_ms 10_000
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
+  @max_recent_codex_events 80
+  @steer_request_timeout_ms 3_000
   @empty_codex_totals %{
     input_tokens: 0,
     output_tokens: 0,
     total_tokens: 0,
     seconds_running: 0
   }
+
+  @type steer_error ::
+          :unavailable
+          | :worker_not_running
+          | :blank_message
+          | :session_mismatch
+          | :worker_not_accepting_steer
 
   defmodule State do
     @moduledoc """
@@ -38,6 +47,7 @@ defmodule SymphonyElixir.Orchestrator do
       completed: MapSet.new(),
       claimed: MapSet.new(),
       retry_attempts: %{},
+      pending_steer_calls: %{},
       codex_totals: nil,
       codex_rate_limits: nil
     ]
@@ -210,6 +220,48 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   def handle_info({:codex_worker_update, _issue_id, _update}, state), do: {:noreply, state}
+
+  def handle_info({:codex_steer_request_result, request_ref, result}, state) when is_reference(request_ref) do
+    case Map.pop(Map.get(state, :pending_steer_calls, %{}), request_ref) do
+      {nil, _pending_steer_calls} ->
+        {:noreply, state}
+
+      {%{from: from, issue_id: issue_id, audit_update: audit_update}, pending_steer_calls} ->
+        state = %{state | pending_steer_calls: pending_steer_calls}
+
+        case result do
+          {:ok, session_id} ->
+            state = audit_queued_steer(state, issue_id, %{audit_update | session_id: session_id})
+
+            GenServer.reply(from, {
+              :ok,
+              %{
+                issue_identifier: audit_update.issue_identifier,
+                issue_id: issue_id,
+                session_id: session_id,
+                queued_at: audit_update.timestamp
+              }
+            })
+
+            {:noreply, state}
+
+          {:error, reason} ->
+            GenServer.reply(from, {:error, reason})
+            {:noreply, state}
+        end
+    end
+  end
+
+  def handle_info({:steer_request_timeout, request_ref}, state) when is_reference(request_ref) do
+    case Map.pop(Map.get(state, :pending_steer_calls, %{}), request_ref) do
+      {nil, _pending_steer_calls} ->
+        {:noreply, state}
+
+      {%{from: from}, pending_steer_calls} ->
+        GenServer.reply(from, {:error, :worker_not_accepting_steer})
+        {:noreply, %{state | pending_steer_calls: pending_steer_calls}}
+    end
+  end
 
   def handle_info({:retry_issue, issue_id, retry_token}, state) do
     result =
@@ -1235,6 +1287,23 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  @spec steer_worker(String.t(), String.t(), String.t() | nil) ::
+          {:ok, map()} | {:error, steer_error()}
+  def steer_worker(issue_identifier, message, expected_session_id \\ nil) do
+    steer_worker(__MODULE__, issue_identifier, message, expected_session_id)
+  end
+
+  @spec steer_worker(GenServer.server(), String.t(), String.t(), String.t() | nil) ::
+          {:ok, map()} | {:error, steer_error()}
+  def steer_worker(server, issue_identifier, message, expected_session_id)
+      when is_binary(issue_identifier) and is_binary(message) do
+    if Process.whereis(server) do
+      GenServer.call(server, {:steer_worker, issue_identifier, message, expected_session_id})
+    else
+      {:error, :unavailable}
+    end
+  end
+
   @spec snapshot() :: map() | :timeout | :unavailable
   def snapshot, do: snapshot(__MODULE__, 15_000)
 
@@ -1266,10 +1335,14 @@ defmodule SymphonyElixir.Orchestrator do
         %{
           issue_id: issue_id,
           identifier: metadata.identifier,
+          title: metadata.issue.title,
+          url: metadata.issue.url,
           state: metadata.issue.state,
           worker_host: Map.get(metadata, :worker_host),
           workspace_path: Map.get(metadata, :workspace_path),
           session_id: metadata.session_id,
+          thread_id: Map.get(metadata, :thread_id),
+          turn_id: Map.get(metadata, :turn_id),
           codex_app_server_pid: metadata.codex_app_server_pid,
           codex_input_tokens: metadata.codex_input_tokens,
           codex_output_tokens: metadata.codex_output_tokens,
@@ -1279,6 +1352,7 @@ defmodule SymphonyElixir.Orchestrator do
           last_codex_timestamp: metadata.last_codex_timestamp,
           last_codex_message: metadata.last_codex_message,
           last_codex_event: metadata.last_codex_event,
+          recent_codex_events: Map.get(metadata, :recent_codex_events, []),
           command_watchdog:
             CommandWatchdog.snapshot(
               Map.get(metadata, :command_watchdog),
@@ -1340,9 +1414,54 @@ defmodule SymphonyElixir.Orchestrator do
      }, state}
   end
 
+  def handle_call({:steer_worker, issue_identifier, message, expected_session_id}, from, state) do
+    with {:ok, trimmed_message} <- validate_steer_message(message),
+         {:ok, issue_id, running_entry} <- find_running_entry_by_identifier(state.running, issue_identifier),
+         {:ok, session_id} <- validate_running_session(running_entry, expected_session_id) do
+      request_ref = make_ref()
+
+      audit_update = %{
+        event: :manager_steer_queued,
+        message: trimmed_message,
+        issue_identifier: issue_identifier,
+        session_id: session_id,
+        thread_id: Map.get(running_entry, :thread_id),
+        turn_id: Map.get(running_entry, :turn_id),
+        timestamp: DateTime.utc_now()
+      }
+
+      send(running_entry.pid, {:codex_steer, self(), request_ref, session_id, trimmed_message})
+      Process.send_after(self(), {:steer_request_timeout, request_ref}, @steer_request_timeout_ms)
+
+      pending_steer_calls =
+        Map.put(state.pending_steer_calls, request_ref, %{
+          from: from,
+          issue_id: issue_id,
+          audit_update: audit_update
+        })
+
+      {:noreply, %{state | pending_steer_calls: pending_steer_calls}}
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  defp audit_queued_steer(%State{} = state, issue_id, audit_update) do
+    case Map.get(state.running, issue_id) do
+      nil ->
+        state
+
+      running_entry ->
+        {updated_running_entry, _token_delta} = integrate_codex_update(running_entry, audit_update)
+        notify_dashboard()
+        %{state | running: Map.put(state.running, issue_id, updated_running_entry)}
+    end
+  end
+
   defp integrate_codex_update(running_entry, %{event: event, timestamp: timestamp} = update) do
     token_delta = extract_token_delta(running_entry, update)
     rate_limits = extract_rate_limits(update)
+    update = Redactor.redact(update)
     codex_input_tokens = Map.get(running_entry, :codex_input_tokens, 0)
     codex_output_tokens = Map.get(running_entry, :codex_output_tokens, 0)
     codex_total_tokens = Map.get(running_entry, :codex_total_tokens, 0)
@@ -1362,7 +1481,10 @@ defmodule SymphonyElixir.Orchestrator do
         last_codex_timestamp: timestamp,
         last_codex_message: summarize_codex_update(update),
         session_id: session_id_for_update(running_entry.session_id, update),
+        thread_id: id_for_update(Map.get(running_entry, :thread_id), update, :thread_id),
+        turn_id: id_for_update(Map.get(running_entry, :turn_id), update, :turn_id),
         last_codex_event: event,
+        recent_codex_events: recent_codex_events_for_update(running_entry, update),
         codex_app_server_pid: codex_app_server_pid_for_update(codex_app_server_pid, update),
         codex_input_tokens: codex_input_tokens + token_delta.input_tokens,
         codex_output_tokens: codex_output_tokens + token_delta.output_tokens,
@@ -1493,6 +1615,13 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp session_id_for_update(existing, _update), do: existing
 
+  defp id_for_update(existing, update, key) when is_map(update) do
+    case Map.get(update, key) do
+      value when is_binary(value) -> value
+      _ -> existing
+    end
+  end
+
   defp turn_count_for_update(existing_count, existing_session_id, %{
          event: :session_started,
          session_id: session_id
@@ -1514,10 +1643,60 @@ defmodule SymphonyElixir.Orchestrator do
   defp summarize_codex_update(update) do
     %{
       event: update[:event],
-      message: update[:payload] || update[:raw],
+      message: update[:message] || update[:payload] || update[:raw],
       timestamp: update[:timestamp]
     }
   end
+
+  defp recent_codex_events_for_update(running_entry, update) do
+    next_event =
+      summarize_codex_update(update)
+      |> Map.put(:raw, update[:raw])
+      |> Map.put(:session_id, update[:session_id] || Map.get(running_entry, :session_id))
+      |> Map.put(:thread_id, update[:thread_id] || Map.get(running_entry, :thread_id))
+      |> Map.put(:turn_id, update[:turn_id] || Map.get(running_entry, :turn_id))
+
+    running_entry
+    |> Map.get(:recent_codex_events, [])
+    |> Kernel.++([next_event])
+    |> Enum.take(-@max_recent_codex_events)
+  end
+
+  defp validate_steer_message(message) when is_binary(message) do
+    case String.trim(message) do
+      "" -> {:error, :blank_message}
+      trimmed -> {:ok, trimmed}
+    end
+  end
+
+  defp validate_steer_message(_message), do: {:error, :blank_message}
+
+  defp find_running_entry_by_identifier(running, issue_identifier) when is_map(running) do
+    running
+    |> Enum.find_value(fn
+      {issue_id, %{identifier: ^issue_identifier} = running_entry} -> {:ok, issue_id, running_entry}
+      _entry -> nil
+    end)
+    |> case do
+      nil -> {:error, :worker_not_running}
+      result -> result
+    end
+  end
+
+  defp validate_running_session(%{pid: pid, session_id: session_id}, expected_session_id)
+       when is_pid(pid) and is_binary(session_id) do
+    cond do
+      !Process.alive?(pid) -> {:error, :worker_not_running}
+      !non_blank_binary?(expected_session_id) -> {:error, :session_mismatch}
+      is_binary(expected_session_id) and expected_session_id != session_id -> {:error, :session_mismatch}
+      true -> {:ok, session_id}
+    end
+  end
+
+  defp validate_running_session(_running_entry, _expected_session_id), do: {:error, :worker_not_running}
+
+  defp non_blank_binary?(value) when is_binary(value), do: String.trim(value) != ""
+  defp non_blank_binary?(_value), do: false
 
   defp schedule_tick(%State{} = state, delay_ms) when is_integer(delay_ms) and delay_ms >= 0 do
     if is_reference(state.tick_timer_ref) do
