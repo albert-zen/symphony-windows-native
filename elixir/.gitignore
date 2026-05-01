@@ -45,6 +45,7 @@ erl_crash.dump
 .credentials
 status.txt
 .codex/original-user-prompt.txt
+WORKFLOW.windows.md
 
 # Also ignore archive artifacts (built via "mix archive.build").
 *.ez

@@ -69,6 +69,34 @@ defmodule SymphonyElixir.TestSupport do
   def restore_env(key, nil), do: System.delete_env(key)
   def restore_env(key, value), do: System.put_env(key, value)
 
+  def windows? do
+    match?({:win32, _}, :os.type())
+  end
+
+  def symlink_skip_reason do
+    if windows?() do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-symlink-probe-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        target = Path.join(test_root, "target")
+        link = Path.join(test_root, "link")
+
+        File.mkdir_p!(target)
+
+        case File.ln_s(target, link) do
+          :ok -> nil
+          {:error, reason} -> "Windows symlink privileges unavailable: #{inspect(reason)}"
+        end
+      after
+        File.rm_rf(test_root)
+      end
+    end
+  end
+
   def stop_default_http_server do
     case Enum.find(Supervisor.which_children(SymphonyElixir.Supervisor), fn
            {SymphonyElixir.HttpServer, _pid, _type, _modules} -> true
@@ -204,7 +232,7 @@ defmodule SymphonyElixir.TestSupport do
   end
 
   defp yaml_value(value) when is_binary(value) do
-    "\"" <> String.replace(value, "\"", "\\\"") <> "\""
+    "'" <> String.replace(value, "'", "''") <> "'"
   end
 
   defp yaml_value(value) when is_integer(value), do: to_string(value)

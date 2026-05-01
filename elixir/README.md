@@ -7,6 +7,37 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 > Symphony Elixir is prototype software intended for evaluation only and is presented as-is.
 > We recommend implementing your own hardened version based on `SPEC.md`.
 
+## Windows native quickstart
+
+This branch includes an experimental Windows-native local-worker path. On Windows, local workspace
+hooks run through PowerShell, while `codex app-server` is launched directly so JSON-RPC stdio stays
+clean.
+
+For a full walkthrough, read [docs/windows-native.md](docs/windows-native.md).
+
+Quick setup:
+
+```powershell
+git clone https://github.com/albert-zen/symphony-windows-native.git
+cd symphony-windows-native\elixir
+
+mise trust
+mise install
+mise exec -- mix setup
+mise exec -- mix build
+
+[Environment]::SetEnvironmentVariable("LINEAR_API_KEY", "YOUR_LINEAR_API_KEY", "User")
+Copy-Item .\WORKFLOW.windows.example.md .\WORKFLOW.windows.md
+notepad .\WORKFLOW.windows.md
+
+.\scripts\start-windows-native.ps1 -WorkflowPath .\WORKFLOW.windows.md -Port 4011
+```
+
+Then open `http://127.0.0.1:4011/`.
+
+Do not commit `WORKFLOW.windows.md` if it contains private repository URLs, project slugs, or other
+local details.
+
 ## Screenshot
 
 ![Symphony Elixir screenshot](../.github/media/elixir-screenshot.png)
