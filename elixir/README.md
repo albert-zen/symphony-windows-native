@@ -61,6 +61,8 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
 
 1. Make sure your codebase is set up to work well with agents: see
    [Harness engineering](https://openai.com/index/harness-engineering/).
+   For Symphony-managed PRs in this repo, also follow the
+   [agent quality flywheel policy](docs/agent-quality-flywheel.md).
 2. Get a new personal token in Linear via Settings → Security & access → Personal API keys, and
    set it as the `LINEAR_API_KEY` environment variable.
 3. Copy this directory's `WORKFLOW.md` to your repo.
@@ -207,6 +209,13 @@ The observability UI now runs on a minimal Phoenix stack:
 
 ```bash
 make all
+```
+
+For Windows-native worker startup, workflow, or path-handling changes, run the focused Windows
+profile as well:
+
+```bash
+make windows-native-test
 ```
 
 Run the real external end-to-end test only when you want Symphony to create disposable Linear

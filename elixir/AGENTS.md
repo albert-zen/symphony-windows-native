@@ -12,6 +12,7 @@ This directory contains the Elixir agent orchestration service that polls Linear
 ## Codebase-Specific Conventions
 
 - Runtime config is loaded from `WORKFLOW.md` front matter via `SymphonyElixir.Workflow` and `SymphonyElixir.Config`.
+- Agent PRs must follow the quality policy in [`docs/agent-quality-flywheel.md`](docs/agent-quality-flywheel.md).
 - Keep the implementation aligned with [`../SPEC.md`](../SPEC.md) where practical.
   - The implementation may be a superset of the spec.
   - The implementation must not conflict with the spec.
@@ -32,6 +33,12 @@ Run targeted tests while iterating, then run full gates before handoff.
 make all
 ```
 
+For Windows-native worker or workflow changes, also run the focused profile:
+
+```bash
+make windows-native-test
+```
+
 ## Required Rules
 
 - Public functions (`def`) in `lib/` must have an adjacent `@spec`.
@@ -49,6 +56,10 @@ mix specs.check
 ## PR Requirements
 
 - PR body must follow `../.github/pull_request_template.md` exactly.
+- Agent PR commits should use lightweight Conventional Commits such as
+  `fix(app-server): resolve session startup lint`.
+- Do not hand off an agent PR while required GitHub checks are still pending or failing unless the
+  blocker is explicitly recorded in the PR and Linear workpad.
 - Validate PR body locally when needed:
 
 ```bash

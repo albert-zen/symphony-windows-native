@@ -241,6 +241,18 @@ The important production path for local Windows workers is:
 - clean JSON-RPC stdio
 - Linear issue state updates through `linear_graphql`
 
+## Quality gates for Windows changes
+
+Windows-native runtime, workflow, or path-handling changes should run the focused native profile:
+
+```powershell
+make windows-native-test
+```
+
+Agent PRs should also follow the [agent quality flywheel](agent-quality-flywheel.md): keep one
+Linear workpad, use Conventional Commits, record validation in the PR body, and wait for required
+GitHub checks before moving the Linear issue to review.
+
 ## Troubleshooting
 
 ### `response_timeout` when starting Codex
