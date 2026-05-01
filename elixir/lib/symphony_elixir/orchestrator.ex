@@ -1227,6 +1227,8 @@ defmodule SymphonyElixir.Orchestrator do
           last_codex_message: metadata.last_codex_message,
           last_codex_event: metadata.last_codex_event,
           recent_codex_events: Map.get(metadata, :recent_codex_events, []),
+          codex_rate_limits: Map.get(metadata, :codex_rate_limits),
+          codex_rate_limits_updated_at: Map.get(metadata, :codex_rate_limits_updated_at),
           runtime_seconds: running_seconds(metadata.started_at, now)
         }
       end)
@@ -1320,6 +1322,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp integrate_codex_update(running_entry, %{event: event, timestamp: timestamp} = update) do
     token_delta = extract_token_delta(running_entry, update)
+    rate_limits = extract_rate_limits(update)
     update = Redactor.redact(update)
     codex_input_tokens = Map.get(running_entry, :codex_input_tokens, 0)
     codex_output_tokens = Map.get(running_entry, :codex_output_tokens, 0)
@@ -1347,10 +1350,19 @@ defmodule SymphonyElixir.Orchestrator do
         codex_last_reported_output_tokens: max(last_reported_output, token_delta.output_reported),
         codex_last_reported_total_tokens: max(last_reported_total, token_delta.total_reported),
         turn_count: turn_count_for_update(turn_count, running_entry.session_id, update)
-      }),
+      })
+      |> maybe_put_rate_limits(rate_limits, timestamp),
       token_delta
     }
   end
+
+  defp maybe_put_rate_limits(running_entry, %{} = rate_limits, timestamp) do
+    running_entry
+    |> Map.put(:codex_rate_limits, rate_limits)
+    |> Map.put(:codex_rate_limits_updated_at, timestamp)
+  end
+
+  defp maybe_put_rate_limits(running_entry, _rate_limits, _timestamp), do: running_entry
 
   defp codex_app_server_pid_for_update(_existing, %{codex_app_server_pid: pid})
        when is_binary(pid),
@@ -1631,6 +1643,8 @@ defmodule SymphonyElixir.Orchestrator do
       rate_limits_from_payload(Map.get(update, :rate_limits)) ||
       rate_limits_from_payload(update[:payload]) ||
       rate_limits_from_payload(Map.get(update, "payload")) ||
+      rate_limits_from_payload(map_at_path(update, ["payload", "params", "rateLimits"])) ||
+      rate_limits_from_payload(map_at_path(update, [:payload, :params, :rateLimits])) ||
       rate_limits_from_payload(update)
   end
 
@@ -1729,10 +1743,44 @@ defmodule SymphonyElixir.Orchestrator do
         &Map.has_key?(payload, &1)
       )
 
-    !is_nil(limit_id) and has_buckets
+    has_recognized_bucket =
+      Enum.any?(
+        ["primary", :primary, "secondary", :secondary, "credits", :credits],
+        fn key -> rate_limit_bucket?(Map.get(payload, key)) end
+      )
+
+    has_buckets and (!is_nil(limit_id) or has_recognized_bucket)
   end
 
   defp rate_limits_map?(_payload), do: false
+
+  defp rate_limit_bucket?(bucket) when is_map(bucket) do
+    Enum.any?(
+      [
+        "remaining",
+        :remaining,
+        "limit",
+        :limit,
+        "usedPercent",
+        :usedPercent,
+        "windowDurationMins",
+        :windowDurationMins,
+        "reset_in_seconds",
+        :reset_in_seconds,
+        "resetInSeconds",
+        :resetInSeconds,
+        "has_credits",
+        :has_credits,
+        "unlimited",
+        :unlimited,
+        "balance",
+        :balance
+      ],
+      &Map.has_key?(bucket, &1)
+    )
+  end
+
+  defp rate_limit_bucket?(_bucket), do: false
 
   defp explicit_map_at_paths(payload, paths) when is_map(payload) and is_list(paths) do
     Enum.find_value(paths, fn path ->
