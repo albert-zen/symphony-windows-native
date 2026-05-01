@@ -274,11 +274,8 @@ defmodule SymphonyElixir.Codex.CommandWatchdog do
   end
 
   defp alternate_key(key) when is_binary(key) do
-    String.to_existing_atom(key)
-  rescue
-    ArgumentError -> key
+    String.to_atom(key)
   end
 
   defp alternate_key(key) when is_atom(key), do: Atom.to_string(key)
-  defp alternate_key(key), do: key
 end
