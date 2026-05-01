@@ -92,6 +92,13 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 - Move status only when the matching quality bar is met.
 - Operate autonomously end-to-end unless blocked by missing requirements, secrets, or permissions.
 - Use the blocked-access escape hatch only for true external blockers (missing required tools/auth) after exhausting documented fallbacks.
+- Leave problem breadcrumbs without comment spam:
+  - Update the single `## Codex Workpad` for transient failures you recover from without changing the plan.
+  - Add a separate concise Linear problem comment only when an environment, validation, auth,
+    dependency, or orchestration failure changes the plan, requires a workaround, or needs the
+    next operator's attention.
+  - The problem comment must state what failed, the command/subsystem involved, whether recovery
+    succeeded, and the next thing an operator should inspect.
 
 ## Related skills
 
@@ -107,6 +114,9 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 - `Todo` -> queued; immediately transition to `In Progress` before active work.
   - Special case: if a PR is already attached, treat as feedback/rework loop (run full PR feedback sweep, address or explicitly push back, revalidate, return to `Human Review`).
 - `In Progress` -> implementation actively underway.
+- `Blocked` -> true external blocker recorded; do not code. Re-check only the named blocker,
+  update the workpad/problem comment if its status changed, and wait for a manager to move the
+  issue back to an active implementation state before resuming.
 - `Human Review` -> PR is attached and validated; waiting on human approval.
 - `Merging` -> approved by human; execute the `land` skill flow (do not call `gh pr merge` directly).
 - `Rework` -> reviewer requested changes; planning + implementation required.
@@ -121,6 +131,8 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
    - `Todo` -> immediately move to `In Progress`, then ensure bootstrap workpad comment exists (create if missing), then start execution flow.
      - If PR is already attached, start by reviewing all open PR comments and deciding required changes vs explicit pushback responses.
    - `In Progress` -> continue execution flow from current scratchpad comment.
+   - `Blocked` -> inspect only the named blocker and keep the issue blocked unless the blocker is
+     resolved and a manager moved it back to an active implementation state.
    - `Human Review` -> wait and poll for decision/review updates.
    - `Merging` -> on entry, open and follow `.codex/skills/land/SKILL.md`; do not call `gh pr merge` directly.
    - `Rework` -> run rework flow.
@@ -187,11 +199,17 @@ Use this only when completion is blocked by missing required tools or missing au
 
 - GitHub is **not** a valid blocker by default. Always try fallback strategies first (alternate remote/auth mode, then continue publish/review flow).
 - Do not move to `Human Review` for GitHub access/auth until all fallback strategies have been attempted and documented in the workpad.
-- If a non-GitHub required tool is missing, or required non-GitHub auth is unavailable, move the ticket to `Human Review` with a short blocker brief in the workpad that includes:
+- If a non-GitHub required tool is missing, or required non-GitHub auth is unavailable, write a
+  short blocker brief in the workpad, add one concise problem comment, and try to move the ticket
+  to `Blocked`. If the Linear team does not have a `Blocked` state, record `Blocked state missing`
+  in the workpad/problem comment and leave the ticket in its active state unless a manager
+  explicitly moves it elsewhere.
+- The blocker brief must include:
   - what is missing,
   - why it blocks required acceptance/validation,
   - exact human action needed to unblock.
-- Keep the brief concise and action-oriented; do not add extra top-level comments outside the workpad.
+- Keep the brief concise and action-oriented; outside the workpad, add only the one problem comment
+  required for the blocker.
 
 ## Step 2: Execution phase (Todo -> In Progress -> Human Review)
 
@@ -232,7 +250,7 @@ Use this only when completion is blocked by missing required tools or missing au
     - Repeat this check-address-verify loop until no outstanding comments remain and checks are fully passing.
     - Re-open and refresh the workpad before state transition so `Plan`, `Acceptance Criteria`, and `Validation` exactly match completed work.
 12. Only then move issue to `Human Review`.
-    - Exception: if blocked by missing required non-GitHub tools/auth per the blocked-access escape hatch, move to `Human Review` with the blocker brief and explicit unblock actions.
+    - Exception: if blocked by missing required non-GitHub tools/auth per the blocked-access escape hatch, keep it active or move it to `Blocked` with the blocker brief and explicit unblock actions.
 13. For `Todo` tickets that already had a PR attached at kickoff:
     - Ensure all existing PR feedback was reviewed and resolved, including inline review comments (code changes or explicit, justified pushback response).
     - Ensure branch was pushed with any required updates.

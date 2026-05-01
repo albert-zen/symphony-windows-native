@@ -287,6 +287,23 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     Process.put({FakeLinearClient, :graphql_results}, [{:ok, %{"data" => %{}}}])
     assert {:error, :state_not_found} = Adapter.update_issue_state("issue-1", "Missing")
+    flush_graphql_messages()
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok,
+         %{
+           "data" => %{
+             "issue" => %{"team" => %{"states" => %{"nodes" => []}}}
+           }
+         }}
+      ]
+    )
+
+    assert {:error, :state_not_found} = Adapter.update_issue_state("issue-1", "Blocked")
+    assert_receive {:graphql_called, _blocked_lookup_query, %{issueId: "issue-1", stateName: "Blocked"}}
+    refute_receive {:graphql_called, _update_issue_query, %{stateId: _missing_state_id}}
 
     Process.put(
       {FakeLinearClient, :graphql_results},
@@ -745,6 +762,14 @@ defmodule SymphonyElixir.ExtensionsTest do
         {:ok, _pid} -> :ok
         {:error, {:already_started, _pid}} -> :ok
       end
+    end
+  end
+
+  defp flush_graphql_messages do
+    receive do
+      {:graphql_called, _query, _variables} -> flush_graphql_messages()
+    after
+      0 -> :ok
     end
   end
 end

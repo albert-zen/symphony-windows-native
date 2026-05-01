@@ -72,6 +72,13 @@ Instructions:
 8. Move the issue to `Human Review` when it is ready for a person.
 9. Move the issue to `Done` only when the workflow's completion criteria are satisfied.
 10. Do not ask for human input unless a required secret, permission, or external system is missing.
+11. For recovered transient failures, update only the `## Codex Workpad`; do not create extra comments.
+12. For notable environment, validation, auth, dependency, or orchestration failures that change the
+    plan or require operator attention, add one concise problem comment describing what failed, the
+    command/subsystem involved, whether you recovered, and what to inspect next.
+13. If a true blocker prevents completion, update the workpad and try to move the issue to
+    `Blocked`. If the team has no `Blocked` state, record `Blocked state missing` and leave the
+    issue in its active state unless a manager says otherwise.
 
 Recommended workpad shape:
 
