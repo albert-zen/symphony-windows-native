@@ -401,6 +401,8 @@ make windows-native-test
 Agent PRs should also follow the [agent quality flywheel](agent-quality-flywheel.md): keep one
 Linear workpad, use Conventional Commits, record validation in the PR body, and wait for required
 GitHub checks before moving the Linear issue to review.
+For the small-team manager and agent operating model, see the
+[small-team agentic build flywheel playbook](small-team-agentic-flywheel.md).
 
 ## Troubleshooting
 

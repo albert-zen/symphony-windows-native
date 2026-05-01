@@ -14,6 +14,8 @@ hooks run through PowerShell, while `codex app-server` is launched directly so J
 clean.
 
 For a full walkthrough, read [docs/windows-native.md](docs/windows-native.md).
+For the small-team operating model behind the optimization loop, read
+[docs/small-team-agentic-flywheel.md](docs/small-team-agentic-flywheel.md).
 
 Quick setup:
 

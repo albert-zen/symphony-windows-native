@@ -21,11 +21,17 @@ the local environment can support the full gate. If a gate cannot be run locally
 must say why, and the issue must stay out of `In Review` until required GitHub checks pass or a
 manager explicitly moves it.
 
+Agents must not weaken, skip, disable, or relax CI, lint, formatter, or test gates to land agent
+work. If a gate is wrong or flaky, file or link a follow-up defect and keep the current issue out of
+`In Review` until the required checks pass or a manager explicitly overrides the state transition.
+
 ## Review loop
 
-Request a manager or subagent review pass for non-trivial changes before handoff. A change is
-non-trivial when it touches runtime orchestration, worker startup, Linear state transitions, Codex
-app-server protocol handling, CI, release/merge policy, or more than one subsystem.
+Request an independent SubAgent review pass for meaningful changes before handoff. A change is
+meaningful when it touches runtime orchestration, worker startup, Linear state transitions, Codex
+app-server protocol handling, CI, release/merge policy, more than one subsystem, or docs that encode
+operating decisions. Manager review remains valuable, but manager-only approval does not satisfy the
+SubAgent review gate for these changes.
 
 The review pass should check:
 
@@ -34,8 +40,9 @@ The review pass should check:
 - CI failures and runtime defects are written back to GitHub or Linear before state changes.
 - Follow-up work is filed instead of being left only in logs.
 
-Docs-only changes may skip an extra subagent review when they only clarify existing behavior and
-all required documentation checks pass.
+Docs-only changes may skip an extra SubAgent review only when they clarify existing behavior without
+changing or encoding operating policy, workflow expectations, state transitions, quality gates, or
+review rules, and all required documentation checks pass.
 
 Record the review request and outcome in the PR conversation or Linear workpad. If the review finds
 blocking issues, keep the Linear issue in `In Progress` or return it to `Todo` until the findings are
