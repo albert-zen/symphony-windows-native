@@ -87,6 +87,121 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     refute_received {:workpad_recorded, _}
   end
 
+  test "linear_graphql rejects ambiguous multiple issueUpdate mutations" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => """
+          mutation MoveTwo($firstIssueId: String!, $secondIssueId: String!, $stateId: String!) {
+            first: issueUpdate(id: $firstIssueId, input: {stateId: $stateId}) { success }
+            second: issueUpdate(id: $secondIssueId, input: {stateId: $stateId}) { success }
+          }
+          """,
+          "variables" => %{"firstIssueId" => "issue-1", "secondIssueId" => "issue-2", "stateId" => "state-review"}
+        },
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client: fn _url, _opts -> flunk("GitHub should not be checked for ambiguous transitions") end
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "multiple issueUpdate mutations"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql requires matching app identity for app-bound required checks" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{"head" => %{"sha" => "abc123"}, "base" => %{"ref" => "main"}},
+            "branches/main/protection/required_status_checks" => %{
+              "contexts" => ["make-all"],
+              "checks" => [%{"context" => "make-all", "app_id" => 12_345}]
+            },
+            "commits/abc123/status" => %{"statuses" => [%{"context" => "make-all", "state" => "success"}]},
+            "commits/abc123/check-runs" => %{
+              "check_runs" => [
+                %{
+                  "name" => "make-all",
+                  "status" => "completed",
+                  "conclusion" => "success",
+                  "app" => %{"id" => 99_999}
+                }
+              ]
+            }
+          })
+      )
+
+    assert response["success"] == false
+    assert_received {:workpad_recorded, body}
+    assert body =~ "make-all=check:app_mismatch"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql allows matching app-bound required checks" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{"head" => %{"sha" => "abc123"}, "base" => %{"ref" => "main"}},
+            "branches/main/protection/required_status_checks" => %{
+              "contexts" => ["make-all"],
+              "checks" => [%{"context" => "make-all", "app_id" => 12_345}]
+            },
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{
+              "check_runs" => [
+                %{
+                  "name" => "make-all",
+                  "status" => "completed",
+                  "conclusion" => "success",
+                  "app" => %{"id" => 12_345}
+                }
+              ]
+            }
+          })
+      )
+
+    assert response["success"] == true
+    assert_received {:linear_mutation_allowed, "issue-1", "state-review"}
+    refute_received {:workpad_recorded, _}
+  end
+
+  test "linear_graphql uses configured required checks when branch protection is unavailable" do
+    test_pid = self()
+    write_workflow_file!(Workflow.workflow_file_path(), codex_review_readiness_required_checks: ["make-all"])
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{"head" => %{"sha" => "abc123"}, "base" => %{"ref" => "main"}},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{"check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]}
+          })
+      )
+
+    assert response["success"] == true
+    assert_received {:linear_mutation_allowed, "issue-1", "state-review"}
+    refute_received {:workpad_recorded, _}
+  end
+
   test "linear_graphql guards In Review transition when stateId is inside an input variable" do
     test_pid = self()
 
