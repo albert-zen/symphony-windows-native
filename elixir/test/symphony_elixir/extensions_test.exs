@@ -604,6 +604,26 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert {:error, :claim_create_failed} =
              Adapter.acquire_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+
+    Process.put({FakeLinearClient, :graphql_result}, {:error, :preflight_timeout})
+
+    assert {:error, :preflight_timeout} =
+             Adapter.acquire_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+  end
+
+  test "linear adapter can sign test lease bodies without a configured api token" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil)
+
+    body =
+      signed_claim_body(
+        "ALB-CLAIM",
+        "worker",
+        "token",
+        ~U[2026-05-02 00:00:00Z],
+        ~U[2026-05-02 04:00:00Z]
+      )
+
+    assert body =~ "signature:"
   end
 
   test "linear adapter ignores malformed claim comments and releases invisible claims" do

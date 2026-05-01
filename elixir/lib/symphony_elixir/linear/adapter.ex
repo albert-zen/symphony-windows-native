@@ -451,8 +451,6 @@ defmodule SymphonyElixir.Linear.Adapter do
     byte_size(left) == byte_size(right) and :crypto.hash_equals(left, right)
   end
 
-  defp secure_compare(_left, _right), do: false
-
   @doc false
   @spec claim_body_for_test(String.t() | nil, String.t(), String.t(), DateTime.t(), DateTime.t()) :: String.t()
   def claim_body_for_test(identifier, owner, token, claimed_at, expires_at) do
