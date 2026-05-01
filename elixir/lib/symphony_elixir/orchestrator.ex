@@ -1345,8 +1345,6 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp id_for_update(existing, _update, _key), do: existing
-
   defp turn_count_for_update(existing_count, existing_session_id, %{
          event: :session_started,
          session_id: session_id

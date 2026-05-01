@@ -686,18 +686,6 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp handle_steer_message(port, on_message, reply_to, request_ref, _expected_session_id, _message, turn_context) do
-    emit_message(
-      on_message,
-      :manager_steer_failed,
-      Map.merge(turn_context, %{reason: :missing_turn_context}),
-      metadata_from_message(port, %{})
-    )
-
-    reply_steer_request(reply_to, request_ref, {:error, :missing_turn_context})
-    turn_context
-  end
-
   defp maybe_handle_approval_request(
          port,
          "item/commandExecution/requestApproval",
@@ -1237,23 +1225,25 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp send_turn_steer(port, thread_id, turn_id, message) do
     request_id = System.unique_integer([:positive]) + @steer_start_id
 
-    if send_message(port, %{
-         "method" => "turn/steer",
-         "id" => request_id,
-         "params" => %{
-           "threadId" => thread_id,
-           "expectedTurnId" => turn_id,
-           "input" => [
-             %{
-               "type" => "text",
-               "text" => message
-             }
-           ]
-         }
-       }) do
+    try do
+      send_message(port, %{
+        "method" => "turn/steer",
+        "id" => request_id,
+        "params" => %{
+          "threadId" => thread_id,
+          "expectedTurnId" => turn_id,
+          "input" => [
+            %{
+              "type" => "text",
+              "text" => message
+            }
+          ]
+        }
+      })
+
       {:ok, request_id}
-    else
-      {:error, :port_unavailable}
+    rescue
+      error in ArgumentError -> {:error, {:port_command_failed, Exception.message(error)}}
     end
   end
 
