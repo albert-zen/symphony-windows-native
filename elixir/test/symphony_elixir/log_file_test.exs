@@ -35,4 +35,22 @@ defmodule SymphonyElixir.LogFileTest do
     refute line =~ "title"
     refute line =~ <<0>>
   end
+
+  test "file logger formatter removes carriage-return redraw artifacts" do
+    event = %{
+      level: :info,
+      msg: {:string, "progress 10%\rprogress 20%\rprogress complete"},
+      meta: %{time: 1_771_000_000_000_000, event_id: ~c"event-123"}
+    }
+
+    line =
+      Formatter.format(event, %{
+        single_line: true,
+        template: [:time, " ", :level, " event_id=", :event_id, " ", :msg, "\n"]
+      })
+
+    assert line =~ " info event_id=event-123 progress 10%progress 20%progress complete\n"
+    refute line =~ "\r"
+    assert String.ends_with?(line, "\n")
+  end
 end
