@@ -971,6 +971,22 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     refute rendered =~ "Timestamp:"
   end
 
+  test "terminal dashboard can be disabled for captured Windows runtime logs" do
+    previous = System.get_env("SYMPHONY_DISABLE_TERMINAL_DASHBOARD")
+    System.put_env("SYMPHONY_DISABLE_TERMINAL_DASHBOARD", "1")
+
+    on_exit(fn -> restore_env("SYMPHONY_DISABLE_TERMINAL_DASHBOARD", previous) end)
+
+    assert StatusDashboard.terminal_dashboard_disabled_for_test?()
+
+    rendered =
+      ExUnit.CaptureIO.capture_io(fn ->
+        assert :ok = StatusDashboard.render_offline_status()
+      end)
+
+    assert rendered == ""
+  end
+
   test "status dashboard renders linear project link in header" do
     snapshot_data =
       {:ok,

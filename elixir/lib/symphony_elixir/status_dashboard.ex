@@ -128,6 +128,14 @@ defmodule SymphonyElixir.StatusDashboard do
 
   @spec render_offline_status() :: :ok
   def render_offline_status do
+    if terminal_dashboard_disabled?() do
+      :ok
+    else
+      render_offline_status_to_terminal()
+    end
+  end
+
+  defp render_offline_status_to_terminal do
     content =
       [
         colorize("╭─ SYMPHONY STATUS", @ansi_bold),
@@ -1934,12 +1942,23 @@ defmodule SymphonyElixir.StatusDashboard do
   defp dashboard_enabled? do
     if Code.ensure_loaded?(Mix) and function_exported?(Mix, :env, 0) do
       try do
-        Mix.env() != :test
+        Mix.env() != :test and not terminal_dashboard_disabled?()
       rescue
-        _ -> true
+        _ -> not terminal_dashboard_disabled?()
       end
     else
-      true
+      not terminal_dashboard_disabled?()
+    end
+  end
+
+  @doc false
+  @spec terminal_dashboard_disabled_for_test?() :: boolean()
+  def terminal_dashboard_disabled_for_test?, do: terminal_dashboard_disabled?()
+
+  defp terminal_dashboard_disabled? do
+    case System.get_env("SYMPHONY_DISABLE_TERMINAL_DASHBOARD") do
+      value when value in [nil, "", "0", "false", "FALSE", "False"] -> false
+      _ -> true
     end
   end
 
