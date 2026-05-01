@@ -31,24 +31,22 @@ defmodule SymphonyElixir.Codex.CommandWatchdog do
     payload = update[:payload] || Map.get(update, "payload") || update
     method = map_path(payload, ["method"]) || map_path(payload, [:method])
 
-    cond do
-      method in ["codex/event/exec_command_begin", "item/commandExecution/begin"] or
-          command_lifecycle_event?(payload, "item/started") ->
+    case command_event(method, payload) do
+      :started ->
         new_command(command_name(payload), timestamp)
         |> classify(timestamp, policy)
 
-      method in ["codex/event/exec_command_end", "item/commandExecution/end"] or
-          command_lifecycle_event?(payload, "item/completed") ->
+      :completed ->
         command
         |> mark_completed(timestamp)
         |> classify(timestamp, policy)
 
-      method in ["codex/event/exec_command_output_delta", "item/commandExecution/outputDelta"] ->
+      :output ->
         command
         |> apply_output(output_delta(payload), timestamp)
         |> classify(timestamp, policy)
 
-      true ->
+      nil ->
         command && classify(command, timestamp, policy)
     end
   end
@@ -160,18 +158,42 @@ defmodule SymphonyElixir.Codex.CommandWatchdog do
   end
 
   defp command_name(payload) do
-    map_path(payload, ["params", "msg", "command"]) ||
-      map_path(payload, [:params, :msg, :command]) ||
-      map_path(payload, ["params", "msg", "parsed_cmd"]) ||
-      map_path(payload, [:params, :msg, :parsed_cmd]) ||
-      map_path(payload, ["params", "item", "command"]) ||
-      map_path(payload, [:params, :item, :command]) ||
-      map_path(payload, ["params", "item", "parsed_cmd"]) ||
-      map_path(payload, [:params, :item, :parsed_cmd]) ||
-      map_path(payload, ["params", "item", "parsedCmd"]) ||
-      map_path(payload, [:params, :item, :parsedCmd]) ||
-      map_path(payload, ["params", "parsedCmd"]) ||
-      map_path(payload, [:params, :parsedCmd])
+    first_path(payload, [
+      ["params", "msg", "command"],
+      [:params, :msg, :command],
+      ["params", "msg", "parsed_cmd"],
+      [:params, :msg, :parsed_cmd],
+      ["params", "item", "command"],
+      [:params, :item, :command],
+      ["params", "item", "parsed_cmd"],
+      [:params, :item, :parsed_cmd],
+      ["params", "item", "parsedCmd"],
+      [:params, :item, :parsedCmd],
+      ["params", "parsedCmd"],
+      [:params, :parsedCmd]
+    ])
+  end
+
+  defp command_event(method, payload) do
+    cond do
+      method in ["codex/event/exec_command_begin", "item/commandExecution/begin"] ->
+        :started
+
+      command_lifecycle_event?(payload, "item/started") ->
+        :started
+
+      method in ["codex/event/exec_command_end", "item/commandExecution/end"] ->
+        :completed
+
+      command_lifecycle_event?(payload, "item/completed") ->
+        :completed
+
+      method in ["codex/event/exec_command_output_delta", "item/commandExecution/outputDelta"] ->
+        :output
+
+      true ->
+        nil
+    end
   end
 
   defp command_lifecycle_event?(payload, method) do
@@ -185,21 +207,8 @@ defmodule SymphonyElixir.Codex.CommandWatchdog do
   end
 
   defp normalize_command(%{} = command) do
-    binary_command =
-      map_path(command, ["parsedCmd"]) ||
-        map_path(command, [:parsedCmd]) ||
-        map_path(command, ["parsed_cmd"]) ||
-        map_path(command, [:parsed_cmd]) ||
-        map_path(command, ["command"]) ||
-        map_path(command, [:command]) ||
-        map_path(command, ["cmd"]) ||
-        map_path(command, [:cmd])
-
-    args =
-      map_path(command, ["args"]) ||
-        map_path(command, [:args]) ||
-        map_path(command, ["argv"]) ||
-        map_path(command, [:argv])
+    binary_command = first_path(command, [["parsedCmd"], [:parsedCmd], ["parsed_cmd"], [:parsed_cmd], ["command"], [:command], ["cmd"], [:cmd]])
+    args = first_path(command, [["args"], [:args], ["argv"], [:argv]])
 
     if is_binary(binary_command) and is_list(args) do
       normalize_command([binary_command | args])
@@ -238,6 +247,10 @@ defmodule SymphonyElixir.Codex.CommandWatchdog do
       map_path(payload, [:params, :outputDelta]) ||
       map_path(payload, ["params", "delta"]) ||
       map_path(payload, [:params, :delta])
+  end
+
+  defp first_path(payload, paths) do
+    Enum.find_value(paths, &map_path(payload, &1))
   end
 
   defp elapsed_ms(%DateTime{} = from, %DateTime{} = to), do: max(0, DateTime.diff(to, from, :millisecond))
