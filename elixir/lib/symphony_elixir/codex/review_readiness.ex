@@ -570,9 +570,9 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
       patch = Map.get(file, "patch")
 
       if production_elixir_file?(filename) and status != "removed" do
-        acc
-        |> MapSet.put(module_name_from_path(filename))
-        |> MapSet.union(module_names_from_patch(patch))
+        patch
+        |> module_names_from_patch()
+        |> Enum.reduce(MapSet.put(acc, module_name_from_path(filename)), &MapSet.put(&2, &1))
       else
         acc
       end
@@ -598,10 +598,9 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
   defp module_names_from_patch(patch) when is_binary(patch) do
     Regex.scan(~r/^[ +]\s*defmodule\s+([A-Z][A-Za-z0-9_.]*)\s+do/m, patch)
     |> Enum.map(fn [_, module] -> module end)
-    |> MapSet.new()
   end
 
-  defp module_names_from_patch(_patch), do: MapSet.new()
+  defp module_names_from_patch(_patch), do: []
 
   defp added_coverage_ignore_modules(files) do
     files
