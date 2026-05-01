@@ -13,6 +13,7 @@ defmodule SymphonyElixir.StatusDashboard do
   @minimum_idle_rerender_ms 1_000
   @throughput_window_ms 5_000
   @throughput_graph_window_ms 10 * 60 * 1000
+  @rate_limit_fresh_ms 10 * 60 * 1000
   @throughput_graph_columns 24
   @sparkline_blocks ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
   @running_id_width 8
@@ -128,6 +129,14 @@ defmodule SymphonyElixir.StatusDashboard do
 
   @spec render_offline_status() :: :ok
   def render_offline_status do
+    if terminal_dashboard_disabled?() do
+      :ok
+    else
+      render_offline_status_to_terminal()
+    end
+  end
+
+  defp render_offline_status_to_terminal do
     content =
       [
         colorize("╭─ SYMPHONY STATUS", @ansi_bold),
@@ -362,7 +371,7 @@ defmodule SymphonyElixir.StatusDashboard do
              colorize("out #{format_count(codex_output_tokens)}", @ansi_yellow) <>
              colorize(" | ", @ansi_gray) <>
              colorize("total #{format_count(codex_total_tokens)}", @ansi_yellow),
-           colorize("│ Rate Limits: ", @ansi_bold) <> format_rate_limits(rate_limits),
+           colorize("│ Rate Limits: ", @ansi_bold) <> format_rate_limits(rate_limits, running),
            project_link_lines,
            project_refresh_line,
            colorize("├─ Running", @ansi_bold),
@@ -947,9 +956,18 @@ defmodule SymphonyElixir.StatusDashboard do
   defp in_bucket?(timestamp, bucket_start, bucket_end, false),
     do: timestamp >= bucket_start and timestamp < bucket_end
 
-  defp format_rate_limits(nil), do: colorize("unavailable", @ansi_gray)
+  defp format_rate_limits(rate_limits, running) do
+    case worker_rate_limit_summary(running) do
+      {:fresh, summary} -> colorize(summary, @ansi_cyan)
+      {:stale, summary} -> colorize("unavailable (#{summary})", @ansi_gray)
+      {:unknown, summary} -> colorize("unavailable (#{summary})", @ansi_gray)
+      _ -> format_global_rate_limits(rate_limits)
+    end
+  end
 
-  defp format_rate_limits(rate_limits) when is_map(rate_limits) do
+  defp format_global_rate_limits(nil), do: colorize("unavailable", @ansi_gray)
+
+  defp format_global_rate_limits(rate_limits) when is_map(rate_limits) do
     limit_id =
       map_value(rate_limits, ["limit_id", :limit_id, "limit_name", :limit_name]) ||
         "unknown"
@@ -967,7 +985,7 @@ defmodule SymphonyElixir.StatusDashboard do
       colorize(credits, @ansi_green)
   end
 
-  defp format_rate_limits(other) do
+  defp format_global_rate_limits(other) do
     other
     |> inspect(limit: 10)
     |> truncate(80)
@@ -996,8 +1014,13 @@ defmodule SymphonyElixir.StatusDashboard do
         :resetsAt
       ])
 
+    percent_text = format_rate_limit_bucket_percent(bucket)
+
     base =
       cond do
+        is_binary(percent_text) ->
+          percent_text
+
         integer_like?(remaining) and integer_like?(limit) ->
           "#{format_count(remaining)}/#{format_count(limit)}"
 
@@ -1022,6 +1045,78 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp format_rate_limit_bucket(other), do: to_string(other)
+
+  defp format_rate_limit_bucket_percent(bucket) when is_map(bucket) do
+    used_percent = map_value(bucket, ["usedPercent", :usedPercent])
+    window_mins = map_value(bucket, ["windowDurationMins", :windowDurationMins])
+
+    cond do
+      is_number(used_percent) and is_integer(window_mins) ->
+        "#{format_number(used_percent)}% / #{window_mins}m"
+
+      is_number(used_percent) ->
+        "#{format_number(used_percent)}% used"
+
+      true ->
+        nil
+    end
+  end
+
+  defp worker_rate_limit_summary(running) when is_list(running) do
+    workers = Enum.map(running, &worker_rate_limit_status/1)
+    fresh = Enum.filter(workers, &match?(%{status: :fresh}, &1))
+    stale = Enum.filter(workers, &match?(%{status: :stale}, &1))
+
+    cond do
+      fresh != [] ->
+        known =
+          fresh
+          |> Enum.map_join(" | ", fn worker ->
+            "#{worker.identifier} #{format_rate_limits_summary(worker.rate_limits)}"
+          end)
+
+        unknown_count = length(workers) - length(fresh)
+        unknown_suffix = if unknown_count > 0, do: " | unknown/stale #{unknown_count}", else: ""
+        {:fresh, "workers #{length(fresh)}/#{length(workers)} known | #{known}#{unknown_suffix}"}
+
+      stale != [] ->
+        stale_workers = Enum.map_join(stale, ", ", & &1.identifier)
+        {:stale, "worker data stale: #{stale_workers}"}
+
+      running == [] ->
+        :none
+
+      true ->
+        {:unknown, "no worker rate-limit data"}
+    end
+  end
+
+  defp worker_rate_limit_status(running_entry) when is_map(running_entry) do
+    rate_limits = Map.get(running_entry, :codex_rate_limits)
+    updated_at = Map.get(running_entry, :codex_rate_limits_updated_at) || Map.get(running_entry, :last_codex_timestamp)
+    identifier = Map.get(running_entry, :identifier) || Map.get(running_entry, :issue_id) || "unknown"
+
+    cond do
+      not is_map(rate_limits) ->
+        %{status: :unknown, identifier: identifier}
+
+      rate_limit_fresh?(updated_at) ->
+        %{status: :fresh, identifier: identifier, rate_limits: rate_limits}
+
+      true ->
+        %{status: :stale, identifier: identifier, rate_limits: rate_limits}
+    end
+  end
+
+  defp worker_rate_limit_status(_running_entry), do: %{status: :unknown, identifier: "unknown"}
+
+  defp rate_limit_fresh?(nil), do: true
+
+  defp rate_limit_fresh?(%DateTime{} = updated_at) do
+    DateTime.diff(DateTime.utc_now(), updated_at, :millisecond) <= @rate_limit_fresh_ms
+  end
+
+  defp rate_limit_fresh?(_updated_at), do: true
 
   defp format_rate_limit_credits(nil), do: "credits n/a"
 
@@ -1662,22 +1757,44 @@ defmodule SymphonyElixir.StatusDashboard do
   defp format_rate_limits_summary(_rate_limits), do: "n/a"
 
   defp format_rate_limit_bucket_summary(bucket) when is_map(bucket) do
-    used_percent = map_value(bucket, ["usedPercent", :usedPercent])
-    window_mins = map_value(bucket, ["windowDurationMins", :windowDurationMins])
+    format_rate_limit_bucket_percent(bucket) || format_rate_limit_remaining_summary(bucket)
+  end
+
+  defp format_rate_limit_bucket_summary(_bucket), do: nil
+
+  defp format_rate_limit_remaining_summary(bucket) when is_map(bucket) do
+    remaining = map_value(bucket, ["remaining", :remaining])
+    limit = map_value(bucket, ["limit", :limit])
+    reset_value = rate_limit_reset_value(bucket)
 
     cond do
-      is_number(used_percent) and is_integer(window_mins) ->
-        "#{used_percent}% / #{window_mins}m"
+      integer_like?(remaining) and integer_like?(limit) and is_nil(reset_value) ->
+        "#{format_count(remaining)}/#{format_count(limit)}"
 
-      is_number(used_percent) ->
-        "#{used_percent}% used"
+      integer_like?(remaining) and integer_like?(limit) ->
+        "#{format_count(remaining)}/#{format_count(limit)} reset #{format_reset_value(reset_value)}"
 
       true ->
         nil
     end
   end
 
-  defp format_rate_limit_bucket_summary(_bucket), do: nil
+  defp rate_limit_reset_value(bucket) when is_map(bucket) do
+    map_value(bucket, [
+      "reset_in_seconds",
+      :reset_in_seconds,
+      "resetInSeconds",
+      :resetInSeconds,
+      "reset_at",
+      :reset_at,
+      "resetAt",
+      :resetAt,
+      "resets_at",
+      :resets_at,
+      "resetsAt",
+      :resetsAt
+    ])
+  end
 
   defp format_error_value(%{"message" => message}) when is_binary(message), do: message
   defp format_error_value(%{message: message}) when is_binary(message), do: message
@@ -1961,12 +2078,23 @@ defmodule SymphonyElixir.StatusDashboard do
   defp dashboard_enabled? do
     if Code.ensure_loaded?(Mix) and function_exported?(Mix, :env, 0) do
       try do
-        Mix.env() != :test
+        Mix.env() != :test and not terminal_dashboard_disabled?()
       rescue
-        _ -> true
+        _ -> not terminal_dashboard_disabled?()
       end
     else
-      true
+      not terminal_dashboard_disabled?()
+    end
+  end
+
+  @doc false
+  @spec terminal_dashboard_disabled_for_test?() :: boolean()
+  def terminal_dashboard_disabled_for_test?, do: terminal_dashboard_disabled?()
+
+  defp terminal_dashboard_disabled? do
+    case System.get_env("SYMPHONY_DISABLE_TERMINAL_DASHBOARD") do
+      value when value in [nil, "", "0", "false", "FALSE", "False"] -> false
+      _ -> true
     end
   end
 
