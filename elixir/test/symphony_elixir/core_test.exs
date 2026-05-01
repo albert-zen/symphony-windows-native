@@ -80,6 +80,12 @@ defmodule SymphonyElixir.CoreTest do
     assert Config.settings!().codex.review_readiness_repository == "Albert-Zen/symphony-windows-native"
     assert Config.settings!().codex.review_readiness_required_checks == ["make-all", "windows-native-test"]
 
+    write_workflow_file!(Workflow.workflow_file_path(), codex_review_readiness_repository: "   ")
+    assert Config.settings!().codex.review_readiness_repository == nil
+
+    write_workflow_file!(Workflow.workflow_file_path(), codex_review_readiness_repository: nil)
+    assert Config.settings!().codex.review_readiness_repository == nil
+
     write_workflow_file!(Workflow.workflow_file_path(),
       codex_turn_sandbox_policy: %{type: "workspaceWrite", writableRoots: ["relative/path"]}
     )
