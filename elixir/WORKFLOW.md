@@ -48,7 +48,10 @@ Continuation context:
 {% if retry_error %}
 - Previous retry/backoff signal: {{ retry_error }}
 {% if retry_error_kind %}- Retry error kind: {{ retry_error_kind }}{% endif %}
+{% if retry_prior_error %}- Prior worker/code failure before this retry signal: {{ retry_prior_error }}{% endif %}
+{% if retry_prior_error_kind %}- Prior failure kind: {{ retry_prior_error_kind }}{% endif %}
 {% if retry_workspace_path %}- Existing workspace path: {{ retry_workspace_path }}{% endif %}
+{% if retry_branch_name %}- Existing branch name: {{ retry_branch_name }}{% endif %}
 {% if retry_worker_host %}- Worker host: {{ retry_worker_host }}{% endif %}
 - Record this retry/backoff signal in the existing `## Codex Workpad` before continuing implementation.
 {% endif %}

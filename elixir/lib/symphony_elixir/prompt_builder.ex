@@ -20,7 +20,10 @@ defmodule SymphonyElixir.PromptBuilder do
         "attempt" => Keyword.get(opts, :attempt),
         "retry_error" => Keyword.get(opts, :retry_error),
         "retry_error_kind" => Keyword.get(opts, :retry_error_kind),
+        "retry_prior_error" => Keyword.get(opts, :retry_prior_error),
+        "retry_prior_error_kind" => Keyword.get(opts, :retry_prior_error_kind),
         "retry_workspace_path" => Keyword.get(opts, :retry_workspace_path),
+        "retry_branch_name" => Keyword.get(opts, :retry_branch_name),
         "retry_worker_host" => Keyword.get(opts, :retry_worker_host),
         "issue" => issue |> Map.from_struct() |> to_solid_map()
       },

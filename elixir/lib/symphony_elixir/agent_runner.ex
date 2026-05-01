@@ -155,7 +155,10 @@ defmodule SymphonyElixir.AgentRunner do
     [
       retry_error: Map.get(metadata, :error),
       retry_error_kind: Map.get(metadata, :error_kind),
+      retry_prior_error: Map.get(metadata, :prior_error),
+      retry_prior_error_kind: Map.get(metadata, :prior_error_kind),
       retry_workspace_path: Map.get(metadata, :workspace_path),
+      retry_branch_name: Map.get(metadata, :branch_name),
       retry_worker_host: Map.get(metadata, :worker_host)
     ]
     |> Enum.reject(fn {_key, value} -> is_nil(value) or value == "" end)
