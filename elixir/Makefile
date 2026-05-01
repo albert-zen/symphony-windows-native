@@ -1,9 +1,10 @@
-.PHONY: help all setup deps build fmt fmt-check lint test coverage ci dialyzer e2e
+.PHONY: help all setup deps build fmt fmt-check diff-check lint test windows-native-test coverage ci dialyzer e2e
 
 MIX ?= mix
+DIFF_RANGE ?=
 
 help:
-	@echo "Targets: setup, deps, fmt, fmt-check, lint, test, coverage, dialyzer, e2e, ci"
+	@echo "Targets: setup, deps, fmt, fmt-check, diff-check, lint, test, windows-native-test, coverage, dialyzer, e2e, ci"
 
 setup:
 	$(MIX) setup
@@ -20,6 +21,13 @@ fmt:
 fmt-check:
 	$(MIX) format --check-formatted
 
+diff-check:
+ifeq ($(strip $(DIFF_RANGE)),)
+	git diff --check
+else
+	git diff --check $(DIFF_RANGE)
+endif
+
 lint:
 	$(MIX) lint
 
@@ -28,6 +36,9 @@ coverage:
 
 test:
 	$(MIX) test
+
+windows-native-test:
+	$(MIX) test test/symphony_elixir/local_shell_test.exs test/symphony_elixir/workspace_and_config_test.exs
 
 dialyzer:
 	$(MIX) deps.get
@@ -40,6 +51,7 @@ ci:
 	$(MAKE) setup
 	$(MAKE) build
 	$(MAKE) fmt-check
+	$(MAKE) diff-check
 	$(MAKE) lint
 	$(MAKE) coverage
 	$(MAKE) dialyzer
