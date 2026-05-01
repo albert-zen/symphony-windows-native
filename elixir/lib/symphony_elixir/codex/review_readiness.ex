@@ -626,10 +626,8 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
     encoded_base_ref = URI.encode(base_ref, &URI.char_unreserved?/1)
     compare_url = "#{@github_api}/repos/#{owner}/#{repo}/compare/#{encoded_base_ref}...#{head_sha}"
 
-    with {:ok, comparison} <- github_json(github_client, compare_url),
-         {:ok, merge_base_sha} <-
-           required_string(comparison, ["merge_base_commit", "sha"], :review_readiness_missing_pr_merge_base_sha) do
-      {:ok, merge_base_sha}
+    with {:ok, comparison} <- github_json(github_client, compare_url) do
+      required_string(comparison, ["merge_base_commit", "sha"], :review_readiness_missing_pr_merge_base_sha)
     end
   end
 
