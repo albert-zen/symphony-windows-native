@@ -407,8 +407,6 @@ defmodule SymphonyElixir.Config.Schema do
     |> Enum.uniq()
   end
 
-  defp normalize_label_filter(_labels), do: []
-
   defp normalize_label_name(label) when is_binary(label) do
     label
     |> String.trim()
