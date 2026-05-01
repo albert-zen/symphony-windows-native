@@ -73,7 +73,8 @@ Operating model:
    `albert-zen/symphony-windows-native`.
 9. Open a GitHub pull request against `main` and link it in the Linear workpad.
 10. Wait for required GitHub checks to complete before moving the Linear issue to `In Review`.
-    If checks cannot be verified, record the exact reason in the workpad and PR.
+    If checks cannot be verified, record the exact reason in the workpad and PR, then keep the
+    issue in `In Progress` or return it to `Todo`; only a manager may explicitly override this.
 11. Do not move unrelated Backlog issues to Todo.
 12. If you discover an automation/system defect, create a GitHub issue with label `symphony-optimization` and add a Linear mirror in project `Symphony 优化` if the Linear tool is available.
 
@@ -83,9 +84,15 @@ Quality bar:
 - Run `mix format` for touched Elixir files.
 - Follow `docs/agent-quality-flywheel.md` for PR quality gates, review loop rules, and defect
   protocol.
-- Run focused Windows-native tests when touching Windows runtime behavior:
+- Run focused Windows shell and workspace/config tests when touching Windows runtime or workflow
+  behavior:
   `make windows-native-test`.
 - Do not move the issue to `In Review` while required checks are pending or failing.
+- For non-trivial changes, request manager/subagent review before handoff and record the review
+  request plus findings in the PR and/or Workpad.
+- If review finds blocking issues, keep the issue in `In Progress` or return it to `Todo` until
+  the findings are addressed and required checks pass.
 - Write CI/runtime failures back to the Linear Workpad or linked GitHub issue before ending.
 - Do not broaden scope to multiple optimization issues in one PR.
-- If blocked by credentials or permissions, record the exact blocker in the Workpad and move the issue to In Review.
+- If blocked by credentials or permissions, record the exact blocker in the Workpad and keep the
+  issue out of `In Review` unless a manager explicitly moves it there.

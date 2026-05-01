@@ -58,8 +58,8 @@ mix specs.check
 - PR body must follow `../.github/pull_request_template.md` exactly.
 - Agent PR commits should use lightweight Conventional Commits such as
   `fix(app-server): resolve session startup lint`.
-- Do not hand off an agent PR while required GitHub checks are still pending or failing unless the
-  blocker is explicitly recorded in the PR and Linear workpad.
+- Do not hand off an agent PR while required GitHub checks are still pending or failing unless a
+  manager explicitly asks for that state; record blockers in the PR and Linear workpad.
 - Validate PR body locally when needed:
 
 ```bash

@@ -211,7 +211,7 @@ The observability UI now runs on a minimal Phoenix stack:
 make all
 ```
 
-For Windows-native worker startup, workflow, or path-handling changes, run the focused Windows
+For Windows shell, workspace/config, workflow, or path-handling changes, run the focused Windows
 profile as well:
 
 ```bash

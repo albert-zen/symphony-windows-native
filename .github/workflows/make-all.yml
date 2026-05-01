@@ -64,7 +64,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-mix-
 
-      - name: Verify Windows-native profile
+      - name: Verify Windows shell and workspace profile
         run: |
           mix local.hex --force
           mix local.rebar --force

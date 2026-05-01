@@ -1,9 +1,9 @@
-.PHONY: help all setup deps build fmt fmt-check lint test windows-native-test coverage ci dialyzer e2e
+.PHONY: help all setup deps build fmt fmt-check diff-check lint test windows-native-test coverage ci dialyzer e2e
 
 MIX ?= mix
 
 help:
-	@echo "Targets: setup, deps, fmt, fmt-check, lint, test, windows-native-test, coverage, dialyzer, e2e, ci"
+	@echo "Targets: setup, deps, fmt, fmt-check, diff-check, lint, test, windows-native-test, coverage, dialyzer, e2e, ci"
 
 setup:
 	$(MIX) setup
@@ -19,6 +19,9 @@ fmt:
 
 fmt-check:
 	$(MIX) format --check-formatted
+
+diff-check:
+	git diff --check
 
 lint:
 	$(MIX) lint
@@ -43,6 +46,7 @@ ci:
 	$(MAKE) setup
 	$(MAKE) build
 	$(MAKE) fmt-check
+	$(MAKE) diff-check
 	$(MAKE) lint
 	$(MAKE) coverage
 	$(MAKE) dialyzer

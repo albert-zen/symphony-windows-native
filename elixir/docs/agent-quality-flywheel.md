@@ -10,18 +10,20 @@ Every agent PR must record these checks in the PR body and the Linear `## Codex 
 
 - `validate-pr-description`: the PR body follows `.github/pull_request_template.md`.
 - `make-all`: the repository gate runs `make all` from `elixir/`.
-- `windows-native-test`: Windows CI runs the focused native startup/config profile.
+- `diff-check`: the repository gate runs `git diff --check` through `make all`.
+- `windows-native-test`: Windows CI runs the focused native shell and workspace/config profile.
 - Targeted checks for the changed behavior, such as a single ExUnit file or mix task test.
 
 Agents should run focused validation before committing. `make all` should run before handoff when
 the local environment can support the full gate. If a gate cannot be run locally, the PR and workpad
-must say why and rely on GitHub checks before review.
+must say why, and the issue must stay out of `In Review` until required GitHub checks pass or a
+manager explicitly moves it.
 
 ## Review loop
 
-Use a manager or subagent review pass for non-trivial changes before merge. A change is non-trivial
-when it touches runtime orchestration, worker startup, Linear state transitions, Codex app-server
-protocol handling, CI, release/merge policy, or more than one subsystem.
+Request a manager or subagent review pass for non-trivial changes before handoff. A change is
+non-trivial when it touches runtime orchestration, worker startup, Linear state transitions, Codex
+app-server protocol handling, CI, release/merge policy, or more than one subsystem.
 
 The review pass should check:
 
@@ -33,11 +35,20 @@ The review pass should check:
 Docs-only changes may skip an extra subagent review when they only clarify existing behavior and
 all required documentation checks pass.
 
+Record the review request and outcome in the PR conversation or Linear workpad. If the review finds
+blocking issues, keep the Linear issue in `In Progress` or return it to `Todo` until the findings are
+addressed and required checks are green.
+
 ## Linear and GitHub state rules
 
-Agents must not move a Linear issue to `In Review` solely because a branch was pushed. They should
-wait until required GitHub checks have completed and passed, or record the exact reason checks could
-not be verified.
+Agents must not move a Linear issue to `In Review` solely because a branch was pushed. `In Review`
+means a PR exists, required checks have completed and passed, and required manager/subagent review
+findings have been addressed, unless a manager explicitly moves the issue there.
+
+Pending, failing, or unverifiable required checks are not review-ready. The agent must write the
+failure or blocker to the workpad and/or linked GitHub issue or PR, then keep the issue in
+`In Progress` or return it to `Todo`. If a `Blocked` state exists, the manager may move the issue
+there.
 
 If a required gate fails, the agent must summarize the failure in the workpad or linked GitHub issue
 and keep the Linear issue in `In Progress` or return it to `Todo` for repair. Failures discovered by
@@ -60,5 +71,5 @@ results. Recommended branch protection for `main` is:
 
 - Require pull requests before merge.
 - Require `make-all` and `validate-pr-description`.
-- Require `windows-native-test` for Windows runtime or workflow changes.
+- Require `windows-native-test` for Windows shell, workspace/config, or workflow changes.
 - Require at least one review for non-trivial agent PRs.
