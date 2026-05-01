@@ -68,7 +68,12 @@ defmodule SymphonyElixir.LogFile do
   defp disk_log_handler_config(path, max_bytes, max_files) do
     %{
       level: :all,
-      formatter: {:logger_formatter, %{single_line: true}},
+      formatter:
+        {SymphonyElixir.LogFile.Formatter,
+         %{
+           single_line: true,
+           template: [:time, " ", :level, " event_id=", :event_id, " ", :msg, "\n"]
+         }},
       config: %{
         file: String.to_charlist(path),
         type: :wrap,
@@ -76,5 +81,34 @@ defmodule SymphonyElixir.LogFile do
         max_no_files: max_files
       }
     }
+  end
+end
+
+defmodule SymphonyElixir.LogFile.Formatter do
+  @moduledoc false
+
+  @osc_escape_pattern ~r/\e\].*?(?:\a|\e\\)/
+  @ansi_escape_pattern ~r/\e\[[0-?]*[ -\/]*[@-~]/
+  @control_pattern ~r/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/
+
+  @spec format(:logger.log_event(), map()) :: String.t()
+  def format(%{meta: metadata} = log_event, config) when is_map(metadata) do
+    log_event
+    |> put_in([:meta, :event_id], Map.get_lazy(metadata, :event_id, &event_id/0))
+    |> :logger_formatter.format(config)
+    |> IO.iodata_to_binary()
+    |> sanitize()
+  end
+
+  @spec sanitize(String.t()) :: String.t()
+  def sanitize(value) when is_binary(value) do
+    value
+    |> String.replace(@osc_escape_pattern, "")
+    |> String.replace(@ansi_escape_pattern, "")
+    |> String.replace(@control_pattern, "")
+  end
+
+  defp event_id do
+    ~c"log-" ++ Integer.to_charlist(System.unique_integer([:positive, :monotonic]))
   end
 end
