@@ -31,12 +31,19 @@ defmodule SymphonyElixir.ExtensionsTest do
       case Process.get({__MODULE__, :graphql_results}) do
         [result | rest] ->
           Process.put({__MODULE__, :graphql_results}, rest)
-          result
+          resolve_graphql_result(result, query, variables)
 
         _ ->
           Process.get({__MODULE__, :graphql_result})
+          |> resolve_graphql_result(query, variables)
       end
     end
+
+    defp resolve_graphql_result(result, query, variables) when is_function(result, 2) do
+      result.(query, variables)
+    end
+
+    defp resolve_graphql_result(result, _query, _variables), do: result
   end
 
   defmodule SlowOrchestrator do
@@ -192,8 +199,14 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_candidate_issues()
     assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_issues_by_states([" in progress ", 42])
     assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_issue_states_by_ids(["issue-1"])
+    assert {:ok, %{id: "memory-issue-1", owner: "memory"}} = SymphonyElixir.Tracker.acquire_issue_claim(issue)
+    assert :ok = SymphonyElixir.Tracker.release_issue_claim("issue-1")
+    assert :ok = Memory.release_issue_claim("issue-1")
+    assert {:error, :invalid_issue_claim} = Memory.acquire_issue_claim(%{})
     assert :ok = SymphonyElixir.Tracker.create_comment("issue-1", "comment")
     assert :ok = SymphonyElixir.Tracker.update_issue_state("issue-1", "Done")
+    assert_receive {:memory_tracker_claim_acquired, "issue-1", "MT-1", %{owner: "memory"}}
+    assert_receive {:memory_tracker_claim_released, "issue-1"}
     assert_receive {:memory_tracker_comment, "issue-1", "comment"}
     assert_receive {:memory_tracker_state_update, "issue-1", "Done"}
 
@@ -334,6 +347,467 @@ defmodule SymphonyElixir.ExtensionsTest do
     )
 
     assert {:error, :issue_update_failed} = Adapter.update_issue_state("issue-1", "Odd")
+  end
+
+  test "linear adapter acquires visible claim when this worker owns the oldest active lease" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+    now = ~U[2026-05-02 00:00:00Z]
+
+    Process.put({FakeLinearClient, :graphql_result}, fn query, variables ->
+      cond do
+        String.contains?(query, "commentCreate") ->
+          Process.put(:claim_body, variables.body)
+
+          {:ok,
+           %{
+             "data" => %{
+               "commentCreate" => %{
+                 "success" => true,
+                 "comment" => %{"id" => "claim-own", "createdAt" => DateTime.to_iso8601(now)}
+               }
+             }
+           }}
+
+        String.contains?(query, "SymphonyIssueClaimComments") ->
+          claim_body = Process.get(:claim_body)
+
+          {:ok,
+           %{
+             "data" => %{
+               "issue" => %{
+                 "comments" => %{
+                   "nodes" =>
+                     if claim_body do
+                       [
+                         %{
+                           "id" => "claim-own",
+                           "body" => claim_body,
+                           "createdAt" => DateTime.to_iso8601(now)
+                         }
+                       ]
+                     else
+                       []
+                     end,
+                   "pageInfo" => %{"hasNextPage" => false}
+                 }
+               }
+             }
+           }}
+      end
+    end)
+
+    assert {:ok, %{id: "claim-own", owner: owner, expires_at: %DateTime{}}} =
+             Adapter.acquire_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+
+    assert is_binary(owner)
+  end
+
+  test "linear adapter rejects dispatch when another unexpired lease is older" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+    older = DateTime.add(DateTime.utc_now(), -60, :second)
+    newer = DateTime.add(older, 1, :second)
+    expires_at = DateTime.add(older, 4, :hour)
+
+    Process.put({FakeLinearClient, :graphql_result}, fn query, variables ->
+      cond do
+        String.contains?(query, "commentCreate") ->
+          Process.put(:claim_body, variables.body)
+
+          {:ok,
+           %{
+             "data" => %{
+               "commentCreate" => %{
+                 "success" => true,
+                 "comment" => %{"id" => "claim-own", "createdAt" => DateTime.to_iso8601(newer)}
+               }
+             }
+           }}
+
+        String.contains?(query, "SymphonyIssueClaimComments") ->
+          competitor_body = signed_claim_body("ALB-CLAIM", "other-worker", "older-token", older, expires_at)
+
+          {:ok,
+           %{
+             "data" => %{
+               "issue" => %{
+                 "comments" => %{
+                   "nodes" => [
+                     %{"id" => "claim-other", "body" => competitor_body, "createdAt" => DateTime.to_iso8601(older)},
+                     %{"id" => "claim-own", "body" => Process.get(:claim_body), "createdAt" => DateTime.to_iso8601(newer)}
+                   ]
+                 }
+               }
+             }
+           }}
+      end
+    end)
+
+    assert {:error, {:issue_claimed, %{id: "claim-other", owner: "other-worker"}}} =
+             Adapter.acquire_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+
+    refute Process.get(:claim_body)
+  end
+
+  test "linear adapter ignores unsigned spoofed claims before dispatch" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+    older = DateTime.add(DateTime.utc_now(), -60, :second)
+    newer = DateTime.add(older, 1, :second)
+    expires_at = DateTime.add(older, 4, :hour)
+
+    Process.put({FakeLinearClient, :graphql_result}, fn query, variables ->
+      cond do
+        String.contains?(query, "commentCreate") ->
+          Process.put(:claim_body, variables.body)
+
+          {:ok,
+           %{
+             "data" => %{
+               "commentCreate" => %{
+                 "success" => true,
+                 "comment" => %{"id" => "claim-own", "createdAt" => DateTime.to_iso8601(newer)}
+               }
+             }
+           }}
+
+        String.contains?(query, "SymphonyIssueClaimComments") ->
+          spoofed_body =
+            [
+              "## Symphony Claim Lease",
+              "",
+              "owner: spoofed-worker",
+              "token: copied-token",
+              "issue: ALB-CLAIM",
+              "claimed_at: #{DateTime.to_iso8601(older)}",
+              "expires_at: #{DateTime.to_iso8601(expires_at)}"
+            ]
+            |> Enum.join("\n")
+
+          claim_body = Process.get(:claim_body)
+
+          {:ok,
+           %{
+             "data" => %{
+               "issue" => %{
+                 "comments" => %{
+                   "nodes" =>
+                     [%{"id" => "claim-spoofed", "body" => spoofed_body, "createdAt" => DateTime.to_iso8601(older)}] ++
+                       if claim_body do
+                         [%{"id" => "claim-own", "body" => claim_body, "createdAt" => DateTime.to_iso8601(newer)}]
+                       else
+                         []
+                       end,
+                   "pageInfo" => %{"hasNextPage" => false}
+                 }
+               }
+             }
+           }}
+      end
+    end)
+
+    assert {:ok, %{id: "claim-own"}} =
+             Adapter.acquire_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+  end
+
+  test "linear adapter ignores unsigned spoofed releases for visible tokens" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+    claimed_at = DateTime.add(DateTime.utc_now(), -60, :second)
+    released_at = DateTime.add(claimed_at, 10, :second)
+    expires_at = DateTime.add(claimed_at, 4, :hour)
+    claim_body = signed_claim_body("ALB-CLAIM", "other-worker", "visible-token", claimed_at, expires_at)
+
+    spoofed_release =
+      [
+        "## Symphony Claim Release",
+        "",
+        "claim_id: claim-other",
+        "owner: other-worker",
+        "token: visible-token",
+        "released_at: #{DateTime.to_iso8601(released_at)}"
+      ]
+      |> Enum.join("\n")
+
+    Process.put({FakeLinearClient, :graphql_result}, fn query, _variables ->
+      assert String.contains?(query, "SymphonyIssueClaimComments")
+
+      {:ok,
+       %{
+         "data" => %{
+           "issue" => %{
+             "comments" => %{
+               "nodes" => [
+                 %{"id" => "claim-other", "body" => claim_body, "createdAt" => DateTime.to_iso8601(claimed_at)},
+                 %{"id" => "release-spoofed", "body" => spoofed_release, "createdAt" => DateTime.to_iso8601(released_at)}
+               ],
+               "pageInfo" => %{"hasNextPage" => false}
+             }
+           }
+         }
+       }}
+    end)
+
+    assert {:error, {:issue_claimed, %{id: "claim-other", owner: "other-worker"}}} =
+             Adapter.acquire_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+  end
+
+  test "linear adapter releases its claim when verification cannot read claim comments" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+    now = DateTime.utc_now()
+
+    Process.put({FakeLinearClient, :graphql_results}, [
+      empty_claim_comments(),
+      {:ok,
+       %{
+         "data" => %{
+           "commentCreate" => %{
+             "success" => true,
+             "comment" => %{"id" => "claim-own", "createdAt" => DateTime.to_iso8601(now)}
+           }
+         }
+       }},
+      {:error, :linear_timeout},
+      fn query, variables ->
+        assert String.contains?(query, "commentCreate")
+        assert variables.body =~ "## Symphony Claim Release"
+        assert variables.body =~ "token:"
+
+        {:ok, %{"data" => %{"commentCreate" => %{"success" => true}}}}
+      end
+    ])
+
+    assert {:error, :linear_timeout} =
+             Adapter.acquire_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+  end
+
+  test "linear adapter handles claim and release error branches" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+
+    assert {:error, :invalid_issue_claim} = Adapter.acquire_issue_claim(%{})
+    assert :ok = Adapter.release_issue_claim("issue-claim")
+    assert :ok = Adapter.release_issue_claim("issue-claim", %{})
+    assert :ok = Adapter.release_issue_claim("issue-claim", :invalid_claim)
+
+    Process.put(
+      {FakeLinearClient, :graphql_result},
+      {:ok, %{"data" => %{"commentCreate" => %{"success" => false}}}}
+    )
+
+    assert {:error, :claim_release_failed} =
+             Adapter.release_issue_claim("issue-claim", %{id: "claim-1", owner: "worker", token: "token"})
+
+    Process.put({FakeLinearClient, :graphql_result}, {:error, :release_timeout})
+
+    assert {:error, :release_timeout} =
+             Adapter.release_issue_claim("issue-claim", %{id: "claim-1", owner: "worker", token: "token"})
+
+    Process.put({FakeLinearClient, :graphql_result}, :unexpected)
+
+    assert {:error, :claim_release_failed} =
+             Adapter.release_issue_claim("issue-claim", %{id: "claim-1", owner: "worker", token: "token"})
+
+    Process.put({FakeLinearClient, :graphql_results}, [
+      empty_claim_comments(),
+      {:ok, %{"data" => %{"commentCreate" => %{"success" => false}}}}
+    ])
+
+    assert {:error, :claim_create_failed} =
+             Adapter.acquire_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+
+    Process.put({FakeLinearClient, :graphql_results}, [empty_claim_comments(), {:error, :create_timeout}])
+
+    assert {:error, :create_timeout} =
+             Adapter.acquire_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+
+    Process.put({FakeLinearClient, :graphql_results}, [empty_claim_comments(), :unexpected])
+
+    assert {:error, :claim_create_failed} =
+             Adapter.acquire_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+
+    Process.put({FakeLinearClient, :graphql_result}, {:error, :preflight_timeout})
+
+    assert {:error, :preflight_timeout} =
+             Adapter.acquire_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+  end
+
+  test "linear adapter can sign test lease bodies without a configured api token" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil)
+
+    body =
+      signed_claim_body(
+        "ALB-CLAIM",
+        "worker",
+        "token",
+        ~U[2026-05-02 00:00:00Z],
+        ~U[2026-05-02 04:00:00Z]
+      )
+
+    assert body =~ "signature:"
+  end
+
+  test "linear adapter ignores malformed claim comments and releases invisible claims" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+    now = DateTime.utc_now()
+
+    malformed_comments = malformed_claim_comments()
+
+    Process.put({FakeLinearClient, :graphql_results}, [
+      malformed_comments,
+      {:ok,
+       %{
+         "data" => %{
+           "commentCreate" => %{
+             "success" => true,
+             "comment" => %{"id" => "claim-own", "createdAt" => DateTime.to_iso8601(now)}
+           }
+         }
+       }},
+      malformed_comments,
+      {:ok, %{"data" => %{"commentCreate" => %{"success" => true}}}}
+    ])
+
+    assert {:error, :claim_not_visible} =
+             Adapter.acquire_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+
+    Process.put({FakeLinearClient, :graphql_results}, [
+      empty_claim_comments(),
+      {:ok,
+       %{
+         "data" => %{
+           "commentCreate" => %{
+             "success" => true,
+             "comment" => %{"id" => "claim-own", "createdAt" => DateTime.to_iso8601(now)}
+           }
+         }
+       }},
+      :unexpected,
+      {:ok, %{"data" => %{"commentCreate" => %{"success" => true}}}}
+    ])
+
+    assert {:error, :claim_comments_fetch_failed} =
+             Adapter.acquire_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+  end
+
+  test "linear adapter scans paginated claim comments before selecting the winner" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+    older = DateTime.add(DateTime.utc_now(), -60, :second)
+    newer = DateTime.add(older, 1, :second)
+    expires_at = DateTime.add(older, 4, :hour)
+
+    Process.put({FakeLinearClient, :graphql_result}, fn query, variables ->
+      cond do
+        String.contains?(query, "commentCreate") ->
+          Process.put(:claim_body, variables.body)
+
+          {:ok,
+           %{
+             "data" => %{
+               "commentCreate" => %{
+                 "success" => true,
+                 "comment" => %{"id" => "claim-own", "createdAt" => DateTime.to_iso8601(newer)}
+               }
+             }
+           }}
+
+        String.contains?(query, "SymphonyIssueClaimComments") and is_nil(variables.after) ->
+          {:ok,
+           %{
+             "data" => %{
+               "issue" => %{
+                 "comments" => %{
+                   "nodes" => [],
+                   "pageInfo" => %{"hasNextPage" => true, "endCursor" => "cursor-1"}
+                 }
+               }
+             }
+           }}
+
+        String.contains?(query, "SymphonyIssueClaimComments") and variables.after == "cursor-1" ->
+          competitor_body = signed_claim_body("ALB-CLAIM", "other-worker", "older-token", older, expires_at)
+
+          {:ok,
+           %{
+             "data" => %{
+               "issue" => %{
+                 "comments" => %{
+                   "nodes" => [
+                     %{"id" => "claim-other", "body" => competitor_body, "createdAt" => DateTime.to_iso8601(older)},
+                     %{"id" => "claim-own", "body" => Process.get(:claim_body), "createdAt" => DateTime.to_iso8601(newer)}
+                   ],
+                   "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+                 }
+               }
+             }
+           }}
+      end
+    end)
+
+    assert {:error, {:issue_claimed, %{id: "claim-other", owner: "other-worker"}}} =
+             Adapter.acquire_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+
+    refute Process.get(:claim_body)
+  end
+
+  test "linear adapter ignores released and expired claims when selecting the lease owner" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+    expired_at = DateTime.add(DateTime.utc_now(), -30, :second)
+    released_at = DateTime.add(expired_at, 10, :second)
+    now = DateTime.add(expired_at, 30, :second)
+
+    Process.put({FakeLinearClient, :graphql_result}, fn query, variables ->
+      cond do
+        String.contains?(query, "commentCreate") ->
+          Process.put(:claim_body, variables.body)
+
+          {:ok,
+           %{
+             "data" => %{
+               "commentCreate" => %{
+                 "success" => true,
+                 "comment" => %{"id" => "claim-own", "createdAt" => DateTime.to_iso8601(now)}
+               }
+             }
+           }}
+
+        String.contains?(query, "SymphonyIssueClaimComments") ->
+          expired_body = signed_claim_body("ALB-CLAIM", "expired-worker", "expired-token", expired_at, expired_at)
+
+          released_claim_body =
+            signed_claim_body(
+              "ALB-CLAIM",
+              "released-worker",
+              "released-token",
+              expired_at,
+              DateTime.add(expired_at, 4, :hour)
+            )
+
+          release_body = signed_release_body("claim-released", "released-worker", "released-token", released_at)
+          claim_body = Process.get(:claim_body)
+
+          {:ok,
+           %{
+             "data" => %{
+               "issue" => %{
+                 "comments" => %{
+                   "nodes" =>
+                     [
+                       %{"id" => "claim-expired", "body" => expired_body, "createdAt" => DateTime.to_iso8601(expired_at)},
+                       %{"id" => "claim-released", "body" => released_claim_body, "createdAt" => DateTime.to_iso8601(expired_at)},
+                       %{"id" => "release-released", "body" => release_body, "createdAt" => DateTime.to_iso8601(released_at)}
+                     ] ++
+                       if claim_body do
+                         [%{"id" => "claim-own", "body" => claim_body, "createdAt" => DateTime.to_iso8601(now)}]
+                       else
+                         []
+                       end,
+                   "pageInfo" => %{"hasNextPage" => false}
+                 }
+               }
+             }
+           }}
+      end
+    end)
+
+    assert {:ok, %{id: "claim-own"}} =
+             Adapter.acquire_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
   end
 
   test "phoenix observability api preserves state, issue, and refresh responses" do
@@ -753,6 +1227,47 @@ defmodule SymphonyElixir.ExtensionsTest do
   end
 
   defp assert_eventually(_fun, 0), do: flunk("condition not met in time")
+
+  defp empty_claim_comments do
+    {:ok,
+     %{
+       "data" => %{
+         "issue" => %{
+           "comments" => %{
+             "nodes" => [],
+             "pageInfo" => %{"hasNextPage" => false}
+           }
+         }
+       }
+     }}
+  end
+
+  defp malformed_claim_comments do
+    {:ok,
+     %{
+       "data" => %{
+         "issue" => %{
+           "comments" => %{
+             "nodes" => [
+               %{"id" => "noise", "body" => "not a claim", "createdAt" => "not-a-date"},
+               %{"id" => "bad-claim", "body" => "## Symphony Claim Lease\nowner: \nclaimed_at: nope", "createdAt" => "nope"},
+               %{"id" => "bad-release", "body" => "## Symphony Claim Release\nowner: worker", "createdAt" => "nope"},
+               %{}
+             ],
+             "pageInfo" => %{"hasNextPage" => false}
+           }
+         }
+       }
+     }}
+  end
+
+  defp signed_claim_body(identifier, owner, token, claimed_at, expires_at) do
+    Adapter.claim_body_for_test(identifier, owner, token, claimed_at, expires_at)
+  end
+
+  defp signed_release_body(claim_id, owner, token, released_at) do
+    Adapter.release_body_for_test(claim_id, owner, token, released_at)
+  end
 
   defp ensure_workflow_store_running do
     if Process.whereis(WorkflowStore) do
