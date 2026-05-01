@@ -39,6 +39,12 @@ codex:
   command: codex --config shell_environment_policy.inherit=all --config model=gpt-5.5 --config model_reasoning_effort=medium app-server
   approval_policy: never
   thread_sandbox: danger-full-access
+  # Used when GitHub branch protection required-check metadata is private or unavailable.
+  review_readiness_repository: albert-zen/symphony-windows-native
+  review_readiness_required_checks:
+    - make-all
+    - validate-pr-description
+    - windows-native-test
   turn_sandbox_policy:
     type: dangerFullAccess
 ---
