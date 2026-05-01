@@ -1314,32 +1314,12 @@ defmodule SymphonyElixir.CoreTest do
       System.cmd("git", ["-C", template_repo, "add", "README.md"])
       System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
 
-      File.write!(codex_binary, """
-      #!/bin/sh
-      count=0
-      while IFS= read -r line; do
-        count=$((count + 1))
-        case "$count" in
-          1)
-            printf '%s\\n' '{\"id\":1,\"result\":{}}'
-            ;;
-          2)
-            ;;
-          3)
-            printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-1\"}}}'
-            ;;
-          4)
-            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-1\"}}}'
-            printf '%s\\n' '{\"method\":\"turn/completed\"}'
-            exit 0
-            ;;
-          *)
-            ;;
-        esac
-      done
-      """)
-
-      File.chmod!(codex_binary, 0o755)
+      write_fake_codex!(codex_binary, [
+        ~s({"id":1,"result":{}}),
+        %{},
+        ~s({"id":2,"result":{"thread":{"id":"thread-1"}}}),
+        %{stdout: [~s({"id":3,"result":{"turn":{"id":"turn-1"}}}), ~s({"method":"turn/completed"})], exit: 0}
+      ])
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
@@ -1397,34 +1377,12 @@ defmodule SymphonyElixir.CoreTest do
       System.cmd("git", ["-C", template_repo, "add", "README.md"])
       System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
 
-      File.write!(
-        codex_binary,
-        """
-        #!/bin/sh
-        count=0
-        while IFS= read -r line; do
-          count=$((count + 1))
-          case "$count" in
-            1)
-              printf '%s\\n' '{\"id\":1,\"result\":{}}'
-              ;;
-            2)
-              printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-live\"}}}'
-              ;;
-            3)
-              printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-live\"}}}'
-              ;;
-            4)
-              printf '%s\\n' '{\"method\":\"turn/completed\"}'
-              ;;
-            *)
-              ;;
-          esac
-        done
-        """
-      )
-
-      File.chmod!(codex_binary, 0o755)
+      write_fake_codex!(codex_binary, [
+        ~s({"id":1,"result":{}}),
+        ~s({"id":2,"result":{"thread":{"id":"thread-live"}}}),
+        ~s({"id":3,"result":{"turn":{"id":"turn-live"}}}),
+        %{stdout: ~s({"method":"turn/completed"}), exit: 0}
+      ])
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
@@ -1465,6 +1423,10 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  if SymphonyElixir.TestSupport.windows?() do
+    @tag skip: "Fake ssh startup failure fixture is a Unix script; production Windows path launches real ssh.exe."
+  end
+
   test "agent runner surfaces ssh startup failures instead of silently hopping hosts" do
     test_root =
       Path.join(
@@ -1486,7 +1448,7 @@ defmodule SymphonyElixir.CoreTest do
 
       File.mkdir_p!(test_root)
       System.put_env("SYMP_TEST_SSH_TRACE", trace_file)
-      System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+      System.put_env("PATH", test_root <> SymphonyElixir.TestSupport.path_separator() <> (previous_path || ""))
 
       File.write!(fake_ssh, """
       #!/bin/sh
@@ -1556,38 +1518,20 @@ defmodule SymphonyElixir.CoreTest do
       System.cmd("git", ["-C", template_repo, "add", "README.md"])
       System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
 
-      File.write!(codex_binary, """
-      #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex.trace}"
-      run_id="$(date +%s%N)-$$"
-      printf 'RUN:%s\\n' "$run_id" >> "$trace_file"
-      count=0
+      write_fake_codex!(
+        codex_binary,
+        [
+          ~s({"id":1,"result":{}}),
+          %{},
+          ~s({"id":2,"result":{"thread":{"id":"thread-cont"}}}),
+          %{stdout: [~s({"id":3,"result":{"turn":{"id":"turn-cont-1"}}}), ~s({"method":"turn/completed"})]},
+          %{stdout: [~s({"id":3,"result":{"turn":{"id":"turn-cont-2"}}}), ~s({"method":"turn/completed"})]}
+        ],
+        trace_env: "SYMP_TEST_CODEx_TRACE",
+        default_trace: "/tmp/codex.trace",
+        startup_trace: [:run]
+      )
 
-      while IFS= read -r line; do
-        count=$((count + 1))
-        printf 'JSON:%s\\n' "$line" >> "$trace_file"
-        case "$count" in
-          1)
-            printf '%s\\n' '{"id":1,"result":{}}'
-            ;;
-          2)
-            ;;
-          3)
-            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-cont"}}}'
-            ;;
-          4)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-cont-1"}}}'
-            printf '%s\\n' '{"method":"turn/completed"}'
-            ;;
-          5)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-cont-2"}}}'
-            printf '%s\\n' '{"method":"turn/completed"}'
-            ;;
-        esac
-      done
-      """)
-
-      File.chmod!(codex_binary, 0o755)
       System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
 
       on_exit(fn -> System.delete_env("SYMP_TEST_CODEx_TRACE") end)
@@ -1687,37 +1631,20 @@ defmodule SymphonyElixir.CoreTest do
       System.cmd("git", ["-C", template_repo, "add", "README.md"])
       System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
 
-      File.write!(codex_binary, """
-      #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex.trace}"
-      printf 'RUN\\n' >> "$trace_file"
-      count=0
+      write_fake_codex!(
+        codex_binary,
+        [
+          ~s({"id":1,"result":{}}),
+          %{},
+          ~s({"id":2,"result":{"thread":{"id":"thread-max"}}}),
+          %{stdout: [~s({"id":3,"result":{"turn":{"id":"turn-max-1"}}}), ~s({"method":"turn/completed"})]},
+          %{stdout: [~s({"id":3,"result":{"turn":{"id":"turn-max-2"}}}), ~s({"method":"turn/completed"})]}
+        ],
+        trace_env: "SYMP_TEST_CODEx_TRACE",
+        default_trace: "/tmp/codex.trace",
+        startup_trace: [:run_marker]
+      )
 
-      while IFS= read -r line; do
-        count=$((count + 1))
-        printf 'JSON:%s\\n' "$line" >> "$trace_file"
-        case "$count" in
-          1)
-            printf '%s\\n' '{"id":1,"result":{}}'
-            ;;
-          2)
-            ;;
-          3)
-            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-max"}}}'
-            ;;
-          4)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-max-1"}}}'
-            printf '%s\\n' '{"method":"turn/completed"}'
-            ;;
-          5)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-max-2"}}}'
-            printf '%s\\n' '{"method":"turn/completed"}'
-            ;;
-        esac
-      done
-      """)
-
-      File.chmod!(codex_binary, 0o755)
       System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
 
       on_exit(fn -> System.delete_env("SYMP_TEST_CODEx_TRACE") end)
@@ -1788,38 +1715,18 @@ defmodule SymphonyElixir.CoreTest do
       System.put_env("SYMP_TEST_CODex_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
-      File.write!(codex_binary, """
-      #!/bin/sh
-      trace_file="${SYMP_TEST_CODex_TRACE:-/tmp/codex-args.trace}"
-      count=0
-      printf 'ARGV:%s\\n' \"$*\" >> \"$trace_file\"
-      printf 'CWD:%s\\n' \"$PWD\" >> \"$trace_file\"
-
-      while IFS= read -r line; do
-        count=$((count + 1))
-        printf 'JSON:%s\\n' \"$line\" >> \"$trace_file\"
-        case \"$count\" in
-          1)
-            printf '%s\\n' '{\"id\":1,\"result\":{}}'
-            ;;
-          2)
-            printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-77\"}}}'
-            ;;
-          3)
-            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-77\"}}}'
-            ;;
-          4)
-            printf '%s\\n' '{\"method\":\"turn/completed\"}'
-            exit 0
-            ;;
-          *)
-            exit 0
-            ;;
-        esac
-      done
-      """)
-
-      File.chmod!(codex_binary, 0o755)
+      write_fake_codex!(
+        codex_binary,
+        [
+          ~s({"id":1,"result":{}}),
+          ~s({"id":2,"result":{"thread":{"id":"thread-77"}}}),
+          ~s({"id":3,"result":{"turn":{"id":"turn-77"}}}),
+          %{stdout: ~s({"method":"turn/completed"}), exit: 0}
+        ],
+        trace_env: "SYMP_TEST_CODex_TRACE",
+        default_trace: "/tmp/codex-args.trace",
+        startup_trace: [:argv, :cwd]
+      )
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
@@ -1934,36 +1841,18 @@ defmodule SymphonyElixir.CoreTest do
       System.put_env("SYMP_TEST_CODex_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
-      File.write!(codex_binary, """
-      #!/bin/sh
-      trace_file="${SYMP_TEST_CODex_TRACE:-/tmp/codex-custom-args.trace}"
-      count=0
-      printf 'ARGV:%s\\n' \"$*\" >> \"$trace_file\"
-
-      while IFS= read -r line; do
-        count=$((count + 1))
-        case \"$count\" in
-          1)
-            printf '%s\\n' '{\"id\":1,\"result\":{}}'
-            ;;
-          2)
-            printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-88\"}}}'
-            ;;
-          3)
-            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-88\"}}}'
-            ;;
-          4)
-            printf '%s\\n' '{\"method\":\"turn/completed\"}'
-            exit 0
-            ;;
-          *)
-            exit 0
-            ;;
-        esac
-      done
-      """)
-
-      File.chmod!(codex_binary, 0o755)
+      write_fake_codex!(
+        codex_binary,
+        [
+          ~s({"id":1,"result":{}}),
+          ~s({"id":2,"result":{"thread":{"id":"thread-88"}}}),
+          ~s({"id":3,"result":{"turn":{"id":"turn-88"}}}),
+          %{stdout: ~s({"method":"turn/completed"}), exit: 0}
+        ],
+        trace_env: "SYMP_TEST_CODex_TRACE",
+        default_trace: "/tmp/codex-custom-args.trace",
+        startup_trace: [:argv]
+      )
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
@@ -2019,37 +1908,17 @@ defmodule SymphonyElixir.CoreTest do
       System.put_env("SYMP_TEST_CODex_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
-      File.write!(codex_binary, """
-      #!/bin/sh
-      trace_file="${SYMP_TEST_CODex_TRACE:-/tmp/codex-policy-overrides.trace}"
-      count=0
-
-      while IFS= read -r line; do
-        count=$((count + 1))
-        printf 'JSON:%s\\n' "$line" >> "$trace_file"
-
-        case "$count" in
-          1)
-            printf '%s\\n' '{"id":1,"result":{}}'
-            ;;
-          2)
-            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-99"}}}'
-            ;;
-          3)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-99"}}}'
-            ;;
-          4)
-            printf '%s\\n' '{"method":"turn/completed"}'
-            exit 0
-            ;;
-          *)
-            exit 0
-            ;;
-        esac
-      done
-      """)
-
-      File.chmod!(codex_binary, 0o755)
+      write_fake_codex!(
+        codex_binary,
+        [
+          ~s({"id":1,"result":{}}),
+          ~s({"id":2,"result":{"thread":{"id":"thread-99"}}}),
+          ~s({"id":3,"result":{"turn":{"id":"turn-99"}}}),
+          %{stdout: ~s({"method":"turn/completed"}), exit: 0}
+        ],
+        trace_env: "SYMP_TEST_CODex_TRACE",
+        default_trace: "/tmp/codex-policy-overrides.trace"
+      )
 
       workspace_cache = Path.join(Path.expand(workspace), ".cache")
       File.mkdir_p!(workspace_cache)
