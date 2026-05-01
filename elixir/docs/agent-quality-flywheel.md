@@ -49,13 +49,32 @@ findings have been addressed, unless a manager explicitly moves the issue there.
 
 Pending, failing, or unverifiable required checks are not review-ready. The agent must write the
 failure or blocker to the workpad and/or linked GitHub issue or PR, then keep the issue in
-`In Progress` or return it to `Todo`. If a `Blocked` state exists, the manager may move the issue
-there.
+`In Progress` or return it to `Todo`. If a true blocker prevents completion, the agent should move
+the issue to `Blocked` when that state exists. If Linear returns `:state_not_found` or the workflow
+has no `Blocked` state, the agent must record `Blocked state missing` and keep the issue active for
+manager triage.
+
+Human triage for agent-written blocker comments:
+
+- Read the latest `## Codex Workpad` first, then any separate problem comment.
+- Confirm the comment states what failed, the command/subsystem involved, recovery status, and the
+  next operator inspection target.
+- If the blocker is real and `Blocked` exists, move the issue there; otherwise standardize the team
+  workflow by adding `Blocked` or document the local alternative before rerunning agents.
+- If the comment describes transient recovered noise, leave the issue active and ask the agent to
+  consolidate future notes into the workpad.
 
 If a required gate fails, the agent must summarize the failure in the workpad or linked GitHub issue
 and keep the Linear issue in `In Progress` or return it to `Todo` for repair. Failures discovered by
 automation should create a GitHub issue with the `symphony-optimization` label when they describe a
 system defect outside the current PR.
+
+## Problem comment scope
+
+Agents should not create issue comments for every failed command. Use the persistent workpad for
+ordinary retries, dependency installs that recover, and validation failures fixed within the same
+plan. Create a separate problem comment only when the failure changes the plan, requires a
+workaround, consumes operator attention, or blocks completion.
 
 ## Commit and PR conventions
 

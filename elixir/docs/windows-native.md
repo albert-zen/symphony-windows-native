@@ -162,6 +162,11 @@ A practical flow is:
 - `Backlog`: not picked up by Symphony.
 - `Todo`: Symphony can pick this up. The agent should move it to `In Progress`.
 - `In Progress`: the agent implements and validates.
+- `Blocked`: the agent cannot complete because a required tool, auth grant,
+  dependency, environment, or orchestration condition is missing. Add this state
+  to the Linear team before enabling blocked-state transitions; if it is absent,
+  agents must record `Blocked state missing` and leave the issue in its active
+  state for a manager to triage.
 - `Human Review`: the agent has created or updated a PR, required checks are passing, and review is
   requested or underway.
 - `Rework`: the agent should handle reviewer feedback.
@@ -215,6 +220,23 @@ first line is:
 
 The agent updates that comment with plan, acceptance criteria, validation
 results, commits, blockers, and review status.
+
+For routine failures that are recovered without changing the plan, the workpad is
+enough. A separate Linear problem comment is reserved for notable environment,
+validation, auth, dependency, or orchestration failures that changed the plan,
+required a workaround, or need the next operator's attention. Keep each problem
+comment concise and include:
+
+- what failed,
+- the command or subsystem involved,
+- whether recovery succeeded,
+- what the next operator should inspect.
+
+If the run cannot complete because of a true blocker, the agent should update
+the workpad, add the problem comment, and move the issue to `Blocked`. When the
+team has not configured `Blocked`, the existing Linear adapter returns
+`:state_not_found`; agents should record `Blocked state missing` and keep the
+issue in `In Progress` unless a manager explicitly chooses another state.
 
 ### Completion
 

@@ -77,6 +77,17 @@ Operating model:
     issue in `In Progress` or return it to `Todo`; only a manager may explicitly override this.
 11. Do not move unrelated Backlog issues to Todo.
 12. If you discover an automation/system defect, create a GitHub issue with label `symphony-optimization` and add a Linear mirror in project `Symphony 优化` if the Linear tool is available.
+13. Leave problem breadcrumbs without spamming:
+    - Update the `## Codex Workpad` for recovered transient noise, retries, or routine validation fixes.
+    - Add a separate concise Linear problem comment only for notable environment, validation, auth,
+      dependency, or orchestration failures that changed the plan, required a workaround, or need
+      the next operator's attention.
+    - Problem comments must include what failed, the command/subsystem involved, whether recovery
+      succeeded, and the next thing an operator should inspect.
+14. If a true blocker prevents completion, update the workpad, then try to move the issue to
+    `Blocked`. If the Linear team has no `Blocked` state, record `Blocked state missing` in the
+    workpad/problem comment and keep the issue in its active state unless a manager explicitly moves
+    it elsewhere.
 
 Quality bar:
 
