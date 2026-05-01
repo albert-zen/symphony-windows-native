@@ -358,6 +358,11 @@ Fields:
   - If `$VAR_NAME` resolves to an empty string, treat the key as missing.
 - `project_slug` (string)
   - REQUIRED for dispatch when `tracker.kind == "linear"`.
+- `labels` (list of strings)
+  - Optional candidate routing filter.
+  - Default: empty list, which means no label filter.
+  - When set, a candidate issue MUST have at least one matching label after case-insensitive
+    normalization.
 - `active_states` (list of strings)
   - Default: `Todo`, `In Progress`
 - `terminal_states` (list of strings)
@@ -574,6 +579,7 @@ not require recognizing or validating extension fields unless that extension is 
 - `tracker.endpoint`: string, default `https://api.linear.app/graphql` when `tracker.kind=linear`
 - `tracker.api_key`: string or `$VAR`, canonical env `LINEAR_API_KEY` when `tracker.kind=linear`
 - `tracker.project_slug`: string, REQUIRED when `tracker.kind=linear`
+- `tracker.labels`: list of strings, default `[]`
 - `tracker.active_states`: list of strings, default `["Todo", "In Progress"]`
 - `tracker.terminal_states`: list of strings, default `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]`
 - `polling.interval_ms`: integer, default `30000`
@@ -1154,6 +1160,8 @@ Linear-specific requirements for `tracker.kind == "linear"`:
 - Auth token sent in `Authorization` header
 - `tracker.project_slug` maps to Linear project `slugId`
 - Candidate issue query filters project using `project: { slugId: { eq: $projectSlug } }`
+- Candidate issue routing MAY apply `tracker.labels` either in the Linear query or after issue
+  normalization, but before dispatch eligibility.
 - Issue-state refresh query uses GraphQL issue IDs with variable type `[ID!]`
 - Pagination REQUIRED for candidate issues
 - Page size default: `50`

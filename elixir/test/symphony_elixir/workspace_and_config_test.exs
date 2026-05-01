@@ -473,6 +473,29 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     refute issue.assigned_to_worker
   end
 
+  test "linear client filters candidate issues by optional labels" do
+    matching_issue = %{
+      "id" => "issue-label-match",
+      "identifier" => "MT-101",
+      "title" => "Optimization work",
+      "state" => %{"name" => "Todo"},
+      "labels" => %{"nodes" => [%{"name" => "Symphony-Optimization"}]}
+    }
+
+    skipped_issue = %{
+      "id" => "issue-label-skip",
+      "identifier" => "MT-102",
+      "title" => "Unrelated work",
+      "state" => %{"name" => "Todo"},
+      "labels" => %{"nodes" => [%{"name" => "Support"}]}
+    }
+
+    assert %Issue{identifier: "MT-101", labels: ["symphony-optimization"]} =
+             Client.normalize_issue_for_test(matching_issue, nil, ["symphony-optimization"])
+
+    assert is_nil(Client.normalize_issue_for_test(skipped_issue, nil, ["symphony-optimization"]))
+  end
+
   test "linear client pagination merge helper preserves issue ordering" do
     issue_page_1 = [
       %Issue{id: "issue-1", identifier: "MT-1"},
@@ -850,6 +873,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert config.tracker.endpoint == "https://api.linear.app/graphql"
     assert config.tracker.api_key == nil
     assert config.tracker.project_slug == nil
+    assert config.tracker.labels == []
     assert config.workspace.root == Path.join(System.tmp_dir!(), "symphony_workspaces")
     assert config.worker.max_concurrent_agents_per_host == nil
     assert config.agent.max_concurrent_agents == 10
@@ -887,6 +911,12 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert Config.settings!().codex.command ==
              "codex --config 'model=\"gpt-5.5\"' app-server"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_labels: [" Symphony-Optimization ", "support", "support", ""]
+    )
+
+    assert Config.settings!().tracker.labels == ["symphony-optimization", "support"]
 
     explicit_root =
       Path.join(
