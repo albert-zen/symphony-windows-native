@@ -204,6 +204,15 @@ The app-server session also exposes a `linear_graphql` dynamic tool so the
 agent can update Linear comments and issue state without relying on a separate
 MCP flow.
 
+Agent-initiated moves to `In Review` are guarded by review readiness checks.
+The tool only allows that transition when the issue has a linked GitHub PR and
+the required checks on the PR head are complete and successful. If GitHub branch
+protection metadata is private or unavailable to the Windows runtime, configure
+`codex.review_readiness_required_checks` with the required check names; the gate
+then verifies those public PR check runs/statuses and still fails closed on
+missing, pending, failing, or unverifiable results. Manager overrides must happen
+outside the agent tool call and leave an audit note in Linear or GitHub.
+
 ### Progress tracking
 
 The recommended prompt pattern is to keep one persistent Linear comment whose

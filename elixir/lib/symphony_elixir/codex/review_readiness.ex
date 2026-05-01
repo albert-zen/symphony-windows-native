@@ -7,6 +7,7 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
   @github_accept "application/vnd.github+json"
   @passing_status_states MapSet.new(["success"])
   @passing_check_conclusions MapSet.new(["success", "neutral", "skipped"])
+  alias SymphonyElixir.Config
 
   @context_query """
   query SymphonyReviewReadinessContext($issueId: String!) {
@@ -114,9 +115,14 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
   end
 
   defp transition_request(query, variables) do
+    issue_update_count = issue_update_count(query)
+
     cond do
-      not issue_update?(query) ->
+      issue_update_count == 0 ->
         :not_state_transition
+
+      issue_update_count > 1 ->
+        {:error, :review_readiness_multiple_issue_updates}
 
       explicit_state_id?(query) ->
         with {:ok, issue_id} <- issue_id_from(query, variables),
@@ -142,9 +148,10 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
     end
   end
 
-  defp issue_update?(query) do
-    normalized = String.replace(query, ~r/\s+/, " ")
-    String.contains?(normalized, "issueUpdate")
+  defp issue_update_count(query) do
+    ~r/\bissueUpdate\s*\(/
+    |> Regex.scan(query)
+    |> length()
   end
 
   defp explicit_state_id?(query) do
@@ -305,12 +312,20 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
     with {:ok, pr} <- github_json(github_client, "#{@github_api}/repos/#{owner}/#{repo}/pulls/#{number}"),
          {:ok, head_sha} <- required_string(pr, ["head", "sha"], :review_readiness_missing_pr_head_sha),
          {:ok, base_ref} <- required_string(pr, ["base", "ref"], :review_readiness_missing_pr_base_ref),
-         {:ok, protection} <-
-           github_json(github_client, "#{@github_api}/repos/#{owner}/#{repo}/branches/#{base_ref}/protection/required_status_checks"),
-         {:ok, contexts} <- required_contexts(protection),
+         {:ok, required_checks} <-
+           required_checks(owner, repo, base_ref, github_client),
          {:ok, statuses} <- github_json(github_client, "#{@github_api}/repos/#{owner}/#{repo}/commits/#{head_sha}/status"),
          {:ok, check_runs} <- github_json(github_client, "#{@github_api}/repos/#{owner}/#{repo}/commits/#{head_sha}/check-runs") do
-      verify_contexts(contexts, statuses, check_runs)
+      verify_contexts(required_checks, statuses, check_runs)
+    end
+  end
+
+  defp required_checks(owner, repo, base_ref, github_client) do
+    protection_url = "#{@github_api}/repos/#{owner}/#{repo}/branches/#{base_ref}/protection/required_status_checks"
+
+    case github_json(github_client, protection_url) do
+      {:ok, protection} -> required_check_specs(protection)
+      {:error, reason} -> configured_required_checks_or_error(reason)
     end
   end
 
@@ -334,45 +349,120 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
     end
   end
 
-  defp required_contexts(%{"contexts" => contexts}) when is_list(contexts) do
-    contexts
-    |> Enum.filter(&is_binary/1)
-    |> Enum.reject(&(String.trim(&1) == ""))
-    |> case do
-      [] -> {:error, :review_readiness_required_checks_missing}
-      contexts -> {:ok, contexts}
+  defp required_check_specs(%{"checks" => checks} = payload) when is_list(checks) and checks != [] do
+    specs =
+      checks
+      |> Enum.map(&required_check_spec/1)
+      |> Enum.reject(&is_nil/1)
+
+    if specs == [] do
+      required_context_specs(payload)
+    else
+      {:ok, specs}
     end
   end
 
-  defp required_contexts(_payload), do: {:error, :review_readiness_required_checks_unverifiable}
+  defp required_check_specs(payload), do: required_context_specs(payload)
 
-  defp verify_contexts(contexts, statuses, check_runs) do
+  defp required_check_spec(%{"context" => context} = check) when is_binary(context) do
+    context = String.trim(context)
+
+    if context == "" do
+      nil
+    else
+      %{context: context, app_id: normalize_app_id(Map.get(check, "app_id"))}
+    end
+  end
+
+  defp required_check_spec(_check), do: nil
+
+  defp required_context_specs(%{"contexts" => contexts}) when is_list(contexts) do
+    contexts
+    |> Enum.map(&required_context_spec/1)
+    |> Enum.reject(&is_nil/1)
+    |> case do
+      [] -> {:error, :review_readiness_required_checks_missing}
+      specs -> {:ok, specs}
+    end
+  end
+
+  defp required_context_specs(_payload), do: {:error, :review_readiness_required_checks_unverifiable}
+
+  defp required_context_spec(context) when is_binary(context) do
+    context
+    |> String.trim()
+    |> case do
+      "" -> nil
+      trimmed -> %{context: trimmed, app_id: nil}
+    end
+  end
+
+  defp required_context_spec(_context), do: nil
+
+  defp configured_required_checks_or_error(reason) do
+    configured_required_checks()
+    |> Enum.map(&%{context: &1, app_id: nil})
+    |> case do
+      [] -> {:error, reason}
+      specs -> {:ok, specs}
+    end
+  end
+
+  defp configured_required_checks do
+    Config.settings!().codex.review_readiness_required_checks
+  rescue
+    _ -> []
+  end
+
+  defp verify_contexts(required_checks, statuses, check_runs) do
     status_contexts = latest_status_contexts(statuses)
-    check_contexts = latest_check_contexts(check_runs)
+    check_runs_by_name = latest_check_runs_by_name(check_runs)
 
     failures =
-      Enum.flat_map(contexts, fn context ->
-        cond do
-          Map.get(status_contexts, context) in @passing_status_states ->
-            []
-
-          Map.get(check_contexts, context) in @passing_check_conclusions ->
-            []
-
-          Map.has_key?(status_contexts, context) ->
-            [{context, {:status, Map.get(status_contexts, context)}}]
-
-          Map.has_key?(check_contexts, context) ->
-            [{context, {:check, Map.get(check_contexts, context)}}]
-
-          true ->
-            [{context, :missing}]
-        end
-      end)
+      Enum.flat_map(required_checks, &check_failure(&1, status_contexts, check_runs_by_name))
 
     case failures do
       [] -> :ok
       failures -> {:error, {:review_readiness_required_checks_not_passing, failures}}
+    end
+  end
+
+  defp check_failure(%{context: context, app_id: nil}, status_contexts, check_runs_by_name) do
+    latest_check = latest_check_run(check_runs_by_name, context, nil)
+
+    cond do
+      Map.get(status_contexts, context) in @passing_status_states ->
+        []
+
+      check_run_conclusion(latest_check) in @passing_check_conclusions ->
+        []
+
+      Map.has_key?(status_contexts, context) ->
+        [{context, {:status, Map.get(status_contexts, context)}}]
+
+      latest_check != nil ->
+        [{context, {:check, check_run_conclusion(latest_check)}}]
+
+      true ->
+        [{context, :missing}]
+    end
+  end
+
+  defp check_failure(%{context: context, app_id: app_id}, _status_contexts, check_runs_by_name) do
+    latest_check = latest_check_run(check_runs_by_name, context, app_id)
+
+    cond do
+      check_run_conclusion(latest_check) in @passing_check_conclusions ->
+        []
+
+      latest_check != nil ->
+        [{context, {:check, check_run_conclusion(latest_check)}}]
+
+      Map.has_key?(check_runs_by_name, context) ->
+        [{context, {:check, "app_mismatch"}}]
+
+      true ->
+        [{context, :missing}]
     end
   end
 
@@ -389,11 +479,11 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
 
   defp latest_status_contexts(_statuses), do: %{}
 
-  defp latest_check_contexts(%{"check_runs" => runs}) when is_list(runs) do
+  defp latest_check_runs_by_name(%{"check_runs" => runs}) when is_list(runs) do
     Enum.reduce(runs, %{}, fn run, acc ->
       case Map.get(run, "name") do
         name when is_binary(name) ->
-          Map.put_new(acc, name, check_run_conclusion(run))
+          Map.update(acc, name, [run], &(&1 ++ [run]))
 
         _ ->
           acc
@@ -401,7 +491,21 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
     end)
   end
 
-  defp latest_check_contexts(_runs), do: %{}
+  defp latest_check_runs_by_name(_runs), do: %{}
+
+  defp latest_check_run(check_runs_by_name, context, nil) do
+    check_runs_by_name
+    |> Map.get(context, [])
+    |> List.first()
+  end
+
+  defp latest_check_run(check_runs_by_name, context, app_id) do
+    check_runs_by_name
+    |> Map.get(context, [])
+    |> Enum.find(&(check_run_app_id(&1) == app_id))
+  end
+
+  defp check_run_conclusion(nil), do: "missing"
 
   defp check_run_conclusion(run) do
     case {Map.get(run, "status"), Map.get(run, "conclusion")} do
@@ -410,6 +514,20 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
       _ -> "missing"
     end
   end
+
+  defp check_run_app_id(%{"app" => %{"id" => app_id}}), do: normalize_app_id(app_id)
+  defp check_run_app_id(_run), do: nil
+
+  defp normalize_app_id(app_id) when is_integer(app_id), do: Integer.to_string(app_id)
+
+  defp normalize_app_id(app_id) when is_binary(app_id) do
+    case String.trim(app_id) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp normalize_app_id(_app_id), do: nil
 
   defp reject(issue_or_id, reason, linear_client) do
     issue = if is_map(issue_or_id), do: issue_or_id, else: %{"id" => issue_or_id}
@@ -484,6 +602,7 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
 
   defp rejection_message(:review_readiness_missing_issue_id), do: "the issue id could not be determined."
   defp rejection_message(:review_readiness_missing_state_id), do: "the target state id could not be determined."
+  defp rejection_message(:review_readiness_multiple_issue_updates), do: "multiple issueUpdate mutations were found; review readiness can only verify one state transition at a time."
   defp rejection_message(:review_readiness_issue_unverifiable), do: "Linear issue context could not be verified."
   defp rejection_message(:review_readiness_destination_state_unverifiable), do: "the destination state could not be verified."
   defp rejection_message(:review_readiness_missing_linked_pull_request), do: "no linked GitHub pull request was found."
