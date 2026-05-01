@@ -132,23 +132,28 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
 
   defp transition_request_from_issue_update(query, executable_query, variables) do
     with {:ok, arguments, executable_arguments} <- issue_update_arguments(query, executable_query) do
-      cond do
-        explicit_state_id?(executable_arguments) ->
-          with {:ok, issue_id} <- issue_id_from(arguments, executable_arguments, variables),
-               {:ok, state_id} <- explicit_state_id_from(arguments, executable_arguments, variables) do
-            {:ok, issue_id, state_id}
-          end
-
-        true ->
-          input_transition_request(arguments, executable_arguments, variables)
+      if explicit_state_id?(executable_arguments) do
+        explicit_transition_request(arguments, executable_arguments, variables)
+      else
+        input_transition_request(arguments, executable_arguments, variables)
       end
+    end
+  end
+
+  defp explicit_transition_request(arguments, executable_arguments, variables) do
+    with {:ok, issue_id} <- issue_id_from(arguments, executable_arguments, variables),
+         {:ok, state_id} <- explicit_state_id_from(arguments, executable_arguments, variables) do
+      {:ok, issue_id, state_id}
     end
   end
 
   defp issue_update_arguments(query, executable_query) do
     case Regex.run(~r/\bissueUpdate\s*\((.*?)\)\s*\{/s, executable_query, return: :index) do
       [{_match_start, _match_length}, {arguments_start, arguments_length}] ->
-        {:ok, binary_part(query, arguments_start, arguments_length), binary_part(executable_query, arguments_start, arguments_length)}
+        original_arguments = binary_part(query, arguments_start, arguments_length)
+        executable_arguments = binary_part(executable_query, arguments_start, arguments_length)
+
+        {:ok, original_arguments, executable_arguments}
 
       _ ->
         {:error, :review_readiness_issue_update_unverifiable}
@@ -391,9 +396,7 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
   defp pull_request_matches_issue?(issue, owner, repo, pr) do
     with :ok <- expected_repository?(owner, repo),
          :ok <- head_repository_matches?(pr),
-         :ok <- pull_request_branch_matches_issue?(issue, pr) do
-      :ok
-    end
+         do: pull_request_branch_matches_issue?(issue, pr)
   end
 
   defp expected_repository?(owner, repo) do
