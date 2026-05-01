@@ -825,11 +825,15 @@ defmodule SymphonyElixir.AppServerTest do
       parent = self()
       on_message = fn message -> send(parent, {:app_server_message, message}) end
 
-      {:ok, session} = AppServer.start_session(workspace)
-
       task =
         Task.async(fn ->
-          AppServer.run_turn(session, "Wait for manager steer", issue, on_message: on_message)
+          {:ok, session} = AppServer.start_session(workspace)
+
+          try do
+            AppServer.run_turn(session, "Wait for manager steer", issue, on_message: on_message)
+          after
+            AppServer.stop_session(session)
+          end
         end)
 
       assert_receive {:app_server_message, %{event: :session_started, session_id: "thread-720-turn-720"}},
