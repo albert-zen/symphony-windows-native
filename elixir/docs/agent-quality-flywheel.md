@@ -10,7 +10,9 @@ Every agent PR must record these checks in the PR body and the Linear `## Codex 
 
 - `validate-pr-description`: the PR body follows `.github/pull_request_template.md`.
 - `make-all`: the repository gate runs `make all` from `elixir/`.
-- `diff-check`: the repository gate runs `git diff --check` through `make all`.
+- `diff-check`: the repository gate runs `git diff --check` through `make all`. In CI it
+  must check the committed PR diff with `DIFF_RANGE=<base>...HEAD`; locally, set
+  `DIFF_RANGE` or let the target check uncommitted working-tree changes.
 - `windows-native-test`: Windows CI runs the focused native shell and workspace/config profile.
 - Targeted checks for the changed behavior, such as a single ExUnit file or mix task test.
 

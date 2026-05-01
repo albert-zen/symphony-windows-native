@@ -1,6 +1,7 @@
 .PHONY: help all setup deps build fmt fmt-check diff-check lint test windows-native-test coverage ci dialyzer e2e
 
 MIX ?= mix
+DIFF_RANGE ?=
 
 help:
 	@echo "Targets: setup, deps, fmt, fmt-check, diff-check, lint, test, windows-native-test, coverage, dialyzer, e2e, ci"
@@ -21,7 +22,11 @@ fmt-check:
 	$(MIX) format --check-formatted
 
 diff-check:
+ifeq ($(strip $(DIFF_RANGE)),)
 	git diff --check
+else
+	git diff --check $(DIFF_RANGE)
+endif
 
 lint:
 	$(MIX) lint
