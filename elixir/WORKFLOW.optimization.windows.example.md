@@ -41,6 +41,11 @@ codex:
   thread_sandbox: danger-full-access
   # Used when GitHub branch protection required-check metadata is private or unavailable.
   review_readiness_repository: albert-zen/symphony-windows-native
+  command_watchdog_long_running_ms: 300000
+  command_watchdog_idle_ms: 120000
+  command_watchdog_stalled_ms: 300000
+  command_watchdog_repeated_output_limit: 20
+  command_watchdog_block_on_stall: false
   review_readiness_required_checks:
     - make-all
     - validate-pr-description

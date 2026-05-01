@@ -607,7 +607,12 @@ defmodule SymphonyElixir.StatusDashboard do
     turn_count = Map.get(running_entry, :turn_count, 0)
     age = format_cell(format_runtime_and_turns(runtime_seconds, turn_count), @running_age_width)
     event = running_entry.last_codex_event || "none"
-    event_label = format_cell(summarize_message(running_entry.last_codex_message), running_event_width)
+
+    event_label =
+      [format_command_watchdog(running_entry), summarize_message(running_entry.last_codex_message)]
+      |> Enum.reject(&(&1 in [nil, ""]))
+      |> Enum.join(" | ")
+      |> format_cell(running_event_width)
 
     tokens = format_count(total_tokens) |> format_cell(@running_tokens_width, :right)
 
@@ -653,6 +658,28 @@ defmodule SymphonyElixir.StatusDashboard do
   @doc false
   @spec tps_graph_for_test([{integer(), integer()}], integer(), integer()) :: String.t()
   def tps_graph_for_test(samples, now_ms, current_tokens), do: tps_graph(samples, now_ms, current_tokens)
+
+  defp format_command_watchdog(%{classification: classification, age_ms: age_ms} = watchdog) do
+    command =
+      case Map.get(watchdog, :command) do
+        value when is_binary(value) -> value
+        _ -> "command"
+      end
+
+    "cmd #{classification} #{format_watchdog_age(age_ms)} #{command}"
+  end
+
+  defp format_command_watchdog(%{command_watchdog: nil}), do: nil
+  defp format_command_watchdog(%{} = running_entry), do: format_command_watchdog(Map.get(running_entry, :command_watchdog))
+  defp format_command_watchdog(_watchdog), do: nil
+
+  defp format_watchdog_age(age_ms) when is_integer(age_ms) do
+    age_ms
+    |> div(1_000)
+    |> format_runtime_seconds()
+  end
+
+  defp format_watchdog_age(_age_ms), do: "n/a"
 
   defp format_retry_rows(retrying) do
     if retrying == [] do
