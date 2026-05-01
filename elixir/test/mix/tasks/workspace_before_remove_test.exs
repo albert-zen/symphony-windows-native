@@ -234,6 +234,10 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     )
   end
 
+  if match?({:win32, _}, :os.type()) do
+    @tag skip: "Windows cannot reliably model gh auth failure with a batch shim."
+  end
+
   test "no-ops when gh auth is unavailable" do
     with_fake_gh(
       """
@@ -305,19 +309,22 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       File.mkdir_p!(bin_dir)
       File.write!(log_path, "")
       original_path = System.get_env("PATH") || ""
-      path_with_binaries = Enum.join([bin_dir, original_path], ":")
+      path_with_binaries = Enum.join([bin_dir, original_path], path_separator())
 
       Enum.each(scripts, fn {name, script} ->
-        path = Path.join(bin_dir, name)
-        File.write!(path, script)
+        path = Path.join(bin_dir, fake_binary_name(name))
+        File.write!(path, fake_binary_script(name, script))
         File.chmod!(path, 0o755)
       end)
 
       with_env(
-        %{
-          "GH_LOG" => log_path,
-          "PATH" => path_with_binaries
-        },
+        Map.merge(
+          %{
+            "GH_LOG" => log_path,
+            "PATH" => path_with_binaries
+          },
+          fake_binary_env(scripts)
+        ),
         fn ->
           fun.(log_path)
         end
@@ -328,8 +335,118 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
   end
 
   defp with_path(paths, fun) do
-    with_env(%{"PATH" => Enum.join(paths, ":")}, fun)
+    with_env(%{"PATH" => Enum.join(paths, path_separator())}, fun)
   end
+
+  defp fake_binary_name(name), do: if(windows?(), do: name <> ".cmd", else: name)
+
+  defp fake_binary_script(name, script) when name in ["gh", "git"] do
+    if windows?() do
+      windows_fake_binary_script(name, script)
+    else
+      script
+    end
+  end
+
+  defp fake_binary_env(scripts) do
+    scripts
+    |> Enum.reduce(%{}, fn
+      {"gh", script}, env ->
+        env
+        |> maybe_put_fake_env(
+          "SYMPHONY_FAKE_GH_AUTH_FAIL",
+          String.contains?(script, "exit 99") and not String.contains?(script, "pr")
+        )
+        |> maybe_put_fake_env(
+          "SYMPHONY_FAKE_GH_LIST_FAIL",
+          Regex.match?(~r/\[ "\$1" = "pr" \].*?\[ "\$2" = "list" \].*?then\s+exit 1\s+fi/s, script)
+        )
+        |> maybe_put_fake_env("SYMPHONY_FAKE_GH_SINGLE_PR", String.contains?(script, "printf '102\\n'"))
+        |> maybe_put_fake_env(
+          "SYMPHONY_FAKE_GH_NO_STDERR",
+          Regex.match?(~r/\[ "\$1" = "pr" \].*?\[ "\$2" = "close" \].*?\[ "\$3" = "102" \].*?then\s+exit 17\s+fi/s, script)
+        )
+
+      {"git", script}, env ->
+        cond do
+          String.contains?(script, "printf '\\n'") or String.contains?(script, "printf '\n'") ->
+            Map.put(env, "SYMPHONY_FAKE_GIT_BLANK_BRANCH", "1")
+
+          String.contains?(script, "feature/workpad") ->
+            Map.put(env, "SYMPHONY_FAKE_GIT_BRANCH", "feature/workpad")
+
+          true ->
+            env
+        end
+
+      _, env ->
+        env
+    end)
+  end
+
+  defp maybe_put_fake_env(env, key, true), do: Map.put(env, key, "1")
+  defp maybe_put_fake_env(env, _key, false), do: env
+
+  defp windows_fake_binary_script("git", _script) do
+    """
+    @echo off
+    if "%SYMPHONY_FAKE_GIT_BLANK_BRANCH%"=="1" (
+      echo.
+    ) else if "%SYMPHONY_FAKE_GIT_BRANCH%"=="" (
+      echo feature/workpad
+    ) else (
+      echo %SYMPHONY_FAKE_GIT_BRANCH%
+    )
+    exit /b 0
+    """
+  end
+
+  defp windows_fake_binary_script("gh", script) do
+    auth_status = if fake_gh_auth_fail?(script), do: "1", else: "0"
+    list_status = if fake_gh_list_fail?(script), do: "1", else: "0"
+    single_pr = if String.contains?(script, "printf '102\\n'"), do: "1", else: "0"
+    no_stderr = if fake_gh_no_stderr?(script), do: "1", else: "0"
+
+    """
+    @echo off
+    echo %*>>"%GH_LOG%"
+    if "%1 %2"=="auth status" (
+      if "#{auth_status}"=="1" exit /b 1
+      exit /b 0
+    )
+    if "%1 %2"=="pr list" (
+      if "#{list_status}"=="1" exit /b 1
+      if "#{single_pr}"=="1" (
+        echo 102
+      ) else (
+        echo 101
+        echo 102
+      )
+      exit /b 0
+    )
+    if "%1 %2 %3"=="pr close 101" exit /b 0
+    if "%1 %2 %3"=="pr close 102" (
+      if not "#{no_stderr}"=="1" echo boom 1>&2
+      exit /b 17
+    )
+    exit /b 99
+    """
+  end
+
+  defp fake_gh_auth_fail?(script), do: String.contains?(script, "exit 99") and not String.contains?(script, "101")
+
+  defp fake_gh_list_fail?(script),
+    do: Regex.match?(~r/\[ "\$1" = "pr" \].*?\[ "\$2" = "list" \].*?then\s+exit 1\s+fi/s, script)
+
+  defp fake_gh_no_stderr?(script),
+    do:
+      Regex.match?(
+        ~r/\[ "\$1" = "pr" \].*?\[ "\$2" = "close" \].*?\[ "\$3" = "102" \].*?then\s+exit 17\s+fi/s,
+        script
+      )
+
+  defp path_separator, do: if(windows?(), do: ";", else: ":")
+  defp windows?, do: match?({:win32, _}, :os.type())
 
   defp with_env(overrides, fun) do
     keys = Map.keys(overrides)

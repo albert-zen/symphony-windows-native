@@ -78,6 +78,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
       {:ok, output} ->
         output
         |> String.split("\n", trim: true)
+        |> Enum.map(&String.trim/1)
         |> Enum.reject(&(&1 == ""))
 
       {:error, _reason} ->
@@ -131,10 +132,22 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
         {:error, {:enoent, ""}}
 
       path ->
-        case System.cmd(path, args, stderr_to_stdout: true) do
+        {command, command_args} = windows_command_args(path, args)
+
+        case System.cmd(command, command_args, stderr_to_stdout: true) do
           {output, 0} -> {:ok, output}
           {output, status} -> {:error, {status, output}}
         end
     end
   end
+
+  defp windows_command_args(path, args) do
+    if windows?() and String.downcase(Path.extname(path)) in [".bat", ".cmd"] do
+      {System.find_executable("cmd.exe") || "cmd.exe", ["/c", path | args]}
+    else
+      {path, args}
+    end
+  end
+
+  defp windows?, do: match?({:win32, _}, :os.type())
 end

@@ -211,6 +211,14 @@ The observability UI now runs on a minimal Phoenix stack:
 make all
 ```
 
+On Windows checkouts without GNU Make installed, run the same targets from PowerShell or `cmd.exe`
+through the repository shim in this directory:
+
+```powershell
+make.cmd all
+make.cmd windows-native-test
+```
+
 For Windows shell, workspace/config, workflow, or path-handling changes, run the focused Windows
 profile as well:
 

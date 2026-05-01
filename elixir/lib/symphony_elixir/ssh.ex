@@ -4,7 +4,8 @@ defmodule SymphonyElixir.SSH do
   @spec run(String.t(), String.t(), keyword()) :: {:ok, {String.t(), non_neg_integer()}} | {:error, term()}
   def run(host, command, opts \\ []) when is_binary(host) and is_binary(command) do
     with {:ok, executable} <- ssh_executable() do
-      {:ok, System.cmd(executable, ssh_args(host, command), opts)}
+      {command_executable, command_args} = windows_command_args(executable, ssh_args(host, command))
+      {:ok, System.cmd(command_executable, command_args, opts)}
     end
   end
 
@@ -13,16 +14,18 @@ defmodule SymphonyElixir.SSH do
     with {:ok, executable} <- ssh_executable() do
       line_bytes = Keyword.get(opts, :line)
 
+      {command_executable, command_args} = windows_command_args(executable, ssh_args(host, command))
+
       port_opts =
         [
           :binary,
           :exit_status,
           :stderr_to_stdout,
-          args: Enum.map(ssh_args(host, command), &String.to_charlist/1)
+          args: Enum.map(command_args, &String.to_charlist/1)
         ]
         |> maybe_put_line_option(line_bytes)
 
-      {:ok, Port.open({:spawn_executable, String.to_charlist(executable)}, port_opts)}
+      {:ok, Port.open({:spawn_executable, String.to_charlist(command_executable)}, port_opts)}
     end
   end
 
@@ -37,6 +40,16 @@ defmodule SymphonyElixir.SSH do
       executable -> {:ok, executable}
     end
   end
+
+  defp windows_command_args(executable, args) do
+    if windows?() and String.downcase(Path.extname(executable)) in [".bat", ".cmd"] do
+      {System.find_executable("cmd.exe") || "cmd.exe", ["/c", executable | args]}
+    else
+      {executable, args}
+    end
+  end
+
+  defp windows?, do: match?({:win32, _}, :os.type())
 
   defp ssh_args(host, command) do
     %{destination: destination, port: port} = parse_target(host)
