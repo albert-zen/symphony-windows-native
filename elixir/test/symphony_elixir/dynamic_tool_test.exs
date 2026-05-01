@@ -220,6 +220,71 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     refute_received {:workpad_recorded, _}
   end
 
+  test "linear_graphql keeps literal issueUpdate offsets stable when comments appear first" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => """
+          mutation MoveIssueToState {
+            # spoof: issueUpdate(id: "issue-2", input: {stateId: "state-todo"}) { success }
+            issueUpdate(id: "issue-1", input: {stateId: "state-review"}) {
+              success
+            }
+          }
+          """,
+          "variables" => %{}
+        },
+        linear_client: review_linear_client(test_pid, issue_with_pr_and_todo_state()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{"head" => %{"sha" => "abc123"}, "base" => %{"ref" => "main"}},
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{"check_runs" => []}
+          })
+      )
+
+    assert response["success"] == false
+    assert_received {:workpad_recorded, body}
+    assert body =~ "make-all=missing"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql treats UTF-8 BOM as ignored whitespace before issueUpdate arguments" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => """
+          mutation MoveIssueToState($issueId: String!, $stateId: String!) {
+            issueUpdate﻿(id: $issueId, input: {stateId: $stateId}) {
+              success
+            }
+          }
+          """,
+          "variables" => %{"issueId" => "issue-1", "stateId" => "state-review"}
+        },
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{"head" => %{"sha" => "abc123"}, "base" => %{"ref" => "main"}},
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{"check_runs" => []}
+          })
+      )
+
+    assert response["success"] == false
+    assert_received {:workpad_recorded, body}
+    assert body =~ "make-all=missing"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
   test "linear_graphql requires matching app identity for app-bound required checks" do
     test_pid = self()
 
@@ -922,6 +987,13 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
   defp issue_without_pr do
     put_in(issue_with_pr(), ["attachments", "nodes"], [])
+  end
+
+  defp issue_with_pr_and_todo_state do
+    put_in(issue_with_pr(), ["team", "states", "nodes"], [
+      %{"id" => "state-todo", "name" => "Todo"},
+      %{"id" => "state-review", "name" => "In Review"}
+    ])
   end
 
   defp issue_with_workpad_pr do
