@@ -35,6 +35,30 @@ defmodule SymphonyElixir.Tracker.Memory do
      end)}
   end
 
+  @spec acquire_issue_claim(Issue.t()) :: {:ok, map()} | {:error, term()}
+  def acquire_issue_claim(%Issue{id: issue_id, identifier: identifier}) when is_binary(issue_id) do
+    claim = %{
+      id: "memory-#{issue_id}",
+      owner: "memory",
+      claimed_at: DateTime.utc_now(),
+      expires_at: DateTime.add(DateTime.utc_now(), 4, :hour)
+    }
+
+    send_event({:memory_tracker_claim_acquired, issue_id, identifier, claim})
+    {:ok, claim}
+  end
+
+  def acquire_issue_claim(_issue), do: {:error, :invalid_issue_claim}
+
+  @spec release_issue_claim(String.t()) :: :ok | {:error, term()}
+  def release_issue_claim(issue_id), do: release_issue_claim(issue_id, nil)
+
+  @spec release_issue_claim(String.t(), map() | nil) :: :ok | {:error, term()}
+  def release_issue_claim(issue_id, _claim) when is_binary(issue_id) do
+    send_event({:memory_tracker_claim_released, issue_id})
+    :ok
+  end
+
   @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}
   def create_comment(issue_id, body) do
     send_event({:memory_tracker_comment, issue_id, body})
