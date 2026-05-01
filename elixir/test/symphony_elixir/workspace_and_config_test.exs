@@ -18,7 +18,40 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     path
     |> Path.expand()
     |> String.replace("\\", "/")
-    |> then(fn expanded -> if windows?(), do: String.downcase(expanded), else: expanded end)
+    |> then(fn expanded ->
+      if windows?() do
+        expanded
+        |> String.downcase()
+        |> normalize_windows_temp_root_for_assertion()
+      else
+        expanded
+      end
+    end)
+  end
+
+  defp normalize_windows_temp_root_for_assertion(path) do
+    windows_temp_roots_for_assertion()
+    |> Enum.reduce(path, fn root, normalized ->
+      String.replace(normalized, root, "<windows-temp-root>")
+    end)
+  end
+
+  defp windows_temp_roots_for_assertion do
+    [
+      System.tmp_dir!(),
+      System.get_env("TEMP"),
+      System.get_env("TMP"),
+      System.get_env("USERPROFILE") && Path.join(System.get_env("USERPROFILE"), "AppData/Local/Temp")
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(fn path ->
+      path
+      |> Path.expand()
+      |> String.replace("\\", "/")
+      |> String.downcase()
+    end)
+    |> Enum.uniq()
+    |> Enum.sort_by(&byte_size/1, :desc)
   end
 
   defp shell_quote(value) when is_binary(value) do
@@ -234,8 +267,14 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       assert {:ok, canonical_outside_root} = SymphonyElixir.PathSafety.canonicalize(outside_root)
       assert {:ok, canonical_workspace_root} = SymphonyElixir.PathSafety.canonicalize(workspace_root)
 
-      assert {:error, {:workspace_outside_root, ^canonical_outside_root, ^canonical_workspace_root}} =
+      assert {:error, {:workspace_outside_root, outside_path, root_path}} =
                Workspace.create_for_issue("MT-SYM")
+
+      assert normalize_path_for_assertion(outside_path) ==
+               normalize_path_for_assertion(canonical_outside_root)
+
+      assert normalize_path_for_assertion(root_path) ==
+               normalize_path_for_assertion(canonical_workspace_root)
     after
       File.rm_rf(test_root)
     end
@@ -265,7 +304,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
                SymphonyElixir.PathSafety.canonicalize(Path.join(actual_root, "MT-LINK"))
 
       assert {:ok, workspace} = Workspace.create_for_issue("MT-LINK")
-      assert workspace == canonical_workspace
+      assert normalize_path_for_assertion(workspace) == normalize_path_for_assertion(canonical_workspace)
       assert File.dir?(workspace)
     after
       File.rm_rf(test_root)

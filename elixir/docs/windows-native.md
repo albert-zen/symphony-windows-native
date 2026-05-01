@@ -162,7 +162,8 @@ A practical flow is:
 - `Backlog`: not picked up by Symphony.
 - `Todo`: Symphony can pick this up. The agent should move it to `In Progress`.
 - `In Progress`: the agent implements and validates.
-- `Human Review`: the agent has created or updated a PR and is waiting.
+- `Human Review`: the agent has created or updated a PR, required checks are passing, and review is
+  requested or underway.
 - `Rework`: the agent should handle reviewer feedback.
 - `Merging`: the agent should run the repository's merge/land process.
 - `Done`: terminal. Symphony stops the active agent.
@@ -240,6 +241,19 @@ The important production path for local Windows workers is:
 - direct Codex app-server process startup
 - clean JSON-RPC stdio
 - Linear issue state updates through `linear_graphql`
+
+## Quality gates for Windows changes
+
+Windows shell, workspace/config, workflow, or path-handling changes should run the focused native
+profile:
+
+```powershell
+make windows-native-test
+```
+
+Agent PRs should also follow the [agent quality flywheel](agent-quality-flywheel.md): keep one
+Linear workpad, use Conventional Commits, record validation in the PR body, and wait for required
+GitHub checks before moving the Linear issue to review.
 
 ## Troubleshooting
 
