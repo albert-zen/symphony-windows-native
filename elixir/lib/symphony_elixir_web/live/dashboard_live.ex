@@ -233,8 +233,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <tr>
                     <th>Issue</th>
                     <th>Attempt</th>
+                    <th>Kind</th>
+                    <th>Branch</th>
                     <th>Due at</th>
                     <th>Error</th>
+                    <th>Prior error</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -246,8 +249,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       </div>
                     </td>
                     <td><%= entry.attempt %></td>
+                    <td><%= entry.error_kind || "n/a" %></td>
+                    <td class="mono"><%= entry.branch_name || "n/a" %></td>
                     <td class="mono"><%= entry.due_at || "n/a" %></td>
                     <td><%= entry.error || "n/a" %></td>
+                    <td><%= entry.prior_error || "n/a" %></td>
                   </tr>
                 </tbody>
               </table>
