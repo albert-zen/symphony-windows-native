@@ -49,6 +49,16 @@ defmodule SymphonyElixirWeb.Presenter do
     end
   end
 
+  @spec steer_payload(String.t(), String.t(), String.t() | nil, GenServer.name()) ::
+          {:ok, map()} | {:error, atom()}
+  def steer_payload(issue_identifier, message, expected_session_id, orchestrator)
+      when is_binary(issue_identifier) and is_binary(message) do
+    case Orchestrator.steer_worker(orchestrator, issue_identifier, message, expected_session_id) do
+      {:ok, payload} -> {:ok, Map.update!(payload, :queued_at, &DateTime.to_iso8601/1)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   @spec refresh_payload(GenServer.name()) :: {:ok, map()} | {:error, :unavailable}
   def refresh_payload(orchestrator) do
     case Orchestrator.request_refresh(orchestrator) do
@@ -64,6 +74,8 @@ defmodule SymphonyElixirWeb.Presenter do
     %{
       issue_identifier: issue_identifier,
       issue_id: issue_id_from_entries(running, retry),
+      title: running && Map.get(running, :title),
+      url: running && Map.get(running, :url),
       status: issue_status(running, retry),
       workspace: %{
         path: workspace_path(issue_identifier, running, retry),
@@ -79,6 +91,7 @@ defmodule SymphonyElixirWeb.Presenter do
         codex_session_logs: []
       },
       recent_events: (running && recent_events_payload(running)) || [],
+      timeline: (running && timeline_payload(running)) || [],
       last_error: retry && retry.error,
       tracked: %{}
     }
@@ -99,10 +112,14 @@ defmodule SymphonyElixirWeb.Presenter do
     %{
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
+      title: Map.get(entry, :title),
+      url: Map.get(entry, :url),
       state: entry.state,
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
       session_id: entry.session_id,
+      thread_id: Map.get(entry, :thread_id),
+      turn_id: Map.get(entry, :turn_id),
       turn_count: Map.get(entry, :turn_count, 0),
       last_event: entry.last_codex_event,
       last_message: summarize_message(entry.last_codex_message),
@@ -133,6 +150,8 @@ defmodule SymphonyElixirWeb.Presenter do
       worker_host: Map.get(running, :worker_host),
       workspace_path: Map.get(running, :workspace_path),
       session_id: running.session_id,
+      thread_id: Map.get(running, :thread_id),
+      turn_id: Map.get(running, :turn_id),
       turn_count: Map.get(running, :turn_count, 0),
       state: running.state,
       started_at: iso8601(running.started_at),
@@ -176,6 +195,28 @@ defmodule SymphonyElixirWeb.Presenter do
       }
     ]
     |> Enum.reject(&is_nil(&1.at))
+  end
+
+  defp timeline_payload(running) do
+    running
+    |> Map.get(:recent_codex_events, [])
+    |> Enum.map(&timeline_event_payload/1)
+  end
+
+  defp timeline_event_payload(event) when is_map(event) do
+    %{
+      at: iso8601(event[:timestamp]),
+      event: event[:event],
+      message: summarize_message(event),
+      raw: raw_event_payload(event),
+      session_id: event[:session_id],
+      thread_id: event[:thread_id],
+      turn_id: event[:turn_id]
+    }
+  end
+
+  defp raw_event_payload(event) when is_map(event) do
+    event[:raw] || event[:message]
   end
 
   defp summarize_message(nil), do: nil

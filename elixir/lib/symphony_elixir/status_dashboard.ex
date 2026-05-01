@@ -1145,12 +1145,36 @@ defmodule SymphonyElixir.StatusDashboard do
   defp humanize_codex_event(:unsupported_tool_call, _message, payload),
     do: humanize_dynamic_tool_event("unsupported dynamic tool call rejected", payload)
 
+  defp humanize_codex_event(:manager_steer_queued, message, payload),
+    do: "manager steer queued: #{manager_steer_text(message, payload)}"
+
+  defp humanize_codex_event(:manager_steer_submitted, message, payload),
+    do: "manager steer submitted: #{manager_steer_text(message, payload)}"
+
+  defp humanize_codex_event(:manager_steer_delivered, message, payload),
+    do: "manager steer delivered: #{manager_steer_text(message, payload)}"
+
+  defp humanize_codex_event(:manager_steer_rejected, message, _payload),
+    do: "manager steer rejected: #{format_reason(map_value(message, ["reason", :reason]))}"
+
+  defp humanize_codex_event(:manager_steer_failed, message, _payload),
+    do: "manager steer failed: #{format_reason(map_value(message, ["reason", :reason]))}"
+
   defp humanize_codex_event(:turn_ended_with_error, message, _payload), do: "turn ended with error: #{format_reason(message)}"
   defp humanize_codex_event(:startup_failed, message, _payload), do: "startup failed: #{format_reason(message)}"
   defp humanize_codex_event(:turn_failed, _message, payload), do: humanize_codex_method("turn/failed", payload)
   defp humanize_codex_event(:turn_cancelled, _message, _payload), do: "turn cancelled"
   defp humanize_codex_event(:malformed, _message, _payload), do: "malformed JSON event from codex"
   defp humanize_codex_event(_event, _message, _payload), do: nil
+
+  defp manager_steer_text(message, payload) do
+    text =
+      map_value(message, ["message", :message]) ||
+        if(is_binary(payload), do: payload, else: nil) ||
+        ""
+
+    inline_text(text)
+  end
 
   defp unwrap_codex_message_payload(%{} = message) do
     cond do

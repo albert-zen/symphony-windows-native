@@ -13,6 +13,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
     socket =
       socket
       |> assign(:payload, load_payload())
+      |> assign(:detail_payload, nil)
+      |> assign(:detail_error, nil)
+      |> assign(:issue_identifier, nil)
       |> assign(:now, DateTime.utc_now())
 
     if connected?(socket) do
@@ -24,6 +27,19 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   @impl true
+  def handle_params(%{"issue_identifier" => issue_identifier}, _uri, socket) do
+    {:noreply, assign_detail_payload(socket, issue_identifier)}
+  end
+
+  def handle_params(_params, _uri, socket) do
+    {:noreply,
+     socket
+     |> assign(:detail_payload, nil)
+     |> assign(:detail_error, nil)
+     |> assign(:issue_identifier, nil)}
+  end
+
+  @impl true
   def handle_info(:runtime_tick, socket) do
     schedule_runtime_tick()
     {:noreply, assign(socket, :now, DateTime.utc_now())}
@@ -31,15 +47,163 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   @impl true
   def handle_info(:observability_updated, socket) do
-    {:noreply,
-     socket
-     |> assign(:payload, load_payload())
-     |> assign(:now, DateTime.utc_now())}
+    socket =
+      socket
+      |> assign(:payload, load_payload())
+      |> assign(:now, DateTime.utc_now())
+
+    socket =
+      case socket.assigns[:issue_identifier] do
+        issue_identifier when is_binary(issue_identifier) -> assign_detail_payload(socket, issue_identifier)
+        _ -> socket
+      end
+
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("steer", %{"steer" => %{"message" => message, "session_id" => session_id}}, socket) do
+    issue_identifier = socket.assigns.issue_identifier
+
+    case Presenter.steer_payload(issue_identifier, message, session_id, orchestrator()) do
+      {:ok, _payload} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Steer message queued for #{issue_identifier}.")
+         |> assign_detail_payload(issue_identifier)}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, steer_error_message(reason))}
+    end
   end
 
   @impl true
   def render(assigns) do
     ~H"""
+    <%= if @live_action == :worker_detail do %>
+      <section class="dashboard-shell">
+        <header class="hero-card">
+          <div class="hero-grid">
+            <div>
+              <p class="eyebrow">Worker Detail</p>
+              <h1 class="hero-title"><%= @issue_identifier %></h1>
+              <p class="hero-copy">
+                Human-readable Codex session activity, raw event details, and targeted manager steering.
+              </p>
+            </div>
+            <div class="status-stack">
+              <a class="subtle-button" href="/">Dashboard</a>
+            </div>
+          </div>
+        </header>
+
+        <%= if @detail_error do %>
+          <section class="error-card">
+            <h2 class="error-title">Worker unavailable</h2>
+            <p class="error-copy"><%= @detail_error %></p>
+          </section>
+        <% else %>
+          <% detail = @detail_payload %>
+          <% running =
+            detail.running ||
+              %{
+                state: detail.status,
+                session_id: nil,
+                turn_count: 0,
+                tokens: %{input_tokens: nil, output_tokens: nil, total_tokens: nil}
+              } %>
+
+          <section class="metric-grid">
+            <article class="metric-card">
+              <p class="metric-label">State</p>
+              <p class="metric-value"><%= running.state %></p>
+              <p class="metric-detail"><%= detail.title || detail.issue_identifier %></p>
+            </article>
+            <article class="metric-card">
+              <p class="metric-label">Session</p>
+              <p class="metric-value mono detail-session"><%= running.session_id || "n/a" %></p>
+              <p class="metric-detail">Turn <%= running.turn_count %></p>
+            </article>
+            <article class="metric-card">
+              <p class="metric-label">Workspace</p>
+              <p class="metric-value detail-path"><%= detail.workspace.path %></p>
+              <p class="metric-detail"><%= detail.workspace.host || "local" %></p>
+            </article>
+            <article class="metric-card">
+              <p class="metric-label">Tokens</p>
+              <p class="metric-value numeric"><%= format_int(running.tokens.total_tokens) %></p>
+              <p class="metric-detail numeric">
+                In <%= format_int(running.tokens.input_tokens) %> / Out <%= format_int(running.tokens.output_tokens) %>
+              </p>
+            </article>
+          </section>
+
+          <section class="section-card">
+            <div class="section-header">
+              <div>
+                <h2 class="section-title">Steer worker</h2>
+                <p class="section-copy">
+                  <%= if detail.running do %>
+                    Send an auditable manager message to this exact active session.
+                  <% else %>
+                    This worker is not running, so steering is disabled.
+                  <% end %>
+                </p>
+              </div>
+            </div>
+
+            <.form for={%{}} as={:steer} phx-submit="steer" class="steer-form">
+              <input type="hidden" name="steer[session_id]" value={running.session_id || ""} />
+              <textarea
+                name="steer[message]"
+                class="steer-input"
+                rows="4"
+                placeholder="Send a targeted instruction to this running worker"
+                disabled={is_nil(running.session_id)}
+              ></textarea>
+              <button type="submit" disabled={is_nil(running.session_id)}>Send steer</button>
+            </.form>
+          </section>
+
+          <section class="section-card">
+            <div class="section-header">
+              <div>
+                <h2 class="section-title">Timeline</h2>
+                <p class="section-copy">Readable Codex updates with raw JSON preserved per event.</p>
+              </div>
+            </div>
+
+            <%= if detail.timeline == [] do %>
+              <p class="empty-state">No Codex events recorded yet.</p>
+            <% else %>
+              <ol class="timeline-list">
+                <li :for={event <- detail.timeline} class="timeline-item">
+                  <div class="timeline-main">
+                    <span class="timeline-event"><%= event_label(event.event) %></span>
+                    <span class="timeline-time mono"><%= event.at || "pending" %></span>
+                  </div>
+                  <p class="timeline-message"><%= event.message || "n/a" %></p>
+                  <details class="raw-details">
+                    <summary>Raw JSON</summary>
+                    <pre class="code-panel"><%= pretty_value(event.raw) %></pre>
+                  </details>
+                </li>
+              </ol>
+            <% end %>
+          </section>
+
+          <section class="section-card">
+            <div class="section-header">
+              <div>
+                <h2 class="section-title">Raw worker payload</h2>
+                <p class="section-copy">Full JSON projection used by the detail page.</p>
+              </div>
+            </div>
+            <pre class="code-panel"><%= pretty_value(detail) %></pre>
+          </section>
+        <% end %>
+      </section>
+    <% else %>
     <section class="dashboard-shell">
       <header class="hero-card">
         <div class="hero-grid">
@@ -153,6 +317,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="issue-stack">
                         <span class="issue-id"><%= entry.issue_identifier %></span>
+                        <a class="issue-link" href={"/workers/#{entry.issue_identifier}"}>Worker detail</a>
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
                       </div>
                     </td>
@@ -246,11 +411,28 @@ defmodule SymphonyElixirWeb.DashboardLive do
         </section>
       <% end %>
     </section>
+    <% end %>
     """
   end
 
   defp load_payload do
     Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
+  end
+
+  defp assign_detail_payload(socket, issue_identifier) do
+    case Presenter.issue_payload(issue_identifier, orchestrator(), snapshot_timeout_ms()) do
+      {:ok, payload} ->
+        socket
+        |> assign(:detail_payload, payload)
+        |> assign(:detail_error, nil)
+        |> assign(:issue_identifier, issue_identifier)
+
+      {:error, :issue_not_found} ->
+        socket
+        |> assign(:detail_payload, nil)
+        |> assign(:detail_error, "No active or retrying worker was found for #{issue_identifier}.")
+        |> assign(:issue_identifier, issue_identifier)
+    end
   end
 
   defp orchestrator do
@@ -308,6 +490,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp format_int(_value), do: "n/a"
+
+  defp event_label(event) when is_atom(event), do: event |> Atom.to_string() |> String.replace("_", " ")
+  defp event_label(event), do: event |> to_string() |> String.replace("_", " ")
+
+  defp steer_error_message(:blank_message), do: "Steer message cannot be blank."
+  defp steer_error_message(:worker_not_running), do: "Worker is no longer running."
+  defp steer_error_message(:session_mismatch), do: "Worker session changed before the steer was sent."
+  defp steer_error_message(reason), do: "Steer failed: #{inspect(reason)}"
 
   defp state_badge_class(state) do
     base = "state-badge"

@@ -209,6 +209,22 @@ The app-server session also exposes a `linear_graphql` dynamic tool so the
 agent can update Linear comments and issue state without relying on a separate
 MCP flow.
 
+### Worker detail and steering
+
+The observability dashboard links each running worker row to
+`/workers/<issue-identifier>`. The detail page shows the issue identity, active
+session id, workspace path, token totals, and a bounded timeline of recent Codex
+app-server events. Timeline rows render a human-readable message first and keep
+the raw payload in an expandable JSON panel for diagnosis.
+
+Managers can send a steer message from the detail page while the worker is
+running. Symphony routes the message through the orchestrator to the worker task
+that owns the Codex app-server port. The request is guarded twice: the dashboard
+submits the current session id, and the app-server `turn/steer` request includes
+the active `threadId` plus `expectedTurnId`. Symphony records queued and sent
+steer messages in the worker timeline so later reviewers can see when a human
+intervened.
+
 ### Progress tracking
 
 The recommended prompt pattern is to keep one persistent Linear comment whose

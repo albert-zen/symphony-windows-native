@@ -75,6 +75,21 @@ defmodule SymphonyElixir.ExtensionsTest do
     def handle_call(:request_refresh, _from, state) do
       {:reply, Keyword.get(state, :refresh, :unavailable), state}
     end
+
+    def handle_call({:steer_worker, issue_identifier, message, session_id}, _from, state) do
+      if parent = Keyword.get(state, :parent) do
+        send(parent, {:steer_worker_called, issue_identifier, message, session_id})
+      end
+
+      {:reply,
+       {:ok,
+        %{
+          issue_identifier: issue_identifier,
+          issue_id: "issue-http",
+          session_id: session_id,
+          queued_at: DateTime.utc_now()
+        }}, state}
+    end
   end
 
   setup do
@@ -365,9 +380,13 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "issue_id" => "issue-http",
                  "issue_identifier" => "MT-HTTP",
                  "state" => "In Progress",
+                 "title" => "HTTP issue",
+                 "url" => "https://example.org/issues/MT-HTTP",
                  "worker_host" => nil,
                  "workspace_path" => nil,
                  "session_id" => "thread-http",
+                 "thread_id" => "thread-http",
+                 "turn_id" => "turn-http",
                  "turn_count" => 7,
                  "last_event" => "notification",
                  "last_message" => "rendered",
@@ -402,6 +421,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert issue_payload == %{
              "issue_identifier" => "MT-HTTP",
              "issue_id" => "issue-http",
+             "title" => "HTTP issue",
+             "url" => "https://example.org/issues/MT-HTTP",
              "status" => "running",
              "workspace" => %{
                "path" => Path.join(Config.settings!().workspace.root, "MT-HTTP"),
@@ -412,6 +433,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                "worker_host" => nil,
                "workspace_path" => nil,
                "session_id" => "thread-http",
+               "thread_id" => "thread-http",
+               "turn_id" => "turn-http",
                "turn_count" => 7,
                "state" => "In Progress",
                "started_at" => issue_payload["running"]["started_at"],
@@ -423,6 +446,17 @@ defmodule SymphonyElixir.ExtensionsTest do
              "retry" => nil,
              "logs" => %{"codex_session_logs" => []},
              "recent_events" => [],
+             "timeline" => [
+               %{
+                 "at" => "2026-01-01T00:00:00Z",
+                 "event" => "manager_steer_delivered",
+                 "message" => "manager steer delivered: Keep the PR focused.",
+                 "raw" => %{"id" => 10_123, "result" => %{"turnId" => "turn-http"}},
+                 "session_id" => "thread-http",
+                 "thread_id" => "thread-http",
+                 "turn_id" => "turn-http"
+               }
+             ],
              "last_error" => nil,
              "tracked" => %{}
            }
@@ -442,6 +476,9 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert %{"queued" => true, "coalesced" => false, "operations" => ["poll", "reconcile"]} =
              json_response(conn, 202)
+
+    assert json_response(post(build_conn(), "/api/v1/MT-HTTP/steer", %{}), 404) ==
+             %{"error" => %{"code" => "not_found", "message" => "Route not found"}}
   end
 
   test "phoenix observability api preserves 405, 404, and unavailable behavior" do
@@ -613,6 +650,34 @@ defmodule SymphonyElixir.ExtensionsTest do
     end)
   end
 
+  test "worker detail liveview renders timeline and submits session-scoped steer messages" do
+    orchestrator_name = Module.concat(__MODULE__, :WorkerDetailOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        parent: self(),
+        snapshot: static_snapshot()
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, view, html} = live(build_conn(), "/workers/MT-HTTP")
+    assert html =~ "Worker Detail"
+    assert html =~ "thread-http"
+    assert html =~ "manager steer delivered: Keep the PR focused."
+    assert html =~ "Raw JSON"
+
+    render_submit(view, "steer", %{
+      "steer" => %{
+        "message" => "Use the narrower UI fix.",
+        "session_id" => "thread-http"
+      }
+    })
+
+    assert_received {:steer_worker_called, "MT-HTTP", "Use the narrower UI fix.", "thread-http"}
+  end
+
   test "dashboard liveview renders an unavailable state without crashing" do
     start_test_endpoint(
       orchestrator: Module.concat(__MODULE__, :MissingDashboardOrchestrator),
@@ -706,8 +771,12 @@ defmodule SymphonyElixir.ExtensionsTest do
         %{
           issue_id: "issue-http",
           identifier: "MT-HTTP",
+          title: "HTTP issue",
+          url: "https://example.org/issues/MT-HTTP",
           state: "In Progress",
           session_id: "thread-http",
+          thread_id: "thread-http",
+          turn_id: "turn-http",
           turn_count: 7,
           codex_app_server_pid: nil,
           last_codex_message: "rendered",
@@ -716,6 +785,17 @@ defmodule SymphonyElixir.ExtensionsTest do
           codex_input_tokens: 4,
           codex_output_tokens: 8,
           codex_total_tokens: 12,
+          recent_codex_events: [
+            %{
+              event: :manager_steer_delivered,
+              message: "Keep the PR focused.",
+              raw: %{"id" => 10_123, "result" => %{"turnId" => "turn-http"}},
+              session_id: "thread-http",
+              thread_id: "thread-http",
+              turn_id: "turn-http",
+              timestamp: ~U[2026-01-01 00:00:00Z]
+            }
+          ],
           started_at: DateTime.utc_now()
         }
       ],

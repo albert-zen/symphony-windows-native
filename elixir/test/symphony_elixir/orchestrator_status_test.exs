@@ -125,9 +125,19 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     initial_state = :sys.get_state(pid)
     process_ref = make_ref()
     started_at = DateTime.utc_now()
+    parent = self()
+
+    worker_pid =
+      spawn(fn ->
+        receive do
+          {:codex_steer, reply_to, request_ref, session_id, message} ->
+            send(parent, {:codex_steer, session_id, message})
+            send(reply_to, {:codex_steer_request_result, request_ref, {:ok, session_id}})
+        end
+      end)
 
     running_entry = %{
-      pid: self(),
+      pid: worker_pid,
       ref: process_ref,
       identifier: issue.identifier,
       issue: issue,
@@ -197,6 +207,150 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert completed_state.codex_totals.output_tokens == 4
     assert completed_state.codex_totals.total_tokens == 16
     assert is_integer(completed_state.codex_totals.seconds_running)
+  end
+
+  test "orchestrator routes manager steer messages to the matching running worker session" do
+    issue_id = "issue-steer-route"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-240",
+      title: "Steer routing test",
+      description: "Route manager steer messages",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-240"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :SteerRouteOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    process_ref = make_ref()
+    started_at = DateTime.utc_now()
+    parent = self()
+
+    worker_pid =
+      spawn(fn ->
+        receive do
+          {:codex_steer, reply_to, request_ref, session_id, message} ->
+            send(parent, {:codex_steer, session_id, message})
+            send(reply_to, {:codex_steer_request_result, request_ref, {:ok, session_id}})
+        end
+      end)
+
+    running_entry = %{
+      pid: worker_pid,
+      ref: process_ref,
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: "thread-route-turn-route",
+      thread_id: "thread-route",
+      turn_id: "turn-route",
+      turn_count: 1,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      codex_input_tokens: 0,
+      codex_output_tokens: 0,
+      codex_total_tokens: 0,
+      codex_last_reported_input_tokens: 0,
+      codex_last_reported_output_tokens: 0,
+      codex_last_reported_total_tokens: 0,
+      recent_codex_events: [],
+      started_at: started_at
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    assert {:ok, %{session_id: "thread-route-turn-route"}} =
+             Orchestrator.steer_worker(
+               orchestrator_name,
+               "MT-240",
+               "Inspect the failing worker detail test.",
+               "thread-route-turn-route"
+             )
+
+    assert_received {:codex_steer, "thread-route-turn-route", "Inspect the failing worker detail test."}
+
+    snapshot = GenServer.call(pid, :snapshot)
+    assert %{running: [snapshot_entry]} = snapshot
+    assert snapshot_entry.thread_id == "thread-route"
+    assert snapshot_entry.turn_id == "turn-route"
+
+    assert [
+             %{
+               event: :manager_steer_queued,
+               message: "Inspect the failing worker detail test.",
+               session_id: "thread-route-turn-route"
+             }
+           ] = snapshot_entry.recent_codex_events
+
+    Process.exit(worker_pid, :normal)
+  end
+
+  test "orchestrator rejects manager steer messages when the worker session changed" do
+    issue_id = "issue-steer-mismatch"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-241",
+      title: "Steer mismatch test",
+      description: "Reject stale session steer messages",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-241"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :SteerMismatchOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: "thread-new-turn-new",
+      turn_count: 1,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      codex_input_tokens: 0,
+      codex_output_tokens: 0,
+      codex_total_tokens: 0,
+      codex_last_reported_input_tokens: 0,
+      codex_last_reported_output_tokens: 0,
+      codex_last_reported_total_tokens: 0,
+      recent_codex_events: [],
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    assert {:error, :session_mismatch} =
+             Orchestrator.steer_worker(orchestrator_name, "MT-241", "Use stale session", "thread-old-turn-old")
+
+    refute_received {:codex_steer, _session_id, _message}
   end
 
   test "orchestrator snapshot tracks turn completed usage when present" do
