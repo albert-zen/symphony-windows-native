@@ -61,30 +61,32 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
   end
 
   defp list_open_pull_request_numbers(repo, branch) do
-    case run_command("gh", [
-           "pr",
-           "list",
-           "--repo",
-           repo,
-           "--head",
-           branch,
-           "--state",
-           "open",
-           "--json",
-           "number",
-           "--jq",
-           ".[].number"
-         ]) do
-      {:ok, output} ->
-        output
-        |> String.split("\n", trim: true)
-        |> Enum.map(&String.trim/1)
-        |> Enum.reject(&(&1 == ""))
-
-      {:error, _reason} ->
-        []
-    end
+    "gh"
+    |> run_command([
+      "pr",
+      "list",
+      "--repo",
+      repo,
+      "--head",
+      branch,
+      "--state",
+      "open",
+      "--json",
+      "number",
+      "--jq",
+      ".[].number"
+    ])
+    |> pull_request_numbers_from_result()
   end
+
+  defp pull_request_numbers_from_result({:ok, output}) do
+    output
+    |> String.split("\n", trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp pull_request_numbers_from_result({:error, _reason}), do: []
 
   defp close_pull_request(repo, branch, pr_number) do
     case run_command("gh", [

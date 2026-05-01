@@ -202,6 +202,37 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     )
   end
 
+  test "no-ops when PR list exits through fallback failure" do
+    with_fake_gh(
+      """
+      #!/bin/sh
+      printf '%s\n' "$*" >> "$GH_LOG"
+
+      if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+        exit 0
+      fi
+
+      exit 99
+      """,
+      fn log_path ->
+        output =
+          capture_io(fn ->
+            BeforeRemove.run(["--branch", "feature/list-fallback-fails"])
+          end)
+
+        assert output == ""
+
+        log = File.read!(log_path)
+        assert log =~ "auth status"
+
+        assert log =~
+                 "pr list --repo openai/symphony --head feature/list-fallback-fails --state open --json number --jq .[].number"
+
+        refute log =~ "pr close"
+      end
+    )
+  end
+
   test "no-ops when git current branch is blank" do
     with_fake_gh_and_git(
       """
@@ -232,10 +263,6 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
         refute log =~ "pr list"
       end
     )
-  end
-
-  if match?({:win32, _}, :os.type()) do
-    @tag skip: "Windows cannot reliably model gh auth failure with a batch shim."
   end
 
   test "no-ops when gh auth is unavailable" do
@@ -355,11 +382,11 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
         env
         |> maybe_put_fake_env(
           "SYMPHONY_FAKE_GH_AUTH_FAIL",
-          String.contains?(script, "exit 99") and not String.contains?(script, "pr")
+          fake_gh_auth_fail?(script)
         )
         |> maybe_put_fake_env(
           "SYMPHONY_FAKE_GH_LIST_FAIL",
-          Regex.match?(~r/\[ "\$1" = "pr" \].*?\[ "\$2" = "list" \].*?then\s+exit 1\s+fi/s, script)
+          fake_gh_list_fail?(script) or fake_gh_fallback_fail?(script)
         )
         |> maybe_put_fake_env("SYMPHONY_FAKE_GH_SINGLE_PR", String.contains?(script, "printf '102\\n'"))
         |> maybe_put_fake_env(
@@ -402,8 +429,6 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
   end
 
   defp windows_fake_binary_script("gh", script) do
-    auth_status = if fake_gh_auth_fail?(script), do: "1", else: "0"
-    list_status = if fake_gh_list_fail?(script), do: "1", else: "0"
     single_pr = if String.contains?(script, "printf '102\\n'"), do: "1", else: "0"
     no_stderr = if fake_gh_no_stderr?(script), do: "1", else: "0"
 
@@ -411,11 +436,11 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     @echo off
     echo %*>>"%GH_LOG%"
     if "%1 %2"=="auth status" (
-      if "#{auth_status}"=="1" exit /b 1
+      if "%SYMPHONY_FAKE_GH_AUTH_FAIL%"=="1" exit 1
       exit /b 0
     )
     if "%1 %2"=="pr list" (
-      if "#{list_status}"=="1" exit /b 1
+      if "%SYMPHONY_FAKE_GH_LIST_FAIL%"=="1" exit 1
       if "#{single_pr}"=="1" (
         echo 102
       ) else (
@@ -433,10 +458,22 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     """
   end
 
-  defp fake_gh_auth_fail?(script), do: String.contains?(script, "exit 99") and not String.contains?(script, "101")
+  defp fake_gh_auth_fail?(script),
+    do:
+      script
+      |> String.split(~s([ "$1" = "pr" ]), parts: 2)
+      |> List.first()
+      |> String.contains?("exit 1")
 
   defp fake_gh_list_fail?(script),
-    do: Regex.match?(~r/\[ "\$1" = "pr" \].*?\[ "\$2" = "list" \].*?then\s+exit 1\s+fi/s, script)
+    do:
+      String.contains?(script, ~s([ "$1" = "pr" ])) and
+        String.contains?(script, ~s([ "$2" = "list" ])) and
+        Regex.match?(~r/\bexit\s+1\b/, script)
+
+  defp fake_gh_fallback_fail?(script) do
+    String.contains?(script, "exit 99") and not String.contains?(script, ~s([ "$2" = "list" ]))
+  end
 
   defp fake_gh_no_stderr?(script),
     do:
