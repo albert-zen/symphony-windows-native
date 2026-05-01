@@ -49,6 +49,33 @@ defmodule SymphonyElixir.RedactorTest do
                "https://[REDACTED]:[REDACTED]@example.org/path?client_secret=[REDACTED]"
   end
 
+  test "redacts token-bearing URLs and standalone provider tokens" do
+    value =
+      "callback=https://example.org/cb?id_token=id.jwt.secret&refresh_token=refresh-secret" <>
+        "&session_token=session-secret saw sk-live1234567890 and github_pat_1234567890abcdefABCDE"
+
+    redacted = Redactor.redact(value)
+
+    refute redacted =~ "id.jwt.secret"
+    refute redacted =~ "refresh-secret"
+    refute redacted =~ "session-secret"
+    refute redacted =~ "sk-live1234567890"
+    refute redacted =~ "github_pat_1234567890abcdefABCDE"
+    assert redacted =~ "id_token=[REDACTED]"
+    assert redacted =~ "refresh_token=[REDACTED]"
+    assert redacted =~ "session_token=[REDACTED]"
+  end
+
+  test "redacts secret-ish JSON string fields beyond exact key names" do
+    value = ~s({"stripe_secret":"sk-live1234567890","nested_access_token":"tok-secret","safe":"visible"})
+
+    redacted = Redactor.redact(value)
+
+    refute redacted =~ "sk-live1234567890"
+    refute redacted =~ "tok-secret"
+    assert redacted =~ ~s("safe":"visible")
+  end
+
   test "leaves scalar, struct, and non-secret JSON values intact" do
     timestamp = ~U[2026-05-01 00:00:00Z]
 

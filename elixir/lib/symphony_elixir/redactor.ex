@@ -4,13 +4,53 @@ defmodule SymphonyElixir.Redactor do
   """
 
   @redacted "[REDACTED]"
+  @sensitive_name_pattern [
+    "api[_-]?key",
+    "authorization",
+    "bearer",
+    "cookie",
+    "credential",
+    "password",
+    "private[_-]?key",
+    "secret",
+    "token"
+  ]
 
   @sensitive_key_pattern ~r/(api[_-]?key|authorization|bearer|cookie|credential|password|private[_-]?key|secret|^token$|[_-]token$|token[_-]|access[_-]?token|refresh[_-]?token|session[_-]?token|id[_-]?token)/i
   @credential_url_pattern ~r{([a-z][a-z0-9+.-]*://)([^/\s:@]+):([^@\s/]+)@}i
-  @sensitive_query_pattern ~r/([?&](?:access_token|api_key|client_secret|code|key|password|secret|token)=)[^&#\s]+/i
+  @sensitive_query_names [
+    "access[_-]?token",
+    "api[_-]?key",
+    "client[_-]?secret",
+    "code",
+    "id[_-]?token",
+    "key",
+    "password",
+    "refresh[_-]?token",
+    "secret",
+    "session[_-]?token",
+    "token"
+  ]
+  @sensitive_query_pattern Regex.compile!(
+                             "([?&](?:#{Enum.join(@sensitive_query_names, "|")})=).*?(?=(&|#|[[:space:]]|$))",
+                             "i"
+                           )
   @authorization_pattern ~r/\b(Bearer|Basic)\s+[A-Za-z0-9._~+\/=-]+/i
-  @assignment_pattern ~r/\b([A-Za-z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]*)=([^\s]+)/i
-  @json_secret_field_pattern ~r/("(?:api[_-]?key|authorization|cookie|credential|password|private[_-]?key|secret|token|access[_-]?token|refresh[_-]?token|session[_-]?token|id[_-]?token)"\s*:\s*")[^"]*(")/i
+  @assignment_pattern ~r/\b([A-Za-z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]*)=([^\s&]+)/i
+  @json_secret_field_pattern Regex.compile!(
+                               ~s/("[^"]*(?:#{Enum.join(@sensitive_name_pattern, "|")})[^"]*"\\s*:\\s*")[^"]*(")/,
+                               "i"
+                             )
+  @standalone_secret_pattern Regex.compile!(
+                               "\\b(?:" <>
+                                 "sk-[A-Za-z0-9_-]{8,}|" <>
+                                 "github_pat_[A-Za-z0-9_]{20,}|" <>
+                                 "gh[opsu]_[A-Za-z0-9_]{20,}|" <>
+                                 "glpat-[A-Za-z0-9_-]{20,}|" <>
+                                 "xox[baprs]-[A-Za-z0-9-]{10,}|" <>
+                                 "AKIA[0-9A-Z]{16}" <>
+                                 ")\\b"
+                             )
 
   @spec redact(term()) :: term()
   def redact(value), do: redact_value(value, nil)
@@ -61,6 +101,7 @@ defmodule SymphonyElixir.Redactor do
         |> then(&Regex.replace(@sensitive_query_pattern, &1, "\\1[REDACTED]"))
         |> then(&Regex.replace(@authorization_pattern, &1, "\\1 [REDACTED]"))
         |> then(&Regex.replace(@assignment_pattern, &1, "\\1=[REDACTED]"))
+        |> then(&Regex.replace(@standalone_secret_pattern, &1, @redacted))
     end
   end
 end
