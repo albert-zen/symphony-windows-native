@@ -175,6 +175,8 @@ defmodule SymphonyElixir.Config.Schema do
       field(:turn_timeout_ms, :integer, default: 3_600_000)
       field(:read_timeout_ms, :integer, default: 5_000)
       field(:stall_timeout_ms, :integer, default: 300_000)
+      field(:review_readiness_repository, :string)
+      field(:review_readiness_required_checks, {:array, :string}, default: [])
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -189,7 +191,9 @@ defmodule SymphonyElixir.Config.Schema do
           :turn_sandbox_policy,
           :turn_timeout_ms,
           :read_timeout_ms,
-          :stall_timeout_ms
+          :stall_timeout_ms,
+          :review_readiness_repository,
+          :review_readiness_required_checks
         ],
         empty_values: []
       )
@@ -382,7 +386,9 @@ defmodule SymphonyElixir.Config.Schema do
     codex = %{
       settings.codex
       | approval_policy: normalize_keys(settings.codex.approval_policy),
-        turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy)
+        turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy),
+        review_readiness_repository: normalize_repository(settings.codex.review_readiness_repository),
+        review_readiness_required_checks: normalize_required_checks(settings.codex.review_readiness_required_checks)
     }
 
     %{settings | tracker: tracker, workspace: workspace, codex: codex}
@@ -399,6 +405,26 @@ defmodule SymphonyElixir.Config.Schema do
 
   defp normalize_optional_map(nil), do: nil
   defp normalize_optional_map(value) when is_map(value), do: normalize_keys(value)
+
+  defp normalize_required_checks(checks) when is_list(checks) do
+    checks
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
+
+  defp normalize_repository(repository) when is_binary(repository) do
+    repository
+    |> String.trim()
+    |> String.trim_leading("https://github.com/")
+    |> String.trim_trailing("/")
+    |> case do
+      "" -> nil
+      normalized -> normalized
+    end
+  end
+
+  defp normalize_repository(_repository), do: nil
 
   defp normalize_label_filter(labels) when is_list(labels) do
     labels

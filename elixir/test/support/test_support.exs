@@ -143,6 +143,8 @@ defmodule SymphonyElixir.TestSupport do
           codex_turn_timeout_ms: 3_600_000,
           codex_read_timeout_ms: 5_000,
           codex_stall_timeout_ms: 300_000,
+          codex_review_readiness_repository: "albert-zen/symphony-windows-native",
+          codex_review_readiness_required_checks: [],
           hook_after_create: nil,
           hook_before_run: nil,
           hook_after_run: nil,
@@ -181,6 +183,8 @@ defmodule SymphonyElixir.TestSupport do
     codex_turn_timeout_ms = Keyword.get(config, :codex_turn_timeout_ms)
     codex_read_timeout_ms = Keyword.get(config, :codex_read_timeout_ms)
     codex_stall_timeout_ms = Keyword.get(config, :codex_stall_timeout_ms)
+    codex_review_readiness_repository = Keyword.get(config, :codex_review_readiness_repository)
+    codex_review_readiness_required_checks = Keyword.get(config, :codex_review_readiness_required_checks)
     hook_after_create = Keyword.get(config, :hook_after_create)
     hook_before_run = Keyword.get(config, :hook_before_run)
     hook_after_run = Keyword.get(config, :hook_after_run)
@@ -223,6 +227,8 @@ defmodule SymphonyElixir.TestSupport do
         "  turn_timeout_ms: #{yaml_value(codex_turn_timeout_ms)}",
         "  read_timeout_ms: #{yaml_value(codex_read_timeout_ms)}",
         "  stall_timeout_ms: #{yaml_value(codex_stall_timeout_ms)}",
+        "  review_readiness_repository: #{yaml_value(codex_review_readiness_repository)}",
+        "  review_readiness_required_checks: #{yaml_value(codex_review_readiness_required_checks)}",
         hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, hook_timeout_ms),
         observability_yaml(observability_enabled, observability_refresh_ms, observability_render_interval_ms),
         server_yaml(server_port, server_host),
