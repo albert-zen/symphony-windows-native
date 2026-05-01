@@ -554,6 +554,30 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert_receive {:fetch_issue_states_page, ^query, %{ids: ^second_batch_ids, first: 5, relationFirst: 50}}
   end
 
+  test "linear client treats graphql partial errors as failures" do
+    graphql_fun = fn _query, _variables ->
+      {:ok,
+       %{
+         "errors" => [%{"message" => "Field labels does not exist"}],
+         "data" => %{
+           "issues" => %{
+             "nodes" => [
+               %{
+                 "id" => "issue-partial",
+                 "identifier" => "MT-500",
+                 "title" => "Partial issue",
+                 "state" => %{"name" => "Todo"}
+               }
+             ]
+           }
+         }
+       }}
+    end
+
+    assert {:error, {:linear_graphql_errors, [%{"message" => "Field labels does not exist"}]}} =
+             Client.fetch_issue_states_by_ids_for_test(["issue-partial"], graphql_fun)
+  end
+
   test "linear client logs response bodies for non-200 graphql responses" do
     log =
       ExUnit.CaptureLog.capture_log(fn ->
