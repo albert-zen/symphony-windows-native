@@ -858,8 +858,12 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "attempt" => 2,
                  "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
                  "error" => "boom",
+                 "error_kind" => "linear_transport",
+                 "prior_error" => nil,
+                 "prior_error_kind" => nil,
                  "worker_host" => nil,
-                 "workspace_path" => nil
+                 "workspace_path" => nil,
+                 "branch_name" => nil
                }
              ],
              "codex_totals" => %{
@@ -905,7 +909,10 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     conn = get(build_conn(), "/api/v1/MT-RETRY")
 
-    assert %{"status" => "retrying", "retry" => %{"attempt" => 2, "error" => "boom"}} =
+    assert %{
+             "status" => "retrying",
+             "retry" => %{"attempt" => 2, "error" => "boom", "error_kind" => "linear_transport"}
+           } =
              json_response(conn, 200)
 
     conn = get(build_conn(), "/api/v1/MT-MISSING")
@@ -1201,7 +1208,8 @@ defmodule SymphonyElixir.ExtensionsTest do
           identifier: "MT-RETRY",
           attempt: 2,
           due_in_ms: 2_000,
-          error: "boom"
+          error: "boom",
+          error_kind: "linear_transport"
         }
       ],
       codex_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},

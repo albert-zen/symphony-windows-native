@@ -124,8 +124,12 @@ defmodule SymphonyElixirWeb.Presenter do
       attempt: entry.attempt,
       due_at: due_at_iso8601(entry.due_in_ms),
       error: entry.error,
+      error_kind: Map.get(entry, :error_kind),
+      prior_error: Map.get(entry, :prior_error),
+      prior_error_kind: Map.get(entry, :prior_error_kind),
       worker_host: Map.get(entry, :worker_host),
-      workspace_path: Map.get(entry, :workspace_path)
+      workspace_path: Map.get(entry, :workspace_path),
+      branch_name: Map.get(entry, :branch_name)
     }
   end
 
@@ -154,8 +158,12 @@ defmodule SymphonyElixirWeb.Presenter do
       attempt: retry.attempt,
       due_at: due_at_iso8601(retry.due_in_ms),
       error: retry.error,
+      error_kind: Map.get(retry, :error_kind),
+      prior_error: Map.get(retry, :prior_error),
+      prior_error_kind: Map.get(retry, :prior_error_kind),
       worker_host: Map.get(retry, :worker_host),
-      workspace_path: Map.get(retry, :workspace_path)
+      workspace_path: Map.get(retry, :workspace_path),
+      branch_name: Map.get(retry, :branch_name)
     }
   end
 

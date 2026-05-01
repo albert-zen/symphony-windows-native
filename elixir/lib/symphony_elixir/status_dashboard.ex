@@ -697,15 +697,21 @@ defmodule SymphonyElixir.StatusDashboard do
     identifier = retry_entry.identifier || issue_id
     attempt = retry_entry.attempt || 0
     due_in_ms = retry_entry.due_in_ms || 0
+    error_kind = format_retry_error_kind(Map.get(retry_entry, :error_kind))
+    branch_name = format_retry_branch_name(Map.get(retry_entry, :branch_name))
     error = format_retry_error(retry_entry.error)
+    prior_error = format_retry_prior_error(Map.get(retry_entry, :prior_error))
 
     "│  #{colorize("↻", @ansi_orange)} " <>
       colorize("#{identifier}", @ansi_red) <>
       " " <>
       colorize("attempt=#{attempt}", @ansi_yellow) <>
+      error_kind <>
+      branch_name <>
       colorize(" in ", @ansi_dim) <>
       colorize(next_in_words(due_in_ms), @ansi_cyan) <>
-      error
+      error <>
+      prior_error
   end
 
   defp next_in_words(due_in_ms) when is_integer(due_in_ms) do
@@ -736,6 +742,45 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp format_retry_error(_), do: ""
+
+  defp format_retry_error_kind(kind) when is_binary(kind) do
+    sanitized =
+      kind
+      |> String.replace(~r/\s+/, "_")
+      |> String.trim()
+
+    if sanitized == "" do
+      ""
+    else
+      " " <> colorize("kind=#{truncate(sanitized, 32)}", @ansi_dim)
+    end
+  end
+
+  defp format_retry_error_kind(_kind), do: ""
+
+  defp format_retry_branch_name(branch_name) when is_binary(branch_name) do
+    sanitized =
+      branch_name
+      |> String.replace(~r/\s+/, "_")
+      |> String.trim()
+
+    if sanitized == "" do
+      ""
+    else
+      " " <> colorize("branch=#{truncate(sanitized, 48)}", @ansi_dim)
+    end
+  end
+
+  defp format_retry_branch_name(_branch_name), do: ""
+
+  defp format_retry_prior_error(error) when is_binary(error) do
+    case String.trim(error) do
+      "" -> ""
+      trimmed -> " " <> colorize("(prior: #{truncate(trimmed, 80)})", @ansi_dim)
+    end
+  end
+
+  defp format_retry_prior_error(_error), do: ""
 
   defp format_runtime_seconds(seconds) when is_integer(seconds) do
     mins = div(seconds, 60)
