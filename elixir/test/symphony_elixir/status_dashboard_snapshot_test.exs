@@ -177,7 +177,9 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
              attempt: 3,
              due_in_ms: 2_500,
              error: "transient Linear transport closure during retry poll",
-             error_kind: "linear_transport"
+             error_kind: "linear_transport",
+             prior_error: "agent exited: :boom",
+             branch_name: "codex/MT-981-linear-transport"
            })
          ],
          codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
@@ -189,6 +191,8 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
 
     assert length(backoff_lines) == 1
     assert List.first(backoff_lines) =~ "kind=linear_transport"
+    assert List.first(backoff_lines) =~ "branch=codex/MT-981-linear-transport"
+    assert List.first(backoff_lines) =~ "prior: agent exited: :boom"
   end
 
   test "snapshot fixture: unlimited credits variant" do

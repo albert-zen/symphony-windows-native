@@ -858,8 +858,11 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
                  "error" => "boom",
                  "error_kind" => "linear_transport",
+                 "prior_error" => nil,
+                 "prior_error_kind" => nil,
                  "worker_host" => nil,
-                 "workspace_path" => nil
+                 "workspace_path" => nil,
+                 "branch_name" => nil
                }
              ],
              "codex_totals" => %{
