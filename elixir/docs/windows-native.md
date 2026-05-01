@@ -78,6 +78,14 @@ Copy-Item .\WORKFLOW.windows.example.md .\WORKFLOW.windows.md
 notepad .\WORKFLOW.windows.md
 ```
 
+For the dedicated Symphony optimization flywheel, start from the fixed-project
+example instead:
+
+```powershell
+Copy-Item .\WORKFLOW.optimization.windows.example.md .\WORKFLOW.optimization.windows.md
+notepad .\WORKFLOW.optimization.windows.md
+```
+
 At minimum, change:
 
 - `tracker.project_slug`
@@ -98,6 +106,30 @@ Keep secrets out of the workflow file:
 tracker:
   api_key: $LINEAR_API_KEY
 ```
+
+### Optimization flywheel routing
+
+The optimization example targets the `Symphony 优化` Linear project by slug
+`e4ea95122cf7`. Keep `Backlog` out of `tracker.active_states`; parked issues
+remain invisible to Symphony until a human moves one issue at a time to `Todo`.
+
+Use this fixed-project route as the default boundary. If the same Linear project
+must later hold unrelated work, add `tracker.labels` to route only issues with
+at least one configured label:
+
+```yaml
+tracker:
+  project_slug: "e4ea95122cf7"
+  labels:
+    - symphony-optimization
+  active_states:
+    - Todo
+    - In Progress
+```
+
+The label match is case-insensitive and applies only to candidate dispatch.
+Already-running issues are still reconciled by their tracker state so Symphony
+can stop them cleanly when they move to a terminal state.
 
 ## Start Symphony
 
@@ -144,7 +176,8 @@ Set `tracker.active_states` to the states where agents should work, and
 ### Poll
 
 Symphony queries Linear for issues in the configured project whose state is in
-`active_states`.
+`active_states`. If `tracker.labels` is configured, candidates must also have
+at least one matching label.
 
 ### Claim and workspace
 

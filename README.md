@@ -11,6 +11,7 @@ If you are trying to run Symphony directly on Windows, start here:
 
 - [Windows native setup guide](elixir/docs/windows-native.md)
 - [Windows workflow example](elixir/WORKFLOW.windows.example.md)
+- [Windows optimization workflow example](elixir/WORKFLOW.optimization.windows.example.md)
 - [PowerShell launcher](elixir/scripts/start-windows-native.ps1)
 
 The Windows path is experimental, but the local Linear -> Symphony -> Codex -> Linear loop has been

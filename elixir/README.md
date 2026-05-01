@@ -70,6 +70,9 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
 5. Customize the copied `WORKFLOW.md` file for your project.
    - To get your project's slug, right-click the project and copy its URL. The slug is part of the
      URL.
+   - `tracker.labels` is optional. When set, Symphony only dispatches candidate issues that have at
+     least one matching label. Prefer a fixed Linear project first; use labels when that project
+     must contain unrelated work.
    - When creating a workflow based on this repo, note that it depends on non-standard Linear
      issue statuses: "Rework", "Human Review", and "Merging". You can customize them in
      Team Settings → Workflow in Linear.
@@ -121,6 +124,8 @@ Minimal example:
 tracker:
   kind: linear
   project_slug: "..."
+  labels:
+    - symphony-optimization
 workspace:
   root: ~/code/workspaces
 hooks:

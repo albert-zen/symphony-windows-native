@@ -3,6 +3,9 @@ tracker:
   kind: linear
   api_key: $LINEAR_API_KEY
   project_slug: "your-linear-project-slug"
+  # Optional: restrict candidate dispatch to issues with any of these labels.
+  # labels:
+  #   - symphony-optimization
   active_states:
     - Todo
     - In Progress
