@@ -925,7 +925,7 @@ defmodule SymphonyElixir.StatusDashboard do
     case worker_rate_limit_summary(running) do
       {:fresh, summary} -> colorize(summary, @ansi_cyan)
       {:stale, summary} -> colorize("unavailable (#{summary})", @ansi_gray)
-      {:unknown, summary} when is_nil(rate_limits) -> colorize("unavailable (#{summary})", @ansi_gray)
+      {:unknown, summary} -> colorize("unavailable (#{summary})", @ansi_gray)
       _ -> format_global_rate_limits(rate_limits)
     end
   end
