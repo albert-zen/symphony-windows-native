@@ -178,7 +178,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <% end %>
                       </div>
                     </td>
-                    <td class="numeric"><%= format_runtime_and_turns(entry.started_at, entry.turn_count, @now) %></td>
+                    <td>
+                      <div class="detail-stack numeric">
+                        <span><%= format_runtime_and_turns(entry.started_at, entry.turn_count, @now) %></span>
+                        <%= if entry.command_watchdog do %>
+                          <span class={watchdog_badge_class(entry.command_watchdog.classification)}>
+                            <%= entry.command_watchdog.classification %>
+                            · <%= format_watchdog_age(entry.command_watchdog.age_ms) %>
+                          </span>
+                        <% end %>
+                      </div>
+                    </td>
                     <td>
                       <div class="detail-stack">
                         <span
@@ -320,6 +330,30 @@ defmodule SymphonyElixirWeb.DashboardLive do
       true -> base
     end
   end
+
+  defp watchdog_badge_class(classification) do
+    base = "state-badge"
+
+    case classification do
+      :healthy -> "#{base} state-badge-active"
+      "healthy" -> "#{base} state-badge-active"
+      :idle -> "#{base} state-badge-warning"
+      "idle" -> "#{base} state-badge-warning"
+      :stalled -> "#{base} state-badge-danger"
+      "stalled" -> "#{base} state-badge-danger"
+      :needs_attention -> "#{base} state-badge-warning"
+      "needs_attention" -> "#{base} state-badge-warning"
+      _ -> base
+    end
+  end
+
+  defp format_watchdog_age(age_ms) when is_integer(age_ms) do
+    age_ms
+    |> div(1_000)
+    |> format_runtime_seconds()
+  end
+
+  defp format_watchdog_age(_age_ms), do: "n/a"
 
   defp schedule_runtime_tick do
     Process.send_after(self(), :runtime_tick, @runtime_tick_ms)
