@@ -212,6 +212,9 @@ protection metadata is private or unavailable to the Windows runtime, configure
 then verifies those public PR check runs/statuses and still fails closed on
 missing, pending, failing, or unverifiable results. Manager overrides must happen
 outside the agent tool call and leave an audit note in Linear or GitHub.
+The linked PR must come from Linear attachment metadata. Links written only in
+agent-mutable comments, including the Codex Workpad, are useful for humans but
+are not authoritative for the readiness gate.
 
 ### Progress tracking
 

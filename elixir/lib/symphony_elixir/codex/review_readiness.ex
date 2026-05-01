@@ -115,6 +115,7 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
   end
 
   defp transition_request(query, variables) do
+    query = normalize_graphql_ignored_tokens(query)
     issue_update_count = issue_update_count(query)
 
     cond do
@@ -153,6 +154,51 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
     |> Regex.scan(query)
     |> length()
   end
+
+  defp normalize_graphql_ignored_tokens(query) do
+    query
+    |> String.graphemes()
+    |> normalize_graphql_ignored_tokens(:normal, [])
+    |> IO.iodata_to_binary()
+  end
+
+  defp normalize_graphql_ignored_tokens([], _mode, acc), do: Enum.reverse(acc)
+
+  defp normalize_graphql_ignored_tokens(["\"" | rest], :normal, acc) do
+    normalize_graphql_ignored_tokens(rest, :string, ["\"" | acc])
+  end
+
+  defp normalize_graphql_ignored_tokens(["#", "\n" | rest], :normal, acc) do
+    normalize_graphql_ignored_tokens(rest, :normal, [" " | acc])
+  end
+
+  defp normalize_graphql_ignored_tokens(["#" | rest], :normal, acc) do
+    {rest, acc} = drop_graphql_comment(rest, acc)
+    normalize_graphql_ignored_tokens(rest, :normal, acc)
+  end
+
+  defp normalize_graphql_ignored_tokens([char | rest], :normal, acc)
+       when char in ["\uFEFF", "\t", "\n", "\r", ","] do
+    normalize_graphql_ignored_tokens(rest, :normal, [" " | acc])
+  end
+
+  defp normalize_graphql_ignored_tokens(["\\" = char, escaped | rest], :string, acc) do
+    normalize_graphql_ignored_tokens(rest, :string, [escaped, char | acc])
+  end
+
+  defp normalize_graphql_ignored_tokens(["\"" | rest], :string, acc) do
+    normalize_graphql_ignored_tokens(rest, :normal, ["\"" | acc])
+  end
+
+  defp normalize_graphql_ignored_tokens([char | rest], mode, acc) do
+    normalize_graphql_ignored_tokens(rest, mode, [char | acc])
+  end
+
+  defp drop_graphql_comment([], acc), do: {[], acc}
+  defp drop_graphql_comment(["\n" | rest], acc), do: {rest, [" " | acc]}
+  defp drop_graphql_comment(["\r", "\n" | rest], acc), do: {rest, [" " | acc]}
+  defp drop_graphql_comment(["\r" | rest], acc), do: {rest, [" " | acc]}
+  defp drop_graphql_comment([_char | rest], acc), do: drop_graphql_comment(rest, acc)
 
   defp explicit_state_id?(query) do
     String.contains?(query, "stateId")
@@ -281,23 +327,8 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
         _ -> []
       end
 
-    comment_urls =
-      issue
-      |> get_in(["comments", "nodes"])
-      |> case do
-        comments when is_list(comments) -> Enum.flat_map(comments, &pull_request_urls_from_comment/1)
-        _ -> []
-      end
-
-    attachment_urls ++ comment_urls
+    attachment_urls
   end
-
-  defp pull_request_urls_from_comment(%{"body" => body}) when is_binary(body) do
-    Regex.scan(~r/https:\/\/github\.com\/[^\s\)>\]]+\/[^\s\)>\]]+\/pull\/\d+/, body)
-    |> List.flatten()
-  end
-
-  defp pull_request_urls_from_comment(_comment), do: []
 
   defp parse_pull_request_url(url) when is_binary(url) do
     case Regex.run(~r/^https:\/\/github\.com\/([^\/]+)\/([^\/]+)\/pull\/(\d+)/, url) do
@@ -321,7 +352,8 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
   end
 
   defp required_checks(owner, repo, base_ref, github_client) do
-    protection_url = "#{@github_api}/repos/#{owner}/#{repo}/branches/#{base_ref}/protection/required_status_checks"
+    encoded_base_ref = URI.encode(base_ref, &URI.char_unreserved?/1)
+    protection_url = "#{@github_api}/repos/#{owner}/#{repo}/branches/#{encoded_base_ref}/protection/required_status_checks"
 
     case github_json(github_client, protection_url) do
       {:ok, protection} -> required_check_specs(protection)
