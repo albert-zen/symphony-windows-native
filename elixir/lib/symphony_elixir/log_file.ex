@@ -90,6 +90,7 @@ defmodule SymphonyElixir.LogFile.Formatter do
   @osc_escape_pattern ~r/\e\].*?(?:\a|\e\\)/
   @ansi_escape_pattern ~r/\e\[[0-?]*[ -\/]*[@-~]/
   @control_pattern ~r/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/
+  @carriage_return_pattern ~r/\r(?!\n)/
 
   @spec format(:logger.log_event(), map()) :: String.t()
   def format(%{meta: metadata} = log_event, config) when is_map(metadata) do
@@ -105,6 +106,8 @@ defmodule SymphonyElixir.LogFile.Formatter do
     value
     |> String.replace(@osc_escape_pattern, "")
     |> String.replace(@ansi_escape_pattern, "")
+    |> String.replace(@carriage_return_pattern, "")
+    |> String.replace("\r\n", "\n")
     |> String.replace(@control_pattern, "")
   end
 
