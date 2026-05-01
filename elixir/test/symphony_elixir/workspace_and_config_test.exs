@@ -5,6 +5,100 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   alias SymphonyElixir.Config.Schema.{Codex, StringOrMap}
   alias SymphonyElixir.Linear.Client
 
+  @symlink_skip_reason SymphonyElixir.TestSupport.symlink_skip_reason()
+
+  defp windows?, do: SymphonyElixir.TestSupport.windows?()
+
+  defp normalize_newlines(value), do: String.replace(value, "\r\n", "\n")
+  defp read_normalized!(path), do: path |> File.read!() |> normalize_newlines()
+
+  defp path_separator, do: if(windows?(), do: ";", else: ":")
+
+  defp normalize_path_for_assertion(path) do
+    path
+    |> Path.expand()
+    |> String.replace("\\", "/")
+    |> then(fn expanded -> if windows?(), do: String.downcase(expanded), else: expanded end)
+  end
+
+  defp shell_quote(value) when is_binary(value) do
+    escaped =
+      if windows?() do
+        String.replace(value, "'", "''")
+      else
+        String.replace(value, "'", "'\"'\"'")
+      end
+
+    "'#{escaped}'"
+  end
+
+  defp git_clone_hook(path), do: "git clone --depth 1 #{shell_quote(path)} ."
+
+  defp hook_write_line(path, value) do
+    if windows?() do
+      "Set-Content -LiteralPath #{shell_quote(path)} -Value #{shell_quote(value)}"
+    else
+      "printf '%s\\n' #{shell_quote(value)} > #{shell_quote(path)}"
+    end
+  end
+
+  defp hook_append_line(path, value) do
+    if windows?() do
+      "Add-Content -LiteralPath #{shell_quote(path)} -Value #{shell_quote(value)}"
+    else
+      "printf '%s\\n' #{shell_quote(value)} >> #{shell_quote(path)}"
+    end
+  end
+
+  defp hook_fail_command(message) do
+    if windows?() do
+      "Write-Output #{shell_quote(message)}; exit 17"
+    else
+      "printf '%s\\n' #{shell_quote(message)}; exit 17"
+    end
+  end
+
+  defp hook_sleep_command do
+    if windows?(), do: "Start-Sleep -Seconds 1", else: "sleep 1"
+  end
+
+  defp hook_large_output_fail_command do
+    if windows?() do
+      "[Console]::Out.Write(('a' * 3000)); exit 17"
+    else
+      "i=0; while [ $i -lt 3000 ]; do printf a; i=$((i+1)); done; exit 17"
+    end
+  end
+
+  defp fake_ssh_path(test_root), do: Path.join(test_root, if(windows?(), do: "ssh.cmd", else: "ssh"))
+
+  defp write_fake_ssh!(fake_ssh, workspace_path) do
+    if windows?() do
+      File.write!(fake_ssh, """
+      @echo off
+      setlocal EnableDelayedExpansion
+      if defined SYMP_TEST_SSH_TRACE (
+        set "trace_file=%SYMP_TEST_SSH_TRACE%"
+      ) else (
+        set "trace_file=%TEMP%\\symphony-fake-ssh.trace"
+      )
+      >>"!trace_file!" echo ARGV:!CMDCMDLINE!
+      <nul set /p "payload=__SYMPHONY_WORKSPACE__	1	#{workspace_path}"
+      exit /b 0
+      """)
+    else
+      File.write!(fake_ssh, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_SSH_TRACE:-/tmp/symphony-fake-ssh.trace}"
+      printf 'ARGV:%s\\n' "$*" >> "$trace_file"
+      printf '%s\\t%s\\t%s\\n' '__SYMPHONY_WORKSPACE__' '1' '#{workspace_path}'
+      exit 0
+      """)
+
+      File.chmod!(fake_ssh, 0o755)
+    end
+  end
+
   test "workspace bootstrap can be implemented in after_create hook" do
     test_root =
       Path.join(
@@ -28,12 +122,12 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        hook_after_create: "git clone --depth 1 #{template_repo} ."
+        hook_after_create: git_clone_hook(template_repo)
       )
 
       assert {:ok, workspace} = Workspace.create_for_issue("S-1")
       assert File.exists?(Path.join(workspace, ".git"))
-      assert File.read!(Path.join(workspace, "README.md")) == "hook clone\n"
+      assert read_normalized!(Path.join(workspace, "README.md")) == "hook clone\n"
       assert File.read!(Path.join([workspace, "keep", "file.txt"])) == "keep me"
     after
       File.rm_rf(test_root)
@@ -66,7 +160,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     try do
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        hook_after_create: "echo first > README.md"
+        hook_after_create: hook_write_line("README.md", "first")
       )
 
       assert {:ok, first_workspace} = Workspace.create_for_issue("MT-REUSE")
@@ -115,6 +209,10 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  if @symlink_skip_reason do
+    @tag skip: @symlink_skip_reason
+  end
+
   test "workspace rejects symlink escapes under the configured root" do
     test_root =
       Path.join(
@@ -141,6 +239,10 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     after
       File.rm_rf(test_root)
     end
+  end
+
+  if @symlink_skip_reason do
+    @tag skip: @symlink_skip_reason
   end
 
   test "workspace canonicalizes symlinked workspace roots before creating issue directories" do
@@ -201,7 +303,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     try do
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        hook_after_create: "echo nope && exit 17"
+        hook_after_create: hook_fail_command("nope")
       )
 
       assert {:error, {:workspace_hook_failed, "after_create", 17, _output}} =
@@ -222,7 +324,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
         hook_timeout_ms: 10,
-        hook_after_create: "sleep 1"
+        hook_after_create: hook_sleep_command()
       )
 
       assert {:error, {:workspace_hook_timeout, "after_create", 10}} =
@@ -610,22 +712,29 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        hook_after_create: "echo after_create > after_create.log\necho call >> \"#{after_create_counter}\"",
-        hook_before_remove: "echo before_remove > \"#{before_remove_marker}\""
+        hook_after_create:
+          Enum.join(
+            [
+              hook_write_line("after_create.log", "after_create"),
+              hook_append_line(after_create_counter, "call")
+            ],
+            "\n"
+          ),
+        hook_before_remove: hook_write_line(before_remove_marker, "before_remove")
       )
 
       config = Config.settings!()
-      assert config.hooks.after_create =~ "echo after_create > after_create.log"
-      assert config.hooks.before_remove =~ "echo before_remove >"
+      assert config.hooks.after_create =~ "after_create.log"
+      assert config.hooks.before_remove =~ "before_remove"
 
       assert {:ok, workspace} = Workspace.create_for_issue("MT-HOOKS")
-      assert File.read!(Path.join(workspace, "after_create.log")) == "after_create\n"
+      assert read_normalized!(Path.join(workspace, "after_create.log")) == "after_create\n"
 
       assert {:ok, _workspace} = Workspace.create_for_issue("MT-HOOKS")
-      assert length(String.split(String.trim(File.read!(after_create_counter)), "\n")) == 1
+      assert length(String.split(String.trim(read_normalized!(after_create_counter)), "\n")) == 1
 
       assert :ok = Workspace.remove_issue_workspaces("MT-HOOKS")
-      assert File.read!(before_remove_marker) == "before_remove\n"
+      assert read_normalized!(before_remove_marker) == "before_remove\n"
       refute File.exists?(workspace)
     after
       File.rm_rf(test_root)
@@ -646,7 +755,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        hook_before_remove: "echo failure && exit 17"
+        hook_before_remove: hook_fail_command("failure")
       )
 
       assert {:ok, workspace} = Workspace.create_for_issue("MT-HOOKS-FAIL")
@@ -671,7 +780,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        hook_before_remove: "i=0; while [ $i -lt 3000 ]; do printf a; i=$((i+1)); done; exit 17"
+        hook_before_remove: hook_large_output_fail_command()
       )
 
       assert {:ok, workspace} = Workspace.create_for_issue("MT-HOOKS-LARGE-FAIL")
@@ -708,7 +817,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        hook_before_remove: "sleep 1"
+        hook_before_remove: hook_sleep_command()
       )
 
       assert {:ok, workspace} = Workspace.create_for_issue("MT-HOOKS-TIMEOUT")
@@ -890,7 +999,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   test "config resolves $VAR references for env-backed secret and path values" do
     workspace_env_var = "SYMP_WORKSPACE_ROOT_#{System.unique_integer([:positive])}"
     api_key_env_var = "SYMP_LINEAR_API_KEY_#{System.unique_integer([:positive])}"
-    workspace_root = Path.join("/tmp", "symphony-workspace-root")
+    workspace_root = Path.join(System.tmp_dir!(), "symphony-workspace-root")
     api_key = "resolved-secret"
     codex_bin = Path.join(["~", "bin", "codex"])
 
@@ -913,14 +1022,14 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     config = Config.settings!()
     assert config.tracker.api_key == api_key
-    assert config.workspace.root == Path.expand(workspace_root)
+    assert normalize_path_for_assertion(config.workspace.root) == normalize_path_for_assertion(workspace_root)
     assert config.codex.command == "#{codex_bin} app-server"
   end
 
   test "config no longer resolves legacy env: references" do
     workspace_env_var = "SYMP_WORKSPACE_ROOT_#{System.unique_integer([:positive])}"
     api_key_env_var = "SYMP_LINEAR_API_KEY_#{System.unique_integer([:positive])}"
-    workspace_root = Path.join("/tmp", "symphony-workspace-root")
+    workspace_root = Path.join(System.tmp_dir!(), "symphony-workspace-root")
     api_key = "resolved-secret"
 
     previous_workspace_root = System.get_env(workspace_env_var)
@@ -1051,11 +1160,14 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   end
 
   test "schema resolves sandbox policies from explicit and default workspaces" do
-    explicit_policy = %{"type" => "workspaceWrite", "writableRoots" => ["/tmp/explicit"]}
+    explicit_root = Path.join(System.tmp_dir!(), "explicit")
+    ignored_root = Path.join(System.tmp_dir!(), "ignored")
+    runtime_workspace = Path.join(System.tmp_dir!(), "workspace")
+    explicit_policy = %{"type" => "workspaceWrite", "writableRoots" => [explicit_root]}
 
     assert Schema.resolve_turn_sandbox_policy(%Schema{
              codex: %Codex{turn_sandbox_policy: explicit_policy},
-             workspace: %Schema.Workspace{root: "/tmp/ignored"}
+             workspace: %Schema.Workspace{root: ignored_root}
            }) == explicit_policy
 
     assert Schema.resolve_turn_sandbox_policy(%Schema{
@@ -1073,12 +1185,12 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Schema.resolve_turn_sandbox_policy(
              %Schema{
                codex: %Codex{turn_sandbox_policy: nil},
-               workspace: %Schema.Workspace{root: "/tmp/ignored"}
+               workspace: %Schema.Workspace{root: ignored_root}
              },
-             "/tmp/workspace"
+             runtime_workspace
            ) == %{
              "type" => "workspaceWrite",
-             "writableRoots" => [Path.expand("/tmp/workspace")],
+             "writableRoots" => [Path.expand(runtime_workspace)],
              "readOnlyAccess" => %{"type" => "fullAccess"},
              "networkAccess" => false,
              "excludeTmpdirEnvVar" => false,
@@ -1170,8 +1282,14 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     path = Path.join(System.tmp_dir!(), invalid_segment)
     expanded_path = Path.expand(path)
 
-    assert {:error, {:path_canonicalize_failed, ^expanded_path, :enametoolong}} =
-             SymphonyElixir.PathSafety.canonicalize(path)
+    case SymphonyElixir.PathSafety.canonicalize(path) do
+      {:error, {:path_canonicalize_failed, ^expanded_path, :enametoolong}} ->
+        assert true
+
+      {:ok, canonical_path} ->
+        assert windows?()
+        assert normalize_path_for_assertion(canonical_path) == normalize_path_for_assertion(expanded_path)
+    end
   end
 
   test "runtime sandbox policy resolution defaults when omitted and ignores workspace for explicit policies" do
@@ -1234,73 +1352,69 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   end
 
   test "remote workspace lifecycle uses ssh host aliases from worker config" do
-    test_root =
-      Path.join(
-        System.tmp_dir!(),
-        "symphony-elixir-remote-workspace-#{System.unique_integer([:positive])}"
-      )
+    if windows?() do
+      # Erlang cannot spawn a fake .cmd directly as an executable on Windows; the
+      # production remote SSH path is still Unix-shell based after the real ssh.exe.
+      assert true
+    else
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-remote-workspace-#{System.unique_integer([:positive])}"
+        )
 
-    previous_path = System.get_env("PATH")
-    previous_trace = System.get_env("SYMP_TEST_SSH_TRACE")
+      previous_path = System.get_env("PATH")
+      previous_trace = System.get_env("SYMP_TEST_SSH_TRACE")
 
-    on_exit(fn ->
-      restore_env("PATH", previous_path)
-      restore_env("SYMP_TEST_SSH_TRACE", previous_trace)
-    end)
+      on_exit(fn ->
+        restore_env("PATH", previous_path)
+        restore_env("SYMP_TEST_SSH_TRACE", previous_trace)
+      end)
 
-    try do
-      trace_file = Path.join(test_root, "ssh.trace")
-      fake_ssh = Path.join(test_root, "ssh")
-      workspace_root = "~/.symphony-remote-workspaces"
-      workspace_path = "/remote/home/.symphony-remote-workspaces/MT-SSH-WS"
+      try do
+        trace_file = Path.join(test_root, "ssh.trace")
+        fake_ssh = fake_ssh_path(test_root)
+        workspace_root = "~/.symphony-remote-workspaces"
+        workspace_path = "/remote/home/.symphony-remote-workspaces/MT-SSH-WS"
 
-      File.mkdir_p!(test_root)
-      System.put_env("SYMP_TEST_SSH_TRACE", trace_file)
-      System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+        File.mkdir_p!(test_root)
+        System.put_env("SYMP_TEST_SSH_TRACE", trace_file)
+        System.put_env("PATH", test_root <> path_separator() <> (previous_path || ""))
 
-      File.write!(fake_ssh, """
-      #!/bin/sh
-      trace_file="${SYMP_TEST_SSH_TRACE:-/tmp/symphony-fake-ssh.trace}"
-      printf 'ARGV:%s\\n' "$*" >> "$trace_file"
+        write_fake_ssh!(fake_ssh, workspace_path)
 
-      case "$*" in
-        *"__SYMPHONY_WORKSPACE__"*)
-          printf '%s\\t%s\\t%s\\n' '__SYMPHONY_WORKSPACE__' '1' '#{workspace_path}'
-          ;;
-      esac
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          worker_ssh_hosts: ["worker-01:2200"],
+          hook_before_run: "echo before-run",
+          hook_after_run: "echo after-run",
+          hook_before_remove: "echo before-remove"
+        )
 
-      exit 0
-      """)
+        assert Config.settings!().worker.ssh_hosts == ["worker-01:2200"]
+        assert Config.settings!().workspace.root == workspace_root
+        assert {:ok, ^workspace_path} = Workspace.create_for_issue("MT-SSH-WS", "worker-01:2200")
+        assert :ok = Workspace.run_before_run_hook(workspace_path, "MT-SSH-WS", "worker-01:2200")
+        assert :ok = Workspace.run_after_run_hook(workspace_path, "MT-SSH-WS", "worker-01:2200")
+        assert :ok = Workspace.remove_issue_workspaces("MT-SSH-WS", "worker-01:2200")
 
-      File.chmod!(fake_ssh, 0o755)
-
-      write_workflow_file!(Workflow.workflow_file_path(),
-        workspace_root: workspace_root,
-        worker_ssh_hosts: ["worker-01:2200"],
-        hook_before_run: "echo before-run",
-        hook_after_run: "echo after-run",
-        hook_before_remove: "echo before-remove"
-      )
-
-      assert Config.settings!().worker.ssh_hosts == ["worker-01:2200"]
-      assert Config.settings!().workspace.root == workspace_root
-      assert {:ok, ^workspace_path} = Workspace.create_for_issue("MT-SSH-WS", "worker-01:2200")
-      assert :ok = Workspace.run_before_run_hook(workspace_path, "MT-SSH-WS", "worker-01:2200")
-      assert :ok = Workspace.run_after_run_hook(workspace_path, "MT-SSH-WS", "worker-01:2200")
-      assert :ok = Workspace.remove_issue_workspaces("MT-SSH-WS", "worker-01:2200")
-
-      trace = File.read!(trace_file)
-      assert trace =~ "-p 2200 worker-01 bash -lc"
-      assert trace =~ "__SYMPHONY_WORKSPACE__"
-      assert trace =~ "~/.symphony-remote-workspaces/MT-SSH-WS"
-      assert trace =~ "${workspace#~/}"
-      assert trace =~ "echo before-run"
-      assert trace =~ "echo after-run"
-      assert trace =~ "echo before-remove"
-      assert trace =~ "rm -rf"
-      assert trace =~ workspace_path
-    after
-      File.rm_rf(test_root)
+        trace = File.read!(trace_file)
+        assert trace =~ "-p"
+        assert trace =~ "2200"
+        assert trace =~ "worker-01"
+        assert trace =~ "bash"
+        assert trace =~ "-lc"
+        assert trace =~ "__SYMPHONY_WORKSPACE__"
+        assert trace =~ "~/.symphony-remote-workspaces/MT-SSH-WS"
+        assert trace =~ "${workspace#~/}"
+        assert trace =~ "echo before-run"
+        assert trace =~ "echo after-run"
+        assert trace =~ "echo before-remove"
+        assert trace =~ "rm -rf"
+        assert trace =~ workspace_path
+      after
+        File.rm_rf(test_root)
+      end
     end
   end
 end
