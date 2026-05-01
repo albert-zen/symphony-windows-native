@@ -175,6 +175,11 @@ defmodule SymphonyElixir.Config.Schema do
       field(:turn_timeout_ms, :integer, default: 3_600_000)
       field(:read_timeout_ms, :integer, default: 5_000)
       field(:stall_timeout_ms, :integer, default: 300_000)
+      field(:command_watchdog_long_running_ms, :integer, default: 300_000)
+      field(:command_watchdog_idle_ms, :integer, default: 120_000)
+      field(:command_watchdog_stalled_ms, :integer, default: 300_000)
+      field(:command_watchdog_repeated_output_limit, :integer, default: 20)
+      field(:command_watchdog_block_on_stall, :boolean, default: false)
       field(:review_readiness_repository, :string)
       field(:review_readiness_required_checks, {:array, :string}, default: [])
     end
@@ -192,6 +197,11 @@ defmodule SymphonyElixir.Config.Schema do
           :turn_timeout_ms,
           :read_timeout_ms,
           :stall_timeout_ms,
+          :command_watchdog_long_running_ms,
+          :command_watchdog_idle_ms,
+          :command_watchdog_stalled_ms,
+          :command_watchdog_repeated_output_limit,
+          :command_watchdog_block_on_stall,
           :review_readiness_repository,
           :review_readiness_required_checks
         ],
@@ -201,6 +211,10 @@ defmodule SymphonyElixir.Config.Schema do
       |> validate_number(:turn_timeout_ms, greater_than: 0)
       |> validate_number(:read_timeout_ms, greater_than: 0)
       |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
+      |> validate_number(:command_watchdog_long_running_ms, greater_than_or_equal_to: 0)
+      |> validate_number(:command_watchdog_idle_ms, greater_than_or_equal_to: 0)
+      |> validate_number(:command_watchdog_stalled_ms, greater_than_or_equal_to: 0)
+      |> validate_number(:command_watchdog_repeated_output_limit, greater_than: 0)
     end
   end
 
@@ -236,12 +250,13 @@ defmodule SymphonyElixir.Config.Schema do
       field(:dashboard_enabled, :boolean, default: true)
       field(:refresh_ms, :integer, default: 1_000)
       field(:render_interval_ms, :integer, default: 16)
+      field(:steer_token, :string)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
-      |> cast(attrs, [:dashboard_enabled, :refresh_ms, :render_interval_ms], empty_values: [])
+      |> cast(attrs, [:dashboard_enabled, :refresh_ms, :render_interval_ms, :steer_token], empty_values: [])
       |> validate_number(:refresh_ms, greater_than: 0)
       |> validate_number(:render_interval_ms, greater_than: 0)
     end
@@ -391,7 +406,12 @@ defmodule SymphonyElixir.Config.Schema do
         review_readiness_required_checks: normalize_required_checks(settings.codex.review_readiness_required_checks)
     }
 
-    %{settings | tracker: tracker, workspace: workspace, codex: codex}
+    observability = %{
+      settings.observability
+      | steer_token: resolve_secret_setting(settings.observability.steer_token, System.get_env("SYMPHONY_STEER_TOKEN"))
+    }
+
+    %{settings | tracker: tracker, workspace: workspace, codex: codex, observability: observability}
   end
 
   defp normalize_keys(value) when is_map(value) do
@@ -519,7 +539,8 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp normalize_secret_value(value) when is_binary(value) do
-    if value == "", do: nil, else: value
+    trimmed = String.trim(value)
+    if trimmed == "", do: nil, else: trimmed
   end
 
   defp normalize_secret_value(_value), do: nil

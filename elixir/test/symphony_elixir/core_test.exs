@@ -1,6 +1,15 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
 
+  defmodule RetryPollFailureLinearClient do
+    def fetch_candidate_issues do
+      {:error, {:linear_api_request, %Req.TransportError{reason: :closed}}}
+    end
+
+    def fetch_issues_by_states(_states), do: {:ok, []}
+    def fetch_issue_states_by_ids(_issue_ids), do: {:ok, []}
+  end
+
   test "config defaults and validation checks" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
@@ -163,6 +172,24 @@ defmodule SymphonyElixir.CoreTest do
     )
 
     assert Config.settings!().tracker.assignee == env_assignee
+  end
+
+  test "manager steer token resolves from SYMPHONY_STEER_TOKEN env var" do
+    previous_steer_token = System.get_env("SYMPHONY_STEER_TOKEN")
+    env_steer_token = "test-steer-token"
+
+    on_exit(fn -> restore_env("SYMPHONY_STEER_TOKEN", previous_steer_token) end)
+    System.put_env("SYMPHONY_STEER_TOKEN", env_steer_token)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: "project",
+      codex_command: "/bin/sh app-server"
+    )
+
+    assert Config.settings!().observability.steer_token == env_steer_token
+
+    System.put_env("SYMPHONY_STEER_TOKEN", "   ")
+    assert Config.settings!().observability.steer_token == nil
   end
 
   test "workflow file path defaults to WORKFLOW.md in the current working directory when app env is unset" do
@@ -689,6 +716,240 @@ defmodule SymphonyElixir.CoreTest do
            } = :sys.get_state(pid).retry_attempts[issue_id]
   end
 
+  test "retry poll transport closure preserves retry context and classifies dashboard error" do
+    linear_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
+    Application.put_env(:symphony_elixir, :linear_client_module, RetryPollFailureLinearClient)
+
+    on_exit(fn ->
+      if is_nil(linear_client_module) do
+        Application.delete_env(:symphony_elixir, :linear_client_module)
+      else
+        Application.put_env(:symphony_elixir, :linear_client_module, linear_client_module)
+      end
+    end)
+
+    issue_id = "issue-retry-poll-closed"
+    retry_token = make_ref()
+    orchestrator_name = Module.concat(__MODULE__, :RetryPollTransportClosureOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | retry_attempts: %{
+            issue_id => %{
+              attempt: 2,
+              timer_ref: nil,
+              retry_token: retry_token,
+              due_at_ms: System.monotonic_time(:millisecond),
+              identifier: "ALB-10",
+              error: "agent exited: :boom",
+              error_kind: "worker",
+              worker_host: "worker-a",
+              workspace_path: "D:/workspaces/ALB-10",
+              branch_name: "codex/ALB-10-retry-poll"
+            }
+          }
+      }
+    end)
+
+    send(pid, {:retry_issue, issue_id, retry_token})
+    Process.sleep(50)
+
+    assert %{
+             attempt: 3,
+             identifier: "ALB-10",
+             error: error,
+             error_kind: "linear_transport",
+             prior_error: "agent exited: :boom",
+             prior_error_kind: "worker",
+             worker_host: "worker-a",
+             workspace_path: "D:/workspaces/ALB-10",
+             branch_name: "codex/ALB-10-retry-poll"
+           } = :sys.get_state(pid).retry_attempts[issue_id]
+
+    assert error =~ "transient Linear transport closure during retry poll"
+    assert error =~ "preserving existing workspace/branch context"
+  end
+
+  test "repeated retry poll transport closure does not invent prior worker failure" do
+    linear_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
+    Application.put_env(:symphony_elixir, :linear_client_module, RetryPollFailureLinearClient)
+
+    on_exit(fn ->
+      if is_nil(linear_client_module) do
+        Application.delete_env(:symphony_elixir, :linear_client_module)
+      else
+        Application.put_env(:symphony_elixir, :linear_client_module, linear_client_module)
+      end
+    end)
+
+    issue_id = "issue-repeated-retry-poll-closed"
+    retry_token = make_ref()
+    orchestrator_name = Module.concat(__MODULE__, :RepeatedRetryPollTransportClosureOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | retry_attempts: %{
+            issue_id => %{
+              attempt: 3,
+              timer_ref: nil,
+              retry_token: retry_token,
+              due_at_ms: System.monotonic_time(:millisecond),
+              identifier: "ALB-10",
+              error: "transient Linear transport closure during retry poll",
+              error_kind: "linear_transport",
+              worker_host: "worker-a",
+              workspace_path: "D:/workspaces/ALB-10",
+              branch_name: "codex/ALB-10-retry-poll"
+            }
+          }
+      }
+    end)
+
+    send(pid, {:retry_issue, issue_id, retry_token})
+    Process.sleep(50)
+
+    assert %{
+             attempt: 4,
+             error_kind: "linear_transport",
+             prior_error: nil,
+             prior_error_kind: nil,
+             branch_name: "codex/ALB-10-retry-poll"
+           } = :sys.get_state(pid).retry_attempts[issue_id]
+  end
+
+  test "worker failure after retry dispatch preserves seeded workspace context" do
+    issue_id = "issue-retry-dispatch-crash"
+    ref = make_ref()
+    orchestrator_name = Module.concat(__MODULE__, :RetryDispatchCrashOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: "ALB-15",
+      retry_attempt: 3,
+      issue: %Issue{id: issue_id, identifier: "ALB-15", state: "In Progress"},
+      worker_host: "worker-b",
+      workspace_path: "D:/workspaces/ALB-15",
+      branch_name: "codex/ALB-15-retry-dispatch",
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:retry_attempts, %{})
+    end)
+
+    send(pid, {:DOWN, ref, :process, self(), :boom})
+    Process.sleep(50)
+
+    assert %{
+             attempt: 4,
+             identifier: "ALB-15",
+             error: "agent exited: :boom",
+             error_kind: "worker",
+             worker_host: "worker-b",
+             workspace_path: "D:/workspaces/ALB-15",
+             branch_name: "codex/ALB-15-retry-dispatch"
+           } = :sys.get_state(pid).retry_attempts[issue_id]
+  end
+
+  test "spawn failure requeue preserves retry branch and prior failure context" do
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    previous_memory_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    previous_start_child = Application.get_env(:symphony_elixir, :task_supervisor_start_child)
+
+    issue_id = "issue-spawn-failure-requeue"
+    retry_token = make_ref()
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "ALB-21",
+      title: "Handle Linear retry poll closures",
+      state: "In Progress",
+      branch_name: "codex/ALB-21-linear-retry-poll-closures"
+    }
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    Application.put_env(:symphony_elixir, :task_supervisor_start_child, fn _fun ->
+      {:error, :simulated_spawn_failure}
+    end)
+
+    on_exit(fn ->
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      restore_app_env(:memory_tracker_recipient, previous_memory_recipient)
+      restore_app_env(:task_supervisor_start_child, previous_start_child)
+    end)
+
+    state = %Orchestrator.State{
+      max_concurrent_agents: 10,
+      running: %{},
+      claimed: MapSet.new(),
+      retry_attempts: %{
+        issue_id => %{
+          attempt: 3,
+          timer_ref: nil,
+          retry_token: retry_token,
+          due_at_ms: System.monotonic_time(:millisecond),
+          identifier: "ALB-21",
+          error: "transient Linear transport closure during retry poll",
+          error_kind: "linear_transport",
+          prior_error: "agent exited: :boom",
+          prior_error_kind: "worker",
+          worker_host: nil,
+          workspace_path: "D:/workspaces/ALB-21",
+          branch_name: "codex/ALB-21-linear-retry-poll-closures"
+        }
+      },
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    }
+
+    assert {:noreply, updated_state} = Orchestrator.handle_info({:retry_issue, issue_id, retry_token}, state)
+
+    assert %{
+             attempt: 4,
+             identifier: "ALB-21",
+             error: "failed to spawn agent: :simulated_spawn_failure",
+             error_kind: "worker",
+             prior_error: "agent exited: :boom",
+             prior_error_kind: "worker",
+             workspace_path: "D:/workspaces/ALB-21",
+             branch_name: "codex/ALB-21-linear-retry-poll-closures"
+           } = updated_state.retry_attempts[issue_id]
+
+    assert_receive {:memory_tracker_claim_acquired, ^issue_id, "ALB-21", _claim}
+    assert_receive {:memory_tracker_claim_released, ^issue_id}
+  end
+
   test "manual refresh coalesces repeated requests and ignores superseded ticks" do
     now_ms = System.monotonic_time(:millisecond)
     stale_tick_token = make_ref()
@@ -973,7 +1234,17 @@ defmodule SymphonyElixir.CoreTest do
 
     on_exit(fn -> Workflow.set_workflow_file_path(workflow_path) end)
 
-    prompt = PromptBuilder.build_prompt(issue, attempt: 2)
+    prompt =
+      PromptBuilder.build_prompt(issue,
+        attempt: 2,
+        retry_error: "transient Linear transport closure during retry poll",
+        retry_error_kind: "linear_transport",
+        retry_prior_error: "agent exited: :boom",
+        retry_prior_error_kind: "worker",
+        retry_workspace_path: "D:/workspaces/MT-616",
+        retry_branch_name: "codex/MT-616-transport-closure",
+        retry_worker_host: "worker-a"
+      )
 
     assert prompt =~ "You are working on a Linear ticket `MT-616`"
     assert prompt =~ "Issue context:"
@@ -994,6 +1265,14 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Do not call `gh pr merge` directly"
     assert prompt =~ "Continuation context:"
     assert prompt =~ "retry attempt #2"
+    assert prompt =~ "Previous retry/backoff signal: transient Linear transport closure during retry poll"
+    assert prompt =~ "Retry error kind: linear_transport"
+    assert prompt =~ "Prior worker/code failure before this retry signal: agent exited: :boom"
+    assert prompt =~ "Prior failure kind: worker"
+    assert prompt =~ "Existing workspace path: D:/workspaces/MT-616"
+    assert prompt =~ "Existing branch name: codex/MT-616-transport-closure"
+    assert prompt =~ "Worker host: worker-a"
+    assert prompt =~ "Record this retry/backoff signal in the existing `## Codex Workpad`"
   end
 
   test "prompt builder adds continuation guidance for retries" do

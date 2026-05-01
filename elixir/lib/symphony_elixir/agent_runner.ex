@@ -130,7 +130,14 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp build_turn_prompt(issue, opts, 1, _max_turns), do: PromptBuilder.build_prompt(issue, opts)
+  defp build_turn_prompt(issue, opts, 1, _max_turns) do
+    prompt_opts =
+      opts
+      |> Keyword.take([:attempt])
+      |> Keyword.merge(retry_prompt_opts(Keyword.get(opts, :retry_metadata, %{})))
+
+    PromptBuilder.build_prompt(issue, prompt_opts)
+  end
 
   defp build_turn_prompt(_issue, _opts, turn_number, max_turns) do
     """
@@ -143,6 +150,21 @@ defmodule SymphonyElixir.AgentRunner do
     - Focus on the remaining ticket work and do not end the turn while the issue stays active unless you are truly blocked.
     """
   end
+
+  defp retry_prompt_opts(metadata) when is_map(metadata) do
+    [
+      retry_error: Map.get(metadata, :error),
+      retry_error_kind: Map.get(metadata, :error_kind),
+      retry_prior_error: Map.get(metadata, :prior_error),
+      retry_prior_error_kind: Map.get(metadata, :prior_error_kind),
+      retry_workspace_path: Map.get(metadata, :workspace_path),
+      retry_branch_name: Map.get(metadata, :branch_name),
+      retry_worker_host: Map.get(metadata, :worker_host)
+    ]
+    |> Enum.reject(fn {_key, value} -> is_nil(value) or value == "" end)
+  end
+
+  defp retry_prompt_opts(_metadata), do: []
 
   defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher) when is_binary(issue_id) do
     case issue_state_fetcher.([issue_id]) do

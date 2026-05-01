@@ -13,6 +13,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
     socket =
       socket
       |> assign(:payload, load_payload())
+      |> assign(:detail_payload, nil)
+      |> assign(:detail_error, nil)
+      |> assign(:issue_identifier, nil)
+      |> assign(:steer_auth_required, steer_auth_required?())
+      |> assign(:steer_token_configured, steer_token_configured?())
       |> assign(:now, DateTime.utc_now())
 
     if connected?(socket) do
@@ -24,6 +29,19 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   @impl true
+  def handle_params(%{"issue_identifier" => issue_identifier}, _uri, socket) do
+    {:noreply, assign_detail_payload(socket, issue_identifier)}
+  end
+
+  def handle_params(_params, _uri, socket) do
+    {:noreply,
+     socket
+     |> assign(:detail_payload, nil)
+     |> assign(:detail_error, nil)
+     |> assign(:issue_identifier, nil)}
+  end
+
+  @impl true
   def handle_info(:runtime_tick, socket) do
     schedule_runtime_tick()
     {:noreply, assign(socket, :now, DateTime.utc_now())}
@@ -31,15 +49,197 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   @impl true
   def handle_info(:observability_updated, socket) do
-    {:noreply,
-     socket
-     |> assign(:payload, load_payload())
-     |> assign(:now, DateTime.utc_now())}
+    socket =
+      socket
+      |> assign(:payload, load_payload())
+      |> assign(:now, DateTime.utc_now())
+
+    socket =
+      case socket.assigns[:issue_identifier] do
+        issue_identifier when is_binary(issue_identifier) -> assign_detail_payload(socket, issue_identifier)
+        _ -> socket
+      end
+
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("steer", %{"steer" => steer_params}, socket) do
+    issue_identifier = socket.assigns.issue_identifier
+    message = Map.get(steer_params, "message", "")
+    session_id = Map.get(steer_params, "session_id")
+    operator_token = Map.get(steer_params, "operator_token")
+
+    case authorize_steer(operator_token) do
+      :ok ->
+        submit_steer(socket, issue_identifier, message, session_id)
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, steer_error_message(reason))}
+    end
+  end
+
+  defp submit_steer(socket, issue_identifier, message, session_id) do
+    if non_blank_binary?(session_id) do
+      case Presenter.steer_payload(issue_identifier, message, session_id, orchestrator()) do
+        {:ok, _payload} ->
+          {:noreply,
+           socket
+           |> put_flash(:info, "Steer message queued for #{issue_identifier}.")
+           |> assign_detail_payload(issue_identifier)}
+
+        {:error, reason} ->
+          {:noreply, put_flash(socket, :error, steer_error_message(reason))}
+      end
+    else
+      {:noreply, put_flash(socket, :error, steer_error_message(:session_mismatch))}
+    end
   end
 
   @impl true
   def render(assigns) do
     ~H"""
+    <%= if @live_action == :worker_detail do %>
+      <section class="dashboard-shell">
+        <header class="hero-card">
+          <div class="hero-grid">
+            <div>
+              <p class="eyebrow">Worker Detail</p>
+              <h1 class="hero-title"><%= @issue_identifier %></h1>
+              <p class="hero-copy">
+                Human-readable Codex session activity, raw event details, and targeted manager steering.
+              </p>
+            </div>
+            <div class="status-stack">
+              <a class="subtle-button" href="/">Dashboard</a>
+            </div>
+          </div>
+        </header>
+
+        <%= if @detail_error do %>
+          <section class="error-card">
+            <h2 class="error-title">Worker unavailable</h2>
+            <p class="error-copy"><%= @detail_error %></p>
+          </section>
+        <% else %>
+          <% detail = @detail_payload %>
+          <% running =
+            detail.running ||
+              %{
+                state: detail.status,
+                session_id: nil,
+                turn_count: 0,
+                tokens: %{input_tokens: nil, output_tokens: nil, total_tokens: nil}
+              } %>
+
+          <section class="metric-grid">
+            <article class="metric-card">
+              <p class="metric-label">State</p>
+              <p class="metric-value"><%= running.state %></p>
+              <p class="metric-detail"><%= detail.title || detail.issue_identifier %></p>
+            </article>
+            <article class="metric-card">
+              <p class="metric-label">Session</p>
+              <p class="metric-value mono detail-session"><%= running.session_id || "n/a" %></p>
+              <p class="metric-detail">Turn <%= running.turn_count %></p>
+            </article>
+            <article class="metric-card">
+              <p class="metric-label">Workspace</p>
+              <p class="metric-value detail-path"><%= detail.workspace.path %></p>
+              <p class="metric-detail"><%= detail.workspace.host || "local" %></p>
+            </article>
+            <article class="metric-card">
+              <p class="metric-label">Tokens</p>
+              <p class="metric-value numeric"><%= format_int(running.tokens.total_tokens) %></p>
+              <p class="metric-detail numeric">
+                In <%= format_int(running.tokens.input_tokens) %> / Out <%= format_int(running.tokens.output_tokens) %>
+              </p>
+            </article>
+          </section>
+
+          <section class="section-card">
+            <div class="section-header">
+              <div>
+                <h2 class="section-title">Steer worker</h2>
+                <p class="section-copy">
+                  <%= if detail.running do %>
+                    <%= if @steer_auth_required and not @steer_token_configured do %>
+                      Steering is locked because this dashboard is exposed without an operator token.
+                    <% else %>
+                      Send an auditable manager message to this exact active session.
+                    <% end %>
+                  <% else %>
+                    This worker is not running, so steering is disabled.
+                  <% end %>
+                </p>
+              </div>
+            </div>
+
+            <.form for={%{}} as={:steer} phx-submit="steer" class="steer-form">
+              <input type="hidden" name="steer[session_id]" value={running.session_id || ""} />
+              <%= if @steer_auth_required and @steer_token_configured do %>
+                <input
+                  type="password"
+                  name="steer[operator_token]"
+                  class="steer-token"
+                  placeholder="Operator token"
+                  autocomplete="off"
+                  disabled={is_nil(running.session_id)}
+                />
+              <% end %>
+              <textarea
+                name="steer[message]"
+                class="steer-input"
+                rows="4"
+                placeholder="Send a targeted instruction to this running worker"
+                disabled={is_nil(running.session_id) or steer_locked?(@steer_auth_required, @steer_token_configured)}
+              ></textarea>
+              <button
+                type="submit"
+                disabled={is_nil(running.session_id) or steer_locked?(@steer_auth_required, @steer_token_configured)}
+              >Send steer</button>
+            </.form>
+          </section>
+
+          <section class="section-card">
+            <div class="section-header">
+              <div>
+                <h2 class="section-title">Timeline</h2>
+                <p class="section-copy">Readable Codex updates with raw JSON preserved per event.</p>
+              </div>
+            </div>
+
+            <%= if detail.timeline == [] do %>
+              <p class="empty-state">No Codex events recorded yet.</p>
+            <% else %>
+              <ol class="timeline-list">
+                <li :for={event <- detail.timeline} class="timeline-item">
+                  <div class="timeline-main">
+                    <span class="timeline-event"><%= event_label(event.event) %></span>
+                    <span class="timeline-time mono"><%= event.at || "pending" %></span>
+                  </div>
+                  <p class="timeline-message"><%= event.message || "n/a" %></p>
+                  <details class="raw-details">
+                    <summary>Raw JSON</summary>
+                    <pre class="code-panel"><%= pretty_value(event.raw) %></pre>
+                  </details>
+                </li>
+              </ol>
+            <% end %>
+          </section>
+
+          <section class="section-card">
+            <div class="section-header">
+              <div>
+                <h2 class="section-title">Raw worker payload</h2>
+                <p class="section-copy">Full JSON projection used by the detail page.</p>
+              </div>
+            </div>
+            <pre class="code-panel"><%= pretty_value(detail) %></pre>
+          </section>
+        <% end %>
+      </section>
+    <% else %>
     <section class="dashboard-shell">
       <header class="hero-card">
         <div class="hero-grid">
@@ -153,6 +353,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="issue-stack">
                         <span class="issue-id"><%= entry.issue_identifier %></span>
+                        <a class="issue-link" href={"/workers/#{entry.issue_identifier}"}>Worker detail</a>
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
                       </div>
                     </td>
@@ -178,7 +379,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <% end %>
                       </div>
                     </td>
-                    <td class="numeric"><%= format_runtime_and_turns(entry.started_at, entry.turn_count, @now) %></td>
+                    <td>
+                      <div class="detail-stack numeric">
+                        <span><%= format_runtime_and_turns(entry.started_at, entry.turn_count, @now) %></span>
+                        <%= if entry.command_watchdog do %>
+                          <span class={watchdog_badge_class(entry.command_watchdog.classification)}>
+                            <%= entry.command_watchdog.classification %>
+                            · <%= format_watchdog_age(entry.command_watchdog.age_ms) %>
+                          </span>
+                        <% end %>
+                      </div>
+                    </td>
                     <td>
                       <div class="detail-stack">
                         <span
@@ -223,8 +434,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <tr>
                     <th>Issue</th>
                     <th>Attempt</th>
+                    <th>Kind</th>
+                    <th>Branch</th>
                     <th>Due at</th>
                     <th>Error</th>
+                    <th>Prior error</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -236,8 +450,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       </div>
                     </td>
                     <td><%= entry.attempt %></td>
+                    <td><%= entry.error_kind || "n/a" %></td>
+                    <td class="mono"><%= entry.branch_name || "n/a" %></td>
                     <td class="mono"><%= entry.due_at || "n/a" %></td>
                     <td><%= entry.error || "n/a" %></td>
+                    <td><%= entry.prior_error || "n/a" %></td>
                   </tr>
                 </tbody>
               </table>
@@ -246,11 +463,28 @@ defmodule SymphonyElixirWeb.DashboardLive do
         </section>
       <% end %>
     </section>
+    <% end %>
     """
   end
 
   defp load_payload do
     Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
+  end
+
+  defp assign_detail_payload(socket, issue_identifier) do
+    case Presenter.issue_payload(issue_identifier, orchestrator(), snapshot_timeout_ms()) do
+      {:ok, payload} ->
+        socket
+        |> assign(:detail_payload, payload)
+        |> assign(:detail_error, nil)
+        |> assign(:issue_identifier, issue_identifier)
+
+      {:error, :issue_not_found} ->
+        socket
+        |> assign(:detail_payload, nil)
+        |> assign(:detail_error, "No active or retrying worker was found for #{issue_identifier}.")
+        |> assign(:issue_identifier, issue_identifier)
+    end
   end
 
   defp orchestrator do
@@ -261,15 +495,54 @@ defmodule SymphonyElixirWeb.DashboardLive do
     Endpoint.config(:snapshot_timeout_ms) || 15_000
   end
 
-  defp completed_runtime_seconds(payload) do
-    payload.codex_totals.seconds_running || 0
+  defp steer_auth_required?, do: Endpoint.config(:steer_auth_required) == true
+
+  defp steer_token_configured? do
+    case Endpoint.config(:steer_token) do
+      token when is_binary(token) -> String.trim(token) != ""
+      _ -> false
+    end
   end
 
+  defp authorize_steer(operator_token) do
+    if steer_auth_required?(), do: authorize_exposed_steer(operator_token), else: :ok
+  end
+
+  defp authorize_exposed_steer(operator_token) do
+    case Endpoint.config(:steer_token) do
+      token when is_binary(token) ->
+        case String.trim(token) do
+          "" -> {:error, :steer_auth_required}
+          expected_token -> compare_steer_token(operator_token, expected_token)
+        end
+
+      _ ->
+        {:error, :steer_auth_required}
+    end
+  end
+
+  defp compare_steer_token(operator_token, expected_token) do
+    submitted_token = String.trim(operator_token || "")
+
+    if byte_size(submitted_token) == byte_size(expected_token) and
+         Plug.Crypto.secure_compare(submitted_token, expected_token) do
+      :ok
+    else
+      {:error, :invalid_steer_token}
+    end
+  end
+
+  defp non_blank_binary?(value) when is_binary(value), do: String.trim(value) != ""
+  defp non_blank_binary?(_value), do: false
+
+  defp steer_locked?(true, false), do: true
+  defp steer_locked?(_required, _configured), do: false
+
   defp total_runtime_seconds(payload, now) do
-    completed_runtime_seconds(payload) +
-      Enum.reduce(payload.running, 0, fn entry, total ->
-        total + runtime_seconds_from_started_at(entry.started_at, now)
-      end)
+    base_seconds = payload.codex_totals.seconds_running || 0
+    active_count = length(payload.running || [])
+
+    base_seconds + active_count * runtime_seconds_since_generated_at(payload.generated_at, now)
   end
 
   defp format_runtime_and_turns(started_at, turn_count, now) when is_integer(turn_count) and turn_count > 0 do
@@ -299,6 +572,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp runtime_seconds_from_started_at(_started_at, _now), do: 0
 
+  defp runtime_seconds_since_generated_at(generated_at, %DateTime{} = now) when is_binary(generated_at) do
+    case DateTime.from_iso8601(generated_at) do
+      {:ok, parsed, _offset} -> max(DateTime.diff(now, parsed, :second), 0)
+      _ -> 0
+    end
+  end
+
+  defp runtime_seconds_since_generated_at(_generated_at, _now), do: 0
+
   defp format_int(value) when is_integer(value) do
     value
     |> Integer.to_string()
@@ -308,6 +590,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp format_int(_value), do: "n/a"
+
+  defp event_label(event) when is_atom(event), do: event |> Atom.to_string() |> String.replace("_", " ")
+  defp event_label(event), do: event |> to_string() |> String.replace("_", " ")
+
+  defp steer_error_message(:blank_message), do: "Steer message cannot be blank."
+  defp steer_error_message(:worker_not_running), do: "Worker is no longer running."
+  defp steer_error_message(:session_mismatch), do: "Worker session changed before the steer was sent."
+  defp steer_error_message(:steer_auth_required), do: "Operator token is required before steering exposed workers."
+  defp steer_error_message(:invalid_steer_token), do: "Operator token is invalid."
+  defp steer_error_message(reason), do: "Steer failed: #{inspect(reason)}"
 
   defp state_badge_class(state) do
     base = "state-badge"
@@ -320,6 +612,26 @@ defmodule SymphonyElixirWeb.DashboardLive do
       true -> base
     end
   end
+
+  defp watchdog_badge_class(classification) do
+    base = "state-badge"
+
+    case to_string(classification) do
+      "healthy" -> "#{base} state-badge-active"
+      "idle" -> "#{base} state-badge-warning"
+      "stalled" -> "#{base} state-badge-danger"
+      "needs_attention" -> "#{base} state-badge-warning"
+      _ -> base
+    end
+  end
+
+  defp format_watchdog_age(age_ms) when is_integer(age_ms) do
+    age_ms
+    |> div(1_000)
+    |> format_runtime_seconds()
+  end
+
+  defp format_watchdog_age(_age_ms), do: "n/a"
 
   defp schedule_runtime_tick do
     Process.send_after(self(), :runtime_tick, @runtime_tick_ms)

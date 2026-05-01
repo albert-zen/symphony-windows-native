@@ -607,7 +607,12 @@ defmodule SymphonyElixir.StatusDashboard do
     turn_count = Map.get(running_entry, :turn_count, 0)
     age = format_cell(format_runtime_and_turns(runtime_seconds, turn_count), @running_age_width)
     event = running_entry.last_codex_event || "none"
-    event_label = format_cell(summarize_message(running_entry.last_codex_message), running_event_width)
+
+    event_label =
+      [format_command_watchdog(running_entry), summarize_message(running_entry.last_codex_message)]
+      |> Enum.reject(&(&1 in [nil, ""]))
+      |> Enum.join(" | ")
+      |> format_cell(running_event_width)
 
     tokens = format_count(total_tokens) |> format_cell(@running_tokens_width, :right)
 
@@ -654,6 +659,28 @@ defmodule SymphonyElixir.StatusDashboard do
   @spec tps_graph_for_test([{integer(), integer()}], integer(), integer()) :: String.t()
   def tps_graph_for_test(samples, now_ms, current_tokens), do: tps_graph(samples, now_ms, current_tokens)
 
+  defp format_command_watchdog(%{classification: classification, age_ms: age_ms} = watchdog) do
+    command =
+      case Map.get(watchdog, :command) do
+        value when is_binary(value) -> value
+        _ -> "command"
+      end
+
+    "cmd #{classification} #{format_watchdog_age(age_ms)} #{command}"
+  end
+
+  defp format_command_watchdog(%{command_watchdog: nil}), do: nil
+  defp format_command_watchdog(%{} = running_entry), do: format_command_watchdog(Map.get(running_entry, :command_watchdog))
+  defp format_command_watchdog(_watchdog), do: nil
+
+  defp format_watchdog_age(age_ms) when is_integer(age_ms) do
+    age_ms
+    |> div(1_000)
+    |> format_runtime_seconds()
+  end
+
+  defp format_watchdog_age(_age_ms), do: "n/a"
+
   defp format_retry_rows(retrying) do
     if retrying == [] do
       ["│  " <> colorize("No queued retries", @ansi_gray)]
@@ -670,15 +697,21 @@ defmodule SymphonyElixir.StatusDashboard do
     identifier = retry_entry.identifier || issue_id
     attempt = retry_entry.attempt || 0
     due_in_ms = retry_entry.due_in_ms || 0
+    error_kind = format_retry_error_kind(Map.get(retry_entry, :error_kind))
+    branch_name = format_retry_branch_name(Map.get(retry_entry, :branch_name))
     error = format_retry_error(retry_entry.error)
+    prior_error = format_retry_prior_error(Map.get(retry_entry, :prior_error))
 
     "│  #{colorize("↻", @ansi_orange)} " <>
       colorize("#{identifier}", @ansi_red) <>
       " " <>
       colorize("attempt=#{attempt}", @ansi_yellow) <>
+      error_kind <>
+      branch_name <>
       colorize(" in ", @ansi_dim) <>
       colorize(next_in_words(due_in_ms), @ansi_cyan) <>
-      error
+      error <>
+      prior_error
   end
 
   defp next_in_words(due_in_ms) when is_integer(due_in_ms) do
@@ -709,6 +742,45 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp format_retry_error(_), do: ""
+
+  defp format_retry_error_kind(kind) when is_binary(kind) do
+    sanitized =
+      kind
+      |> String.replace(~r/\s+/, "_")
+      |> String.trim()
+
+    if sanitized == "" do
+      ""
+    else
+      " " <> colorize("kind=#{truncate(sanitized, 32)}", @ansi_dim)
+    end
+  end
+
+  defp format_retry_error_kind(_kind), do: ""
+
+  defp format_retry_branch_name(branch_name) when is_binary(branch_name) do
+    sanitized =
+      branch_name
+      |> String.replace(~r/\s+/, "_")
+      |> String.trim()
+
+    if sanitized == "" do
+      ""
+    else
+      " " <> colorize("branch=#{truncate(sanitized, 48)}", @ansi_dim)
+    end
+  end
+
+  defp format_retry_branch_name(_branch_name), do: ""
+
+  defp format_retry_prior_error(error) when is_binary(error) do
+    case String.trim(error) do
+      "" -> ""
+      trimmed -> " " <> colorize("(prior: #{truncate(trimmed, 80)})", @ansi_dim)
+    end
+  end
+
+  defp format_retry_prior_error(_error), do: ""
 
   defp format_runtime_seconds(seconds) when is_integer(seconds) do
     mins = div(seconds, 60)
@@ -1240,12 +1312,36 @@ defmodule SymphonyElixir.StatusDashboard do
   defp humanize_codex_event(:unsupported_tool_call, _message, payload),
     do: humanize_dynamic_tool_event("unsupported dynamic tool call rejected", payload)
 
+  defp humanize_codex_event(:manager_steer_queued, message, payload),
+    do: "manager steer queued: #{manager_steer_text(message, payload)}"
+
+  defp humanize_codex_event(:manager_steer_submitted, message, payload),
+    do: "manager steer submitted: #{manager_steer_text(message, payload)}"
+
+  defp humanize_codex_event(:manager_steer_delivered, message, payload),
+    do: "manager steer delivered: #{manager_steer_text(message, payload)}"
+
+  defp humanize_codex_event(:manager_steer_rejected, message, _payload),
+    do: "manager steer rejected: #{format_reason(map_value(message, ["reason", :reason]))}"
+
+  defp humanize_codex_event(:manager_steer_failed, message, _payload),
+    do: "manager steer failed: #{format_reason(map_value(message, ["reason", :reason]))}"
+
   defp humanize_codex_event(:turn_ended_with_error, message, _payload), do: "turn ended with error: #{format_reason(message)}"
   defp humanize_codex_event(:startup_failed, message, _payload), do: "startup failed: #{format_reason(message)}"
   defp humanize_codex_event(:turn_failed, _message, payload), do: humanize_codex_method("turn/failed", payload)
   defp humanize_codex_event(:turn_cancelled, _message, _payload), do: "turn cancelled"
   defp humanize_codex_event(:malformed, _message, _payload), do: "malformed JSON event from codex"
   defp humanize_codex_event(_event, _message, _payload), do: nil
+
+  defp manager_steer_text(message, payload) do
+    text =
+      map_value(message, ["message", :message]) ||
+        if(is_binary(payload), do: payload, else: nil) ||
+        ""
+
+    inline_text(text)
+  end
 
   defp unwrap_codex_message_payload(%{} = message) do
     cond do

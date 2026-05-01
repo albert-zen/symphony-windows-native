@@ -82,6 +82,21 @@ defmodule SymphonyElixir.ExtensionsTest do
     def handle_call(:request_refresh, _from, state) do
       {:reply, Keyword.get(state, :refresh, :unavailable), state}
     end
+
+    def handle_call({:steer_worker, issue_identifier, message, session_id}, _from, state) do
+      if parent = Keyword.get(state, :parent) do
+        send(parent, {:steer_worker_called, issue_identifier, message, session_id})
+      end
+
+      {:reply,
+       {:ok,
+        %{
+          issue_identifier: issue_identifier,
+          issue_id: "issue-http",
+          session_id: session_id,
+          queued_at: DateTime.utc_now()
+        }}, state}
+    end
   end
 
   setup do
@@ -839,14 +854,19 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "issue_id" => "issue-http",
                  "issue_identifier" => "MT-HTTP",
                  "state" => "In Progress",
+                 "title" => "HTTP issue",
+                 "url" => "https://example.org/issues/MT-HTTP",
                  "worker_host" => nil,
                  "workspace_path" => nil,
                  "session_id" => "thread-http",
+                 "thread_id" => "thread-http",
+                 "turn_id" => "turn-http",
                  "turn_count" => 7,
                  "last_event" => "notification",
                  "last_message" => "rendered",
                  "started_at" => state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
                  "last_event_at" => nil,
+                 "command_watchdog" => nil,
                  "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
                }
              ],
@@ -857,8 +877,12 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "attempt" => 2,
                  "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
                  "error" => "boom",
+                 "error_kind" => "linear_transport",
+                 "prior_error" => nil,
+                 "prior_error_kind" => nil,
                  "worker_host" => nil,
-                 "workspace_path" => nil
+                 "workspace_path" => nil,
+                 "branch_name" => nil
                }
              ],
              "codex_totals" => %{
@@ -876,6 +900,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert issue_payload == %{
              "issue_identifier" => "MT-HTTP",
              "issue_id" => "issue-http",
+             "title" => "HTTP issue",
+             "url" => "https://example.org/issues/MT-HTTP",
              "status" => "running",
              "workspace" => %{
                "path" => Path.join(Config.settings!().workspace.root, "MT-HTTP"),
@@ -886,24 +912,41 @@ defmodule SymphonyElixir.ExtensionsTest do
                "worker_host" => nil,
                "workspace_path" => nil,
                "session_id" => "thread-http",
+               "thread_id" => "thread-http",
+               "turn_id" => "turn-http",
                "turn_count" => 7,
                "state" => "In Progress",
                "started_at" => issue_payload["running"]["started_at"],
                "last_event" => "notification",
                "last_message" => "rendered",
                "last_event_at" => nil,
+               "command_watchdog" => nil,
                "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
              },
              "retry" => nil,
              "logs" => %{"codex_session_logs" => []},
              "recent_events" => [],
+             "timeline" => [
+               %{
+                 "at" => "2026-01-01T00:00:00Z",
+                 "event" => "manager_steer_delivered",
+                 "message" => "manager steer delivered: Keep the PR focused.",
+                 "raw" => %{"id" => 10_123, "result" => %{"turnId" => "turn-http"}},
+                 "session_id" => "thread-http",
+                 "thread_id" => "thread-http",
+                 "turn_id" => "turn-http"
+               }
+             ],
              "last_error" => nil,
              "tracked" => %{}
            }
 
     conn = get(build_conn(), "/api/v1/MT-RETRY")
 
-    assert %{"status" => "retrying", "retry" => %{"attempt" => 2, "error" => "boom"}} =
+    assert %{
+             "status" => "retrying",
+             "retry" => %{"attempt" => 2, "error" => "boom", "error_kind" => "linear_transport"}
+           } =
              json_response(conn, 200)
 
     conn = get(build_conn(), "/api/v1/MT-MISSING")
@@ -916,6 +959,9 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert %{"queued" => true, "coalesced" => false, "operations" => ["poll", "reconcile"]} =
              json_response(conn, 202)
+
+    assert json_response(post(build_conn(), "/api/v1/MT-HTTP/steer", %{}), 404) ==
+             %{"error" => %{"code" => "not_found", "message" => "Route not found"}}
   end
 
   test "phoenix observability api preserves 405, 404, and unavailable behavior" do
@@ -1087,6 +1133,187 @@ defmodule SymphonyElixir.ExtensionsTest do
     end)
   end
 
+  test "dashboard liveview does not double-count active runtime totals" do
+    orchestrator_name = Module.concat(__MODULE__, :DashboardRuntimeOrchestrator)
+
+    snapshot =
+      static_snapshot()
+      |> put_in([:codex_totals, :seconds_running], 120)
+      |> put_in([:running, Access.at(0), :started_at], DateTime.add(DateTime.utc_now(), -120, :second))
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, html} = live(build_conn(), "/")
+    assert html =~ "2m "
+    refute html =~ "4m "
+  end
+
+  test "worker detail liveview renders timeline and submits session-scoped steer messages" do
+    orchestrator_name = Module.concat(__MODULE__, :WorkerDetailOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        parent: self(),
+        snapshot: static_snapshot()
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, view, html} = live(build_conn(), "/workers/MT-HTTP")
+    assert html =~ "Worker Detail"
+    assert html =~ "thread-http"
+    assert html =~ "manager steer delivered: Keep the PR focused."
+    assert html =~ "Raw JSON"
+
+    render_submit(view, "steer", %{
+      "steer" => %{
+        "message" => "Use the narrower UI fix.",
+        "session_id" => "thread-http"
+      }
+    })
+
+    assert_received {:steer_worker_called, "MT-HTTP", "Use the narrower UI fix.", "thread-http"}
+  end
+
+  test "worker detail liveview rejects missing or blank steer session ids" do
+    orchestrator_name = Module.concat(__MODULE__, :WorkerDetailSteerSessionGuardOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        parent: self(),
+        snapshot: static_snapshot()
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, view, _html} = live(build_conn(), "/workers/MT-HTTP")
+
+    render_submit(view, "steer", %{
+      "steer" => %{
+        "message" => "Do not send without a session."
+      }
+    })
+
+    render_submit(view, "steer", %{
+      "steer" => %{
+        "message" => "Do not send with a blank session.",
+        "session_id" => "   "
+      }
+    })
+
+    refute_received {:steer_worker_called, "MT-HTTP", _message, _session_id}
+  end
+
+  test "worker detail projections redact secret-like raw event values" do
+    orchestrator_name = Module.concat(__MODULE__, :WorkerDetailRedactionOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: secret_snapshot()
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    api_payload = json_response(get(build_conn(), "/api/v1/MT-SECRET"), 200)
+    rendered_api = inspect(api_payload, limit: :infinity)
+
+    refute rendered_api =~ "sk-live-secret"
+    refute rendered_api =~ "p4ss"
+    refute rendered_api =~ "live-token"
+    refute rendered_api =~ "user:pass"
+    refute rendered_api =~ "token=abc123"
+    assert rendered_api =~ "[REDACTED]"
+
+    {:ok, _view, html} = live(build_conn(), "/workers/MT-SECRET")
+
+    refute html =~ "sk-live-secret"
+    refute html =~ "p4ss"
+    refute html =~ "live-token"
+    refute html =~ "user:pass"
+    refute html =~ "token=abc123"
+    assert html =~ "[REDACTED]"
+  end
+
+  test "worker detail liveview requires operator token when steer auth is enabled" do
+    orchestrator_name = Module.concat(__MODULE__, :WorkerDetailSteerAuthOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        parent: self(),
+        snapshot: static_snapshot()
+      )
+
+    start_test_endpoint(
+      orchestrator: orchestrator_name,
+      snapshot_timeout_ms: 50,
+      steer_auth_required: true,
+      steer_token: "letmein"
+    )
+
+    {:ok, view, html} = live(build_conn(), "/workers/MT-HTTP")
+    assert html =~ "Operator token"
+
+    render_submit(view, "steer", %{
+      "steer" => %{
+        "message" => "Do not send this.",
+        "session_id" => "thread-http",
+        "operator_token" => "wrong"
+      }
+    })
+
+    refute_received {:steer_worker_called, "MT-HTTP", "Do not send this.", "thread-http"}
+
+    render_submit(view, "steer", %{
+      "steer" => %{
+        "message" => "Use the authenticated steer path.",
+        "session_id" => "thread-http",
+        "operator_token" => "letmein"
+      }
+    })
+
+    assert_received {:steer_worker_called, "MT-HTTP", "Use the authenticated steer path.", "thread-http"}
+  end
+
+  test "worker detail liveview locks steering when exposed without an operator token" do
+    orchestrator_name = Module.concat(__MODULE__, :WorkerDetailSteerLockedOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        parent: self(),
+        snapshot: static_snapshot()
+      )
+
+    start_test_endpoint(
+      orchestrator: orchestrator_name,
+      snapshot_timeout_ms: 50,
+      steer_auth_required: true,
+      steer_token: "   "
+    )
+
+    {:ok, view, html} = live(build_conn(), "/workers/MT-HTTP")
+    assert html =~ "Steering is locked"
+
+    render_submit(view, "steer", %{
+      "steer" => %{
+        "message" => "Do not send this.",
+        "session_id" => "thread-http"
+      }
+    })
+
+    refute_received {:steer_worker_called, "MT-HTTP", "Do not send this.", "thread-http"}
+  end
+
   test "dashboard liveview renders an unavailable state without crashing" do
     start_test_endpoint(
       orchestrator: Module.concat(__MODULE__, :MissingDashboardOrchestrator),
@@ -1180,8 +1407,12 @@ defmodule SymphonyElixir.ExtensionsTest do
         %{
           issue_id: "issue-http",
           identifier: "MT-HTTP",
+          title: "HTTP issue",
+          url: "https://example.org/issues/MT-HTTP",
           state: "In Progress",
           session_id: "thread-http",
+          thread_id: "thread-http",
+          turn_id: "turn-http",
           turn_count: 7,
           codex_app_server_pid: nil,
           last_codex_message: "rendered",
@@ -1190,6 +1421,17 @@ defmodule SymphonyElixir.ExtensionsTest do
           codex_input_tokens: 4,
           codex_output_tokens: 8,
           codex_total_tokens: 12,
+          recent_codex_events: [
+            %{
+              event: :manager_steer_delivered,
+              message: "Keep the PR focused.",
+              raw: %{"id" => 10_123, "result" => %{"turnId" => "turn-http"}},
+              session_id: "thread-http",
+              thread_id: "thread-http",
+              turn_id: "turn-http",
+              timestamp: ~U[2026-01-01 00:00:00Z]
+            }
+          ],
           started_at: DateTime.utc_now()
         }
       ],
@@ -1199,12 +1441,49 @@ defmodule SymphonyElixir.ExtensionsTest do
           identifier: "MT-RETRY",
           attempt: 2,
           due_in_ms: 2_000,
-          error: "boom"
+          error: "boom",
+          error_kind: "linear_transport"
         }
       ],
       codex_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},
       rate_limits: %{"primary" => %{"remaining" => 11}}
     }
+  end
+
+  defp secret_snapshot do
+    snapshot = static_snapshot()
+
+    secret_event = %{
+      event: :notification,
+      message: %{
+        payload: %{
+          "method" => "item/commandExecution/outputDelta",
+          "params" => %{
+            "outputDelta" => "OPENAI_API_KEY=sk-live-secret curl https://user:pass@example.org?token=abc123",
+            "authorization" => "Bearer live-token"
+          }
+        }
+      },
+      raw: ~s({"api_key":"sk-live-secret","password":"p4ss","access_token":"live-token","url":"https://user:pass@example.org?token=abc123"}),
+      session_id: "thread-secret",
+      thread_id: "thread-secret",
+      turn_id: "turn-secret",
+      timestamp: ~U[2026-01-01 00:00:00Z]
+    }
+
+    secret_running =
+      snapshot.running
+      |> List.first()
+      |> Map.merge(%{
+        identifier: "MT-SECRET",
+        session_id: "thread-secret",
+        thread_id: "thread-secret",
+        turn_id: "turn-secret",
+        last_codex_message: secret_event.message,
+        recent_codex_events: [secret_event]
+      })
+
+    %{snapshot | running: [secret_running]}
   end
 
   defp wait_for_bound_port do

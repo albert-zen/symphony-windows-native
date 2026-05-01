@@ -71,6 +71,17 @@ button:hover {
   box-shadow: 0 12px 24px rgba(16, 163, 127, 0.22);
 }
 
+button:disabled,
+textarea:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+button:disabled:hover {
+  transform: none;
+  box-shadow: 0 8px 20px rgba(16, 163, 127, 0.18);
+}
+
 button.secondary {
   background: var(--card);
   color: var(--ink);
@@ -267,6 +278,13 @@ pre,
   font-size: 0.88rem;
 }
 
+.detail-session,
+.detail-path {
+  font-size: 1rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
 .section-card {
   border-radius: 24px;
   padding: 1.15rem;
@@ -410,6 +428,88 @@ pre,
 .empty-state {
   margin: 1rem 0 0;
   color: var(--muted);
+}
+
+.steer-form {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.steer-input,
+.steer-token {
+  width: 100%;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  padding: 0.8rem;
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--ink);
+  font: inherit;
+  line-height: 1.45;
+}
+
+.steer-input {
+  min-height: 7rem;
+  resize: vertical;
+}
+
+.steer-token {
+  max-width: 24rem;
+}
+
+.steer-input:focus,
+.steer-token:focus {
+  outline: 2px solid rgba(16, 163, 127, 0.24);
+  border-color: var(--accent);
+}
+
+.timeline-list {
+  display: grid;
+  gap: 0.8rem;
+  margin: 1rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.timeline-item {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.9rem 0 0;
+  border-top: 1px solid var(--line);
+}
+
+.timeline-main {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.timeline-event {
+  font-weight: 700;
+}
+
+.timeline-time {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.timeline-message {
+  margin: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.raw-details summary {
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
+.raw-details .code-panel {
+  margin-top: 0.6rem;
 }
 
 .error-card {

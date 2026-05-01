@@ -166,6 +166,35 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
     refute backoff_line =~ "\\n"
   end
 
+  test "backoff queue row renders retry error kind" do
+    snapshot_data =
+      {:ok,
+       %{
+         running: [],
+         retrying: [
+           retry_entry(%{
+             identifier: "MT-981",
+             attempt: 3,
+             due_in_ms: 2_500,
+             error: "transient Linear transport closure during retry poll",
+             error_kind: "linear_transport",
+             prior_error: "agent exited: :boom",
+             branch_name: "codex/MT-981-linear-transport"
+           })
+         ],
+         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         rate_limits: nil
+       }}
+
+    rendered = render_snapshot(snapshot_data, 0.0)
+    backoff_lines = rendered |> String.split("\n") |> Enum.filter(&String.contains?(&1, "MT-981"))
+
+    assert length(backoff_lines) == 1
+    assert List.first(backoff_lines) =~ "kind=linear_transport"
+    assert List.first(backoff_lines) =~ "branch=codex/MT-981-linear-transport"
+    assert List.first(backoff_lines) =~ "prior: agent exited: :boom"
+  end
+
   test "snapshot fixture: unlimited credits variant" do
     snapshot_data =
       {:ok,
