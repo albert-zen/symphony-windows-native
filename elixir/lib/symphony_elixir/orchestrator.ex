@@ -137,6 +137,7 @@ defmodule SymphonyElixir.Orchestrator do
       issue_id ->
         {running_entry, state} = pop_running_entry(state, issue_id)
         state = record_session_completion_totals(state, running_entry)
+        state = release_issue_claim(state, issue_id, Map.get(running_entry, :claim))
         session_id = running_entry_session_id(running_entry)
 
         state =
@@ -485,12 +486,19 @@ defmodule SymphonyElixir.Orchestrator do
           Process.demonitor(ref, [:flush])
         end
 
-        %{
+        state =
+          %{
+            state
+            | running: Map.delete(state.running, issue_id),
+              claimed: MapSet.delete(state.claimed, issue_id),
+              retry_attempts: Map.delete(state.retry_attempts, issue_id)
+          }
+
+        if Map.has_key?(running_entry, :claim) do
+          release_issue_claim(state, issue_id, Map.get(running_entry, :claim))
+        else
           state
-          | running: Map.delete(state.running, issue_id),
-            claimed: MapSet.delete(state.claimed, issue_id),
-            retry_attempts: Map.delete(state.retry_attempts, issue_id)
-        }
+        end
 
       _ ->
         release_issue_claim(state, issue_id)
@@ -732,17 +740,29 @@ defmodule SymphonyElixir.Orchestrator do
   defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host) do
     recipient = self()
 
-    case select_worker_host(state, preferred_worker_host) do
+    with worker_host when worker_host != :no_worker_capacity <- select_worker_host(state, preferred_worker_host),
+         {:ok, claim} <- acquire_issue_claim(issue) do
+      spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host, claim)
+    else
+      {:error, {:issue_claimed, claim}} ->
+        Logger.info("Skipping dispatch; durable claim is held for #{issue_context(issue)} owner=#{claim.owner} expires_at=#{DateTime.to_iso8601(claim.expires_at)}")
+        state
+
+      {:error, reason} ->
+        Logger.warning("Skipping dispatch; unable to acquire durable claim for #{issue_context(issue)}: #{inspect(reason)}")
+        state
+
       :no_worker_capacity ->
         Logger.debug("No SSH worker slots available for #{issue_context(issue)} preferred_worker_host=#{inspect(preferred_worker_host)}")
         state
-
-      worker_host ->
-        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host)
     end
   end
 
-  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
+  defp acquire_issue_claim(%Issue{} = issue) do
+    Tracker.acquire_issue_claim(issue)
+  end
+
+  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, claim) do
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
            AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
          end) do
@@ -771,6 +791,7 @@ defmodule SymphonyElixir.Orchestrator do
             codex_last_reported_output_tokens: 0,
             codex_last_reported_total_tokens: 0,
             turn_count: 0,
+            claim: claim,
             retry_attempt: normalize_retry_attempt(attempt),
             started_at: DateTime.utc_now()
           })
@@ -786,7 +807,9 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.error("Unable to spawn agent for #{issue_context(issue)}: #{inspect(reason)}")
         next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
 
-        schedule_issue_retry(state, issue.id, next_attempt, %{
+        state
+        |> release_issue_claim(issue.id, claim)
+        |> schedule_issue_retry(issue.id, next_attempt, %{
           identifier: issue.identifier,
           error: "failed to spawn agent: #{inspect(reason)}",
           worker_host: worker_host
@@ -973,7 +996,15 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp release_issue_claim(%State{} = state, issue_id) do
+  defp release_issue_claim(%State{} = state, issue_id, claim \\ nil) do
+    case Tracker.release_issue_claim(issue_id, claim) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Failed to release durable claim for issue_id=#{issue_id}: #{inspect(reason)}")
+    end
+
     %{state | claimed: MapSet.delete(state.claimed, issue_id)}
   end
 

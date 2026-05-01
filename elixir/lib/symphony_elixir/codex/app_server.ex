@@ -40,13 +40,14 @@ defmodule SymphonyElixir.Codex.AppServer do
   @spec start_session(Path.t(), keyword()) :: {:ok, session()} | {:error, term()}
   def start_session(workspace, opts \\ []) do
     worker_host = Keyword.get(opts, :worker_host)
+    strict_stdio? = Keyword.get(opts, :strict_stdio, false)
 
     with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host),
          {:ok, session_policies} <- session_policies(expanded_workspace, worker_host),
          {:ok, port} <- start_port(expanded_workspace, worker_host) do
       metadata = port_metadata(port, worker_host)
 
-      case do_start_session(port, expanded_workspace, session_policies) do
+      case do_start_session(port, expanded_workspace, session_policies, strict_stdio?) do
         {:ok, thread_id} ->
           {:ok,
            %{
@@ -235,7 +236,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp send_initialize(port) do
+  defp send_initialize(port, strict_stdio?) do
     payload = %{
       "method" => "initialize",
       "id" => @initialize_id,
@@ -253,7 +254,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
     send_message(port, payload)
 
-    with {:ok, _} <- await_response(port, @initialize_id) do
+    with {:ok, _} <- await_response(port, @initialize_id, strict_stdio?) do
       send_message(port, %{"method" => "initialized", "params" => %{}})
       :ok
     end
@@ -267,14 +268,14 @@ defmodule SymphonyElixir.Codex.AppServer do
     Config.codex_runtime_settings(workspace, remote: true)
   end
 
-  defp do_start_session(port, workspace, session_policies) do
-    case send_initialize(port) do
-      :ok -> start_thread(port, workspace, session_policies)
+  defp do_start_session(port, workspace, session_policies, strict_stdio?) do
+    case send_initialize(port, strict_stdio?) do
+      :ok -> start_thread(port, workspace, session_policies, strict_stdio?)
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp start_thread(port, workspace, %{approval_policy: approval_policy, thread_sandbox: thread_sandbox}) do
+  defp start_thread(port, workspace, %{approval_policy: approval_policy, thread_sandbox: thread_sandbox}, strict_stdio?) do
     send_message(port, %{
       "method" => "thread/start",
       "id" => @thread_start_id,
@@ -286,7 +287,7 @@ defmodule SymphonyElixir.Codex.AppServer do
       }
     })
 
-    case await_response(port, @thread_start_id) do
+    case await_response(port, @thread_start_id, strict_stdio?) do
       {:ok, %{"thread" => thread_payload}} ->
         case thread_payload do
           %{"id" => thread_id} -> {:ok, thread_id}
@@ -1082,18 +1083,18 @@ defmodule SymphonyElixir.Codex.AppServer do
     String.starts_with?(normalized_label, "approve") or String.starts_with?(normalized_label, "allow")
   end
 
-  defp await_response(port, request_id) do
-    with_timeout_response(port, request_id, Config.settings!().codex.read_timeout_ms, "")
+  defp await_response(port, request_id, strict_stdio? \\ false) do
+    with_timeout_response(port, request_id, Config.settings!().codex.read_timeout_ms, "", strict_stdio?)
   end
 
-  defp with_timeout_response(port, request_id, timeout_ms, pending_line) do
+  defp with_timeout_response(port, request_id, timeout_ms, pending_line, strict_stdio?) do
     receive do
       {^port, {:data, {:eol, chunk}}} ->
         complete_line = pending_line <> to_string(chunk)
-        handle_response(port, request_id, complete_line, timeout_ms)
+        handle_response(port, request_id, complete_line, timeout_ms, strict_stdio?)
 
       {^port, {:data, {:noeol, chunk}}} ->
-        with_timeout_response(port, request_id, timeout_ms, pending_line <> to_string(chunk))
+        with_timeout_response(port, request_id, timeout_ms, pending_line <> to_string(chunk), strict_stdio?)
 
       {^port, {:exit_status, status}} ->
         {:error, {:port_exit, status}}
@@ -1103,7 +1104,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp handle_response(port, request_id, data, timeout_ms) do
+  defp handle_response(port, request_id, data, timeout_ms, strict_stdio?) do
     payload = to_string(data)
 
     case Jason.decode(payload) do
@@ -1118,11 +1119,16 @@ defmodule SymphonyElixir.Codex.AppServer do
 
       {:ok, %{} = other} ->
         Logger.debug("Ignoring message while waiting for response: #{inspect(other)}")
-        with_timeout_response(port, request_id, timeout_ms, "")
+        with_timeout_response(port, request_id, timeout_ms, "", strict_stdio?)
 
       {:error, _} ->
         log_non_json_stream_line(payload, "response stream")
-        with_timeout_response(port, request_id, timeout_ms, "")
+
+        if strict_stdio? do
+          {:error, {:non_json_stdio, String.trim(payload)}}
+        else
+          with_timeout_response(port, request_id, timeout_ms, "", false)
+        end
     end
   end
 

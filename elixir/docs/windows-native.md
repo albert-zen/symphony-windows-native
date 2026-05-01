@@ -69,6 +69,13 @@ Set the Linear key in your user environment. Do not commit it to the repo.
 $env:LINEAR_API_KEY = [Environment]::GetEnvironmentVariable("LINEAR_API_KEY", "User")
 ```
 
+Authenticate GitHub CLI for the same Windows user account that will run
+Symphony:
+
+```powershell
+gh auth login
+```
+
 ## Configure a workflow
 
 Copy the example and edit it for your Linear project and target repository:
@@ -106,6 +113,31 @@ Keep secrets out of the workflow file:
 tracker:
   api_key: $LINEAR_API_KEY
 ```
+
+## Run preflight
+
+Before starting an unattended run, execute the Windows preflight from `elixir/`:
+
+```powershell
+mise exec -- mix symphony.preflight.windows .\WORKFLOW.windows.md
+```
+
+The command reports `PASS`, `FAIL`, or `SKIP` for each dependency and exits
+non-zero when a required check fails. It verifies:
+
+- `LINEAR_API_KEY` is available and Linear GraphQL is reachable.
+- `git`, `gh`, `node`, and the configured Codex app-server command resolve on `PATH`.
+- `gh auth status` succeeds for GitHub operations.
+- `codex app-server` can start without non-JSON startup output on stdio.
+- The repository URL in `hooks.after_create` can be cloned by Git.
+- `workspace.root` is writable.
+- The configured dashboard port is available.
+- PowerShell can parse configured workspace hooks.
+
+If preflight reports the workspace root as writable but Codex later prints a
+project trust warning for `.codex`, trust the configured `workspace.root` used
+for Symphony issue workspaces. The workspace root should be a dedicated
+automation directory, not your everyday development checkout.
 
 ### Optimization flywheel routing
 
@@ -232,6 +264,26 @@ If the dashboard is bound to a non-loopback host such as `0.0.0.0`, steering is
 locked unless an operator token is configured with `observability.steer_token` or
 the `SYMPHONY_STEER_TOKEN` environment variable. The token is required only for
 steer submission; read-only dashboard and JSON views remain available.
+
+### Review readiness
+
+Agent-initiated moves to `In Review` are guarded by review readiness checks.
+The tool only allows that transition when the issue has a linked GitHub PR and
+the required checks on the PR head are complete and successful. If GitHub branch
+protection metadata is private or unavailable to the Windows runtime, configure
+`codex.review_readiness_repository` with the trusted `owner/repo` and
+`codex.review_readiness_required_checks` with the required check names; the gate
+then verifies those public PR check runs/statuses and still fails closed on
+missing, pending, failing, or unverifiable results. Fallback required checks are
+matched by check/status name because branch-protection app identity is not
+available in that mode, so use the branch-protection source where app-bound
+verification is required. Manager overrides must happen outside the agent tool
+call and leave an audit note in Linear or GitHub.
+The linked PR must come from Linear attachment metadata. Links written only in
+agent-mutable comments, including the Codex Workpad, are useful for humans but
+are not authoritative for the readiness gate. The linked PR must be in the
+trusted repository and its head branch must include the Linear issue identifier
+so an arbitrary green PR cannot satisfy another issue's readiness gate.
 
 ### Progress tracking
 

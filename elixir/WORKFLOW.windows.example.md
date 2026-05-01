@@ -40,6 +40,11 @@ codex:
   command: codex --config shell_environment_policy.inherit=all --config model=gpt-5.5 --config model_reasoning_effort=medium app-server
   approval_policy: never
   thread_sandbox: danger-full-access
+  # Optional: fallback required checks for guarded Linear review transitions when
+  # GitHub branch protection metadata is unavailable to the runtime.
+  # Set this to the trusted GitHub owner/repo before enabling guarded In Review transitions.
+  review_readiness_repository: YOUR_ORG/YOUR_REPO
+  review_readiness_required_checks: []
   turn_sandbox_policy:
     type: dangerFullAccess
 ---

@@ -3,6 +3,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   Executes client-side tool calls requested by Codex app-server turns.
   """
 
+  alias SymphonyElixir.Codex.ReviewReadiness
   alias SymphonyElixir.Linear.Client
 
   @linear_graphql_tool "linear_graphql"
@@ -55,11 +56,16 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   defp execute_linear_graphql(arguments, opts) do
     linear_client = Keyword.get(opts, :linear_client, &Client.graphql/3)
+    github_client = Keyword.get(opts, :github_client, &ReviewReadiness.github_get/2)
 
     with {:ok, query, variables} <- normalize_linear_graphql_arguments(arguments),
+         :ok <- ReviewReadiness.authorize_linear_graphql(query, variables, linear_client, github_client),
          {:ok, response} <- linear_client.(query, variables, []) do
       graphql_response(response)
     else
+      {:error, {:review_readiness_rejected, payload}} ->
+        failure_response(payload)
+
       {:error, reason} ->
         failure_response(tool_error_payload(reason))
     end
