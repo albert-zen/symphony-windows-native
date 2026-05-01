@@ -661,12 +661,14 @@ defmodule SymphonyElixir.StatusDashboard do
     identifier = retry_entry.identifier || issue_id
     attempt = retry_entry.attempt || 0
     due_in_ms = retry_entry.due_in_ms || 0
+    error_kind = format_retry_error_kind(Map.get(retry_entry, :error_kind))
     error = format_retry_error(retry_entry.error)
 
     "│  #{colorize("↻", @ansi_orange)} " <>
       colorize("#{identifier}", @ansi_red) <>
       " " <>
       colorize("attempt=#{attempt}", @ansi_yellow) <>
+      error_kind <>
       colorize(" in ", @ansi_dim) <>
       colorize(next_in_words(due_in_ms), @ansi_cyan) <>
       error
@@ -700,6 +702,21 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp format_retry_error(_), do: ""
+
+  defp format_retry_error_kind(kind) when is_binary(kind) do
+    sanitized =
+      kind
+      |> String.replace(~r/\s+/, "_")
+      |> String.trim()
+
+    if sanitized == "" do
+      ""
+    else
+      " " <> colorize("kind=#{truncate(sanitized, 32)}", @ansi_dim)
+    end
+  end
+
+  defp format_retry_error_kind(_kind), do: ""
 
   defp format_runtime_seconds(seconds) when is_integer(seconds) do
     mins = div(seconds, 60)
