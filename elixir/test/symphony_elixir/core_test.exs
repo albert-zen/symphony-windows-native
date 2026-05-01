@@ -17,6 +17,7 @@ defmodule SymphonyElixir.CoreTest do
     assert config.tracker.terminal_states == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
     assert config.tracker.assignee == nil
     assert config.agent.max_turns == 20
+    assert config.codex.review_readiness_repository == "albert-zen/symphony-windows-native"
     assert config.codex.review_readiness_required_checks == []
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: "invalid")
@@ -72,9 +73,11 @@ defmodule SymphonyElixir.CoreTest do
     assert :ok = Config.validate!()
 
     write_workflow_file!(Workflow.workflow_file_path(),
+      codex_review_readiness_repository: " https://github.com/Albert-Zen/symphony-windows-native/ ",
       codex_review_readiness_required_checks: [" make-all ", "", "windows-native-test", "make-all"]
     )
 
+    assert Config.settings!().codex.review_readiness_repository == "Albert-Zen/symphony-windows-native"
     assert Config.settings!().codex.review_readiness_required_checks == ["make-all", "windows-native-test"]
 
     write_workflow_file!(Workflow.workflow_file_path(),

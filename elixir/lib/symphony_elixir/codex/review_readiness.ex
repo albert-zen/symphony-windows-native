@@ -107,7 +107,7 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
 
   defp verify_review_ready(issue, linear_client, github_client) do
     with {:ok, pr} <- linked_pull_request(issue),
-         :ok <- required_checks_passed?(pr, github_client) do
+         :ok <- required_checks_passed?(issue, pr, github_client) do
       :ok
     else
       {:error, reason} -> reject(issue, reason, linear_client)
@@ -115,8 +115,8 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
   end
 
   defp transition_request(query, variables) do
-    query = normalize_graphql_ignored_tokens(query)
-    issue_update_count = issue_update_count(query)
+    executable_query = executable_graphql(query)
+    issue_update_count = issue_update_count(executable_query)
 
     cond do
       issue_update_count == 0 ->
@@ -125,26 +125,45 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
       issue_update_count > 1 ->
         {:error, :review_readiness_multiple_issue_updates}
 
-      explicit_state_id?(query) ->
-        with {:ok, issue_id} <- issue_id_from(query, variables),
-             {:ok, state_id} <- explicit_state_id_from(query, variables) do
-          {:ok, issue_id, state_id}
-        end
-
       true ->
-        input_transition_request(query, variables)
+        transition_request_from_issue_update(query, executable_query, variables)
     end
   end
 
-  defp input_transition_request(query, variables) do
-    case input_state_id_from(query, variables) do
-      {:ok, state_id} -> issue_transition_request(query, variables, state_id)
+  defp transition_request_from_issue_update(query, executable_query, variables) do
+    with {:ok, arguments, executable_arguments} <- issue_update_arguments(query, executable_query) do
+      cond do
+        explicit_state_id?(executable_arguments) ->
+          with {:ok, issue_id} <- issue_id_from(arguments, executable_arguments, variables),
+               {:ok, state_id} <- explicit_state_id_from(arguments, executable_arguments, variables) do
+            {:ok, issue_id, state_id}
+          end
+
+        true ->
+          input_transition_request(arguments, executable_arguments, variables)
+      end
+    end
+  end
+
+  defp issue_update_arguments(query, executable_query) do
+    case Regex.run(~r/\bissueUpdate\s*\((.*?)\)\s*\{/s, executable_query, return: :index) do
+      [{_match_start, _match_length}, {arguments_start, arguments_length}] ->
+        {:ok, binary_part(query, arguments_start, arguments_length), binary_part(executable_query, arguments_start, arguments_length)}
+
+      _ ->
+        {:error, :review_readiness_issue_update_unverifiable}
+    end
+  end
+
+  defp input_transition_request(arguments, executable_arguments, variables) do
+    case input_state_id_from(executable_arguments, variables) do
+      {:ok, state_id} -> issue_transition_request(arguments, executable_arguments, variables, state_id)
       nil -> :not_state_transition
     end
   end
 
-  defp issue_transition_request(query, variables, state_id) do
-    with {:ok, issue_id} <- issue_id_from(query, variables) do
+  defp issue_transition_request(arguments, executable_arguments, variables, state_id) do
+    with {:ok, issue_id} <- issue_id_from(arguments, executable_arguments, variables) do
       {:ok, issue_id, state_id}
     end
   end
@@ -155,43 +174,41 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
     |> length()
   end
 
-  defp normalize_graphql_ignored_tokens(query) do
+  defp executable_graphql(query) do
     query
     |> String.graphemes()
-    |> normalize_graphql_ignored_tokens(:normal, [])
+    |> executable_graphql(:normal, [])
     |> IO.iodata_to_binary()
   end
 
-  defp normalize_graphql_ignored_tokens([], _mode, acc), do: Enum.reverse(acc)
+  defp executable_graphql([], _mode, acc), do: Enum.reverse(acc)
 
-  defp normalize_graphql_ignored_tokens(["\"" | rest], :normal, acc) do
-    normalize_graphql_ignored_tokens(rest, :string, ["\"" | acc])
+  defp executable_graphql(["\"", "\"", "\"" | rest], :normal, acc) do
+    {rest, acc} = blank_block_string(rest, ["\"\"\"" | acc])
+    executable_graphql(rest, :normal, acc)
   end
 
-  defp normalize_graphql_ignored_tokens(["#", "\n" | rest], :normal, acc) do
-    normalize_graphql_ignored_tokens(rest, :normal, [" " | acc])
+  defp executable_graphql(["\"" | rest], :normal, acc) do
+    {rest, acc} = blank_string(rest, ["\"" | acc])
+    executable_graphql(rest, :normal, acc)
   end
 
-  defp normalize_graphql_ignored_tokens(["#" | rest], :normal, acc) do
+  defp executable_graphql(["#", "\n" | rest], :normal, acc) do
+    executable_graphql(rest, :normal, [" " | acc])
+  end
+
+  defp executable_graphql(["#" | rest], :normal, acc) do
     {rest, acc} = drop_graphql_comment(rest, acc)
-    normalize_graphql_ignored_tokens(rest, :normal, acc)
+    executable_graphql(rest, :normal, acc)
   end
 
-  defp normalize_graphql_ignored_tokens([char | rest], :normal, acc)
+  defp executable_graphql([char | rest], :normal, acc)
        when char in ["\uFEFF", "\t", "\n", "\r", ","] do
-    normalize_graphql_ignored_tokens(rest, :normal, [" " | acc])
+    executable_graphql(rest, :normal, [" " | acc])
   end
 
-  defp normalize_graphql_ignored_tokens(["\\" = char, escaped | rest], :string, acc) do
-    normalize_graphql_ignored_tokens(rest, :string, [escaped, char | acc])
-  end
-
-  defp normalize_graphql_ignored_tokens(["\"" | rest], :string, acc) do
-    normalize_graphql_ignored_tokens(rest, :normal, ["\"" | acc])
-  end
-
-  defp normalize_graphql_ignored_tokens([char | rest], mode, acc) do
-    normalize_graphql_ignored_tokens(rest, mode, [char | acc])
+  defp executable_graphql([char | rest], mode, acc) do
+    executable_graphql(rest, mode, [char | acc])
   end
 
   defp drop_graphql_comment([], acc), do: {[], acc}
@@ -200,24 +217,33 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
   defp drop_graphql_comment(["\r" | rest], acc), do: {rest, [" " | acc]}
   defp drop_graphql_comment([_char | rest], acc), do: drop_graphql_comment(rest, acc)
 
+  defp blank_string([], acc), do: {[], acc}
+  defp blank_string(["\\", _escaped | rest], acc), do: blank_string(rest, ["  " | acc])
+  defp blank_string(["\"" | rest], acc), do: {rest, ["\"" | acc]}
+  defp blank_string([_char | rest], acc), do: blank_string(rest, [" " | acc])
+
+  defp blank_block_string([], acc), do: {[], acc}
+  defp blank_block_string(["\"", "\"", "\"" | rest], acc), do: {rest, ["\"\"\"" | acc]}
+  defp blank_block_string([_char | rest], acc), do: blank_block_string(rest, [" " | acc])
+
   defp explicit_state_id?(query) do
     String.contains?(query, "stateId")
   end
 
-  defp issue_id_from(query, variables) do
-    variable_value(query, variables, ~r/issueUpdate\s*\(\s*id\s*:\s*\$(\w+)/) ||
-      literal_value(query, ~r/issueUpdate\s*\(\s*id\s*:\s*"([^"]+)"/) ||
+  defp issue_id_from(arguments, executable_arguments, variables) do
+    variable_value(executable_arguments, variables, ~r/\bid\s*:\s*\$(\w+)/) ||
+      literal_field_value(arguments, executable_arguments, "id") ||
       {:error, :review_readiness_missing_issue_id}
   end
 
-  defp explicit_state_id_from(query, variables) do
-    variable_value(query, variables, ~r/stateId\s*:\s*\$(\w+)/) ||
-      literal_value(query, ~r/stateId\s*:\s*"([^"]+)"/) ||
+  defp explicit_state_id_from(arguments, executable_arguments, variables) do
+    variable_value(executable_arguments, variables, ~r/stateId\s*:\s*\$(\w+)/) ||
+      literal_field_value(arguments, executable_arguments, "stateId") ||
       {:error, :review_readiness_missing_state_id}
   end
 
   defp input_state_id_from(query, variables) do
-    case Regex.run(~r/input\s*:\s*\$(\w+)/, query) do
+    case Regex.run(~r/\binput\s*:\s*\$(\w+)/, query) do
       [_, variable_name] ->
         with input when is_map(input) <- variable_map_value(variables, variable_name),
              state_id when is_binary(state_id) and state_id != "" <- Map.get(input, "stateId") || Map.get(input, :stateId) do
@@ -250,10 +276,20 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
     ArgumentError -> Map.get(variables, variable_name)
   end
 
-  defp literal_value(query, regex) do
-    case Regex.run(regex, query) do
-      [_, value] when value != "" -> {:ok, value}
-      _ -> nil
+  defp literal_field_value(arguments, executable_arguments, field_name) do
+    regex = Regex.compile!("\\b#{field_name}\\s*:\\s*\"[^\"]*\"")
+
+    case Regex.run(regex, executable_arguments, return: :index) do
+      [{start, length}] ->
+        literal_segment = binary_part(arguments, start, length)
+
+        case Regex.run(~r/"([^"]+)"/, literal_segment) do
+          [_, value] -> {:ok, value}
+          _ -> nil
+        end
+
+      _ ->
+        nil
     end
   end
 
@@ -339,8 +375,9 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
 
   defp parse_pull_request_url(_url), do: nil
 
-  defp required_checks_passed?(%{owner: owner, repo: repo, number: number}, github_client) do
+  defp required_checks_passed?(issue, %{owner: owner, repo: repo, number: number}, github_client) do
     with {:ok, pr} <- github_json(github_client, "#{@github_api}/repos/#{owner}/#{repo}/pulls/#{number}"),
+         :ok <- pull_request_matches_issue?(issue, owner, repo, pr),
          {:ok, head_sha} <- required_string(pr, ["head", "sha"], :review_readiness_missing_pr_head_sha),
          {:ok, base_ref} <- required_string(pr, ["base", "ref"], :review_readiness_missing_pr_base_ref),
          {:ok, required_checks} <-
@@ -349,6 +386,99 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
          {:ok, check_runs} <- github_json(github_client, "#{@github_api}/repos/#{owner}/#{repo}/commits/#{head_sha}/check-runs") do
       verify_contexts(required_checks, statuses, check_runs)
     end
+  end
+
+  defp pull_request_matches_issue?(issue, owner, repo, pr) do
+    with :ok <- expected_repository?(owner, repo),
+         :ok <- head_repository_matches?(pr),
+         :ok <- pull_request_branch_matches_issue?(issue, pr) do
+      :ok
+    end
+  end
+
+  defp expected_repository?(owner, repo) do
+    expected =
+      Config.settings!().codex.review_readiness_repository
+      |> normalize_repo_name()
+
+    actual = normalize_repo_name("#{owner}/#{repo}")
+
+    cond do
+      is_nil(expected) -> {:error, :review_readiness_repository_unconfigured}
+      expected == actual -> :ok
+      true -> {:error, {:review_readiness_untrusted_repository, "#{owner}/#{repo}"}}
+    end
+  rescue
+    _ -> {:error, :review_readiness_repository_unconfigured}
+  end
+
+  defp head_repository_matches?(pr) do
+    expected =
+      Config.settings!().codex.review_readiness_repository
+      |> normalize_repo_name()
+
+    head_repository =
+      pr
+      |> get_in(["head", "repo", "full_name"])
+      |> normalize_repo_name()
+
+    cond do
+      is_nil(expected) -> {:error, :review_readiness_repository_unconfigured}
+      is_nil(head_repository) -> {:error, :review_readiness_pr_head_repository_unverifiable}
+      expected == head_repository -> :ok
+      true -> {:error, {:review_readiness_untrusted_head_repository, head_repository}}
+    end
+  rescue
+    _ -> {:error, :review_readiness_repository_unconfigured}
+  end
+
+  defp pull_request_branch_matches_issue?(issue, pr) do
+    identifier = issue_identifier(issue)
+    head_ref = get_in(pr, ["head", "ref"])
+
+    cond do
+      is_nil(identifier) ->
+        {:error, :review_readiness_issue_identifier_missing}
+
+      not is_binary(head_ref) or String.trim(head_ref) == "" ->
+        {:error, :review_readiness_pr_branch_unverifiable}
+
+      branch_matches_issue_identifier?(head_ref, identifier) ->
+        :ok
+
+      true ->
+        {:error, {:review_readiness_pr_branch_mismatch, head_ref, identifier}}
+    end
+  end
+
+  defp branch_matches_issue_identifier?(head_ref, identifier) do
+    pattern = ~r/(^|-)#{Regex.escape(normalized_branch_token(identifier))}($|-)/
+
+    Regex.match?(pattern, normalized_branch_token(head_ref))
+  end
+
+  defp issue_identifier(issue) do
+    case Map.get(issue, "identifier") do
+      identifier when is_binary(identifier) and identifier != "" -> identifier
+      _ -> nil
+    end
+  end
+
+  defp normalize_repo_name(nil), do: nil
+
+  defp normalize_repo_name(repo) when is_binary(repo) do
+    repo
+    |> String.trim()
+    |> String.trim_leading("https://github.com/")
+    |> String.trim_trailing("/")
+    |> String.downcase()
+  end
+
+  defp normalized_branch_token(value) do
+    value
+    |> String.downcase()
+    |> String.replace(~r/[^a-z0-9]+/, "-")
+    |> String.trim("-")
   end
 
   defp required_checks(owner, repo, base_ref, github_client) do
@@ -637,7 +767,12 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
   defp rejection_message(:review_readiness_multiple_issue_updates), do: "multiple issueUpdate mutations were found; review readiness can only verify one state transition at a time."
   defp rejection_message(:review_readiness_issue_unverifiable), do: "Linear issue context could not be verified."
   defp rejection_message(:review_readiness_destination_state_unverifiable), do: "the destination state could not be verified."
+  defp rejection_message(:review_readiness_issue_update_unverifiable), do: "the Linear issueUpdate mutation could not be verified."
   defp rejection_message(:review_readiness_missing_linked_pull_request), do: "no linked GitHub pull request was found."
+  defp rejection_message(:review_readiness_repository_unconfigured), do: "no trusted GitHub repository is configured for review readiness."
+  defp rejection_message(:review_readiness_issue_identifier_missing), do: "the Linear issue identifier could not be verified."
+  defp rejection_message(:review_readiness_pr_head_repository_unverifiable), do: "the linked PR head repository could not be verified."
+  defp rejection_message(:review_readiness_pr_branch_unverifiable), do: "the linked PR head branch could not be verified."
   defp rejection_message(:review_readiness_required_checks_missing), do: "no required GitHub checks are configured or visible."
   defp rejection_message(:review_readiness_required_checks_unverifiable), do: "required GitHub checks could not be verified."
   defp rejection_message(:review_readiness_missing_pr_head_sha), do: "the linked PR head SHA could not be verified."
@@ -657,6 +792,15 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
 
   defp rejection_message({:review_readiness_github_unverifiable, status, body}),
     do: "GitHub readiness could not be verified: HTTP #{status} #{body}."
+
+  defp rejection_message({:review_readiness_untrusted_repository, repository}),
+    do: "linked PR repository #{repository} is not the configured trusted repository."
+
+  defp rejection_message({:review_readiness_untrusted_head_repository, repository}),
+    do: "linked PR head repository #{repository} is not the configured trusted repository."
+
+  defp rejection_message({:review_readiness_pr_branch_mismatch, head_ref, identifier}),
+    do: "linked PR branch #{head_ref} does not match Linear issue #{identifier}."
 
   defp rejection_message({:review_readiness_required_checks_not_passing, failures}),
     do: "required GitHub checks are not passing: #{format_failures(failures)}."

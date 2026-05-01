@@ -40,6 +40,7 @@ codex:
   approval_policy: never
   thread_sandbox: danger-full-access
   # Used when GitHub branch protection required-check metadata is private or unavailable.
+  review_readiness_repository: albert-zen/symphony-windows-native
   review_readiness_required_checks:
     - make-all
     - validate-pr-description

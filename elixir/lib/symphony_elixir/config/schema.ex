@@ -175,6 +175,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:turn_timeout_ms, :integer, default: 3_600_000)
       field(:read_timeout_ms, :integer, default: 5_000)
       field(:stall_timeout_ms, :integer, default: 300_000)
+      field(:review_readiness_repository, :string)
       field(:review_readiness_required_checks, {:array, :string}, default: [])
     end
 
@@ -191,6 +192,7 @@ defmodule SymphonyElixir.Config.Schema do
           :turn_timeout_ms,
           :read_timeout_ms,
           :stall_timeout_ms,
+          :review_readiness_repository,
           :review_readiness_required_checks
         ],
         empty_values: []
@@ -385,6 +387,7 @@ defmodule SymphonyElixir.Config.Schema do
       settings.codex
       | approval_policy: normalize_keys(settings.codex.approval_policy),
         turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy),
+        review_readiness_repository: normalize_repository(settings.codex.review_readiness_repository),
         review_readiness_required_checks: normalize_required_checks(settings.codex.review_readiness_required_checks)
     }
 
@@ -409,6 +412,19 @@ defmodule SymphonyElixir.Config.Schema do
     |> Enum.reject(&(&1 == ""))
     |> Enum.uniq()
   end
+
+  defp normalize_repository(repository) when is_binary(repository) do
+    repository
+    |> String.trim()
+    |> String.trim_leading("https://github.com/")
+    |> String.trim_trailing("/")
+    |> case do
+      "" -> nil
+      normalized -> normalized
+    end
+  end
+
+  defp normalize_repository(_repository), do: nil
 
   defp normalize_label_filter(labels) when is_list(labels) do
     labels
