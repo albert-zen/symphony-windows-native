@@ -117,10 +117,14 @@ base for later agents. These guardrails are the minimum bar:
 - `make all` is the repository gate when the local environment supports it.
 - `windows-native-test` runs for Windows shell, workspace/config, workflow, or
   path-handling changes.
+- CI, lint, formatter, and test gates must not be weakened, skipped, disabled,
+  or relaxed to land agent work.
 - Required GitHub checks must complete and pass before an agent moves Linear to
   `In Review`.
-- Non-trivial changes get an independent manager or subagent review pass before
-  handoff.
+- Meaningful changes get an independent SubAgent review loop before handoff.
+  This includes docs that encode operating decisions, workflow policy, state
+  transitions, quality gates, or review rules. Manager review is still useful,
+  but manager-only approval does not satisfy this gate.
 - Blocking review findings keep the issue in `In Progress` or return it to
   `Todo` until fixed.
 
