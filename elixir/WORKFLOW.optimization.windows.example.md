@@ -25,6 +25,9 @@ hooks:
     git clone --depth 1 https://github.com/albert-zen/symphony-windows-native.git .
     git config user.email "codex-symphony@example.invalid"
     git config user.name "Codex Symphony"
+    Set-Location elixir
+    mise trust
+    mise install
     mise exec -- mix deps.get
   before_remove: |
     $ErrorActionPreference = "Stop"

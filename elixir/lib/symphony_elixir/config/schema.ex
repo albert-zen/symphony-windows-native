@@ -419,8 +419,6 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
-  defp normalize_label_name(label), do: label |> to_string() |> normalize_label_name()
-
   defp normalize_key(value) when is_atom(value), do: Atom.to_string(value)
   defp normalize_key(value), do: to_string(value)
 

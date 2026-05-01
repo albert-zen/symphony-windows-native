@@ -918,6 +918,10 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert Config.settings!().tracker.labels == ["symphony-optimization", "support"]
 
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_labels: nil)
+
+    assert Config.settings!().tracker.labels == []
+
     explicit_root =
       Path.join(
         System.tmp_dir!(),
