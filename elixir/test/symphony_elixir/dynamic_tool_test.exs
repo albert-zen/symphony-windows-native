@@ -144,6 +144,82 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     refute_received {:linear_mutation_allowed, _, _}
   end
 
+  test "linear_graphql ignores fake stateId tokens inside GraphQL block strings" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => """
+          mutation MoveIssueToState($issueId: String!, $input: IssueUpdateInput!) {
+            issueUpdate(id: $issueId, input: $input) {
+              success
+            }
+            note: attachmentCreate(input: {url: "https://example.invalid", title: \"\"\"
+            stateId: "state-todo"
+            \"\"\"}) {
+              success
+            }
+          }
+          """,
+          "variables" => %{"issueId" => "issue-1", "input" => %{"stateId" => "state-review"}}
+        },
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{"head" => %{"sha" => "abc123", "ref" => "codex/ALB-19-review-readiness"}, "base" => %{"ref" => "main"}},
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{"check_runs" => []}
+          })
+      )
+
+    assert response["success"] == false
+    assert_received {:workpad_recorded, body}
+    assert body =~ "make-all=missing"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql supports literal issueUpdate ids without trusting string field contents" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => """
+          mutation MoveIssueToState {
+            issueUpdate(
+              id: "issue-1"
+              input: {
+                description: "stateId: \\"state-todo\\""
+                stateId: "state-review"
+              }
+            ) {
+              success
+            }
+          }
+          """,
+          "variables" => %{}
+        },
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{"head" => %{"sha" => "abc123"}, "base" => %{"ref" => "main"}},
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{
+              "check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]
+            }
+          })
+      )
+
+    assert response["success"] == true
+    assert_received {:linear_mutation_allowed, nil, nil}
+    refute_received {:workpad_recorded, _}
+  end
+
   test "linear_graphql requires matching app identity for app-bound required checks" do
     test_pid = self()
 
@@ -323,6 +399,97 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert Jason.decode!(response["output"])["error"]["message"] =~ "no linked GitHub pull request was found"
     assert_received {:workpad_recorded, body}
     assert body =~ "no linked GitHub pull request was found"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql rejects PR attachments outside the configured repository" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr("https://github.com/elsewhere/project/pull/42")),
+        github_client:
+          github_client(%{
+            "repos/elsewhere/project/pulls/42" => %{"head" => %{"sha" => "abc123", "ref" => "codex/ALB-19-review-readiness"}, "base" => %{"ref" => "main"}}
+          })
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "not the configured trusted repository"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "not the configured trusted repository"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql rejects same-repository PR attachments for another issue branch" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{"head" => %{"sha" => "abc123", "ref" => "codex/ALB-20-other-work"}, "base" => %{"ref" => "main"}}
+          })
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "does not match Linear issue ALB-19"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "does not match Linear issue ALB-19"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql rejects same-repository PR attachments for prefix-collision issue branches" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{"head" => %{"sha" => "abc123", "ref" => "codex/ALB-190-other-work"}, "base" => %{"ref" => "main"}}
+          })
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "does not match Linear issue ALB-19"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "does not match Linear issue ALB-19"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql rejects fork PR attachments that target the trusted repository" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{
+              "head" => %{
+                "sha" => "abc123",
+                "ref" => "codex/ALB-19-review-readiness",
+                "repo" => %{"full_name" => "elsewhere/symphony-windows-native"}
+              },
+              "base" => %{"ref" => "main"}
+            }
+          })
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "head repository elsewhere/symphony-windows-native is not the configured trusted repository"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "head repository elsewhere/symphony-windows-native is not the configured trusted repository"
     refute_received {:linear_mutation_allowed, _, _}
   end
 
@@ -743,12 +910,12 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     }
   end
 
-  defp issue_with_pr do
+  defp issue_with_pr(url \\ "https://github.com/albert-zen/symphony-windows-native/pull/42") do
     %{
       "id" => "issue-1",
       "identifier" => "ALB-19",
       "team" => %{"states" => %{"nodes" => [%{"id" => "state-review", "name" => "In Review"}]}},
-      "attachments" => %{"nodes" => [%{"url" => "https://github.com/albert-zen/symphony-windows-native/pull/42"}]},
+      "attachments" => %{"nodes" => [%{"url" => url}]},
       "comments" => %{"nodes" => []}
     }
   end
@@ -793,11 +960,26 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
   defp github_client(responses) do
     fn url, _opts ->
       case github_response(responses, url) do
-        {_suffix, payload} -> {:ok, %{status: 200, body: payload}}
+        {_suffix, payload} -> {:ok, %{status: 200, body: default_pr_payload(url, payload)}}
         nil -> {:ok, %{status: 404, body: %{"message" => "not found"}}}
       end
     end
   end
+
+  defp default_pr_payload(url, %{"head" => head} = payload) when is_map(head) do
+    if String.contains?(url, "/pulls/") do
+      default_head =
+        head
+        |> Map.put_new("ref", "codex/ALB-19-review-readiness")
+        |> Map.put_new("repo", %{"full_name" => "albert-zen/symphony-windows-native"})
+
+      put_in(payload, ["head"], default_head)
+    else
+      payload
+    end
+  end
+
+  defp default_pr_payload(_url, payload), do: payload
 
   defp github_response(responses, url) do
     Enum.find(responses, fn {suffix, _payload} -> String.ends_with?(url, suffix) end)

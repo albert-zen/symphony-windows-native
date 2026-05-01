@@ -42,6 +42,8 @@ codex:
   thread_sandbox: danger-full-access
   # Optional: fallback required checks for guarded Linear review transitions when
   # GitHub branch protection metadata is unavailable to the runtime.
+  # Set this to the trusted GitHub owner/repo before enabling guarded In Review transitions.
+  review_readiness_repository: YOUR_ORG/YOUR_REPO
   review_readiness_required_checks: []
   turn_sandbox_policy:
     type: dangerFullAccess

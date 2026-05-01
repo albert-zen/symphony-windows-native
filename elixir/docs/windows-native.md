@@ -208,13 +208,19 @@ Agent-initiated moves to `In Review` are guarded by review readiness checks.
 The tool only allows that transition when the issue has a linked GitHub PR and
 the required checks on the PR head are complete and successful. If GitHub branch
 protection metadata is private or unavailable to the Windows runtime, configure
+`codex.review_readiness_repository` with the trusted `owner/repo` and
 `codex.review_readiness_required_checks` with the required check names; the gate
 then verifies those public PR check runs/statuses and still fails closed on
-missing, pending, failing, or unverifiable results. Manager overrides must happen
-outside the agent tool call and leave an audit note in Linear or GitHub.
+missing, pending, failing, or unverifiable results. Fallback required checks are
+matched by check/status name because branch-protection app identity is not
+available in that mode, so use the branch-protection source where app-bound
+verification is required. Manager overrides must happen outside the agent tool
+call and leave an audit note in Linear or GitHub.
 The linked PR must come from Linear attachment metadata. Links written only in
 agent-mutable comments, including the Codex Workpad, are useful for humans but
-are not authoritative for the readiness gate.
+are not authoritative for the readiness gate. The linked PR must be in the
+trusted repository and its head branch must include the Linear issue identifier
+so an arbitrary green PR cannot satisfy another issue's readiness gate.
 
 ### Progress tracking
 
