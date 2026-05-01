@@ -37,6 +37,18 @@ notepad .\WORKFLOW.windows.md
 
 Then open `http://127.0.0.1:4011/`.
 
+Useful lifecycle commands:
+
+```powershell
+.\scripts\start-windows-native.ps1 -WorkflowPath .\WORKFLOW.windows.md -Port 4011 -Background
+.\scripts\stop-windows-native.ps1 -Force
+.\scripts\install-windows-native-service.ps1 -WorkflowPath .\WORKFLOW.windows.md -Port 4011
+.\scripts\cleanup-windows-native.ps1 -WorkflowPath .\WORKFLOW.windows.md -IssueIdentifier ALB-11
+```
+
+The install helper creates a Task Scheduler entry for the current Windows user. The cleanup helper
+requires explicit targets and refuses source-checkout-like workspace roots.
+
 Do not commit `WORKFLOW.windows.md` if it contains private repository URLs, project slugs, or other
 local details. Use `WORKFLOW.windows.safe.example.md` for first runs and
 `WORKFLOW.windows.trusted.example.md` only after the Linear project, cloned repository, and dedicated
