@@ -1137,6 +1137,8 @@ defmodule SymphonyElixir.Orchestrator do
     running =
       state.running
       |> Enum.map(fn {issue_id, metadata} ->
+        runtime_seconds = running_seconds(metadata.started_at, now)
+
         %{
           issue_id: issue_id,
           identifier: metadata.identifier,
@@ -1153,9 +1155,11 @@ defmodule SymphonyElixir.Orchestrator do
           last_codex_timestamp: metadata.last_codex_timestamp,
           last_codex_message: metadata.last_codex_message,
           last_codex_event: metadata.last_codex_event,
-          runtime_seconds: running_seconds(metadata.started_at, now)
+          runtime_seconds: runtime_seconds
         }
       end)
+
+    codex_totals = codex_totals_with_active_runtime(state.codex_totals, running)
 
     retrying =
       state.retry_attempts
@@ -1175,7 +1179,7 @@ defmodule SymphonyElixir.Orchestrator do
      %{
        running: running,
        retrying: retrying,
-       codex_totals: state.codex_totals,
+       codex_totals: codex_totals,
        rate_limits: Map.get(state, :codex_rate_limits),
        polling: %{
          checking?: state.poll_check_in_progress == true,
@@ -1323,6 +1327,26 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp record_session_completion_totals(state, _running_entry), do: state
+
+  defp codex_totals_with_active_runtime(codex_totals, running) when is_map(codex_totals) and is_list(running) do
+    apply_token_delta(codex_totals, %{
+      input_tokens: 0,
+      output_tokens: 0,
+      total_tokens: 0,
+      seconds_running: active_runtime_seconds(running)
+    })
+  end
+
+  defp codex_totals_with_active_runtime(_codex_totals, running) when is_list(running) do
+    codex_totals_with_active_runtime(@empty_codex_totals, running)
+  end
+
+  defp active_runtime_seconds(running) when is_list(running) do
+    Enum.reduce(running, 0, fn
+      %{runtime_seconds: seconds}, total when is_integer(seconds) -> total + max(0, seconds)
+      _entry, total -> total
+    end)
+  end
 
   defp refresh_runtime_config(%State{} = state) do
     config = Config.settings!()
