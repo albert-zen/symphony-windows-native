@@ -27,7 +27,7 @@ mise exec -- mix setup
 mise exec -- mix build
 
 [Environment]::SetEnvironmentVariable("LINEAR_API_KEY", "YOUR_LINEAR_API_KEY", "User")
-Copy-Item .\WORKFLOW.windows.example.md .\WORKFLOW.windows.md
+Copy-Item .\WORKFLOW.windows.safe.example.md .\WORKFLOW.windows.md
 notepad .\WORKFLOW.windows.md
 
 .\scripts\start-windows-native.ps1 -WorkflowPath .\WORKFLOW.windows.md -Port 4011
@@ -36,7 +36,9 @@ notepad .\WORKFLOW.windows.md
 Then open `http://127.0.0.1:4011/`.
 
 Do not commit `WORKFLOW.windows.md` if it contains private repository URLs, project slugs, or other
-local details.
+local details. Use `WORKFLOW.windows.safe.example.md` for first runs and
+`WORKFLOW.windows.trusted.example.md` only after the Linear project, cloned repository, and dedicated
+workspace root are trusted for unattended automation.
 
 ## Screenshot
 
