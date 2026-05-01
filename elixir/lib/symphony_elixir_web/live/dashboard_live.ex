@@ -334,14 +334,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp watchdog_badge_class(classification) do
     base = "state-badge"
 
-    case classification do
-      :healthy -> "#{base} state-badge-active"
+    case to_string(classification) do
       "healthy" -> "#{base} state-badge-active"
-      :idle -> "#{base} state-badge-warning"
       "idle" -> "#{base} state-badge-warning"
-      :stalled -> "#{base} state-badge-danger"
       "stalled" -> "#{base} state-badge-danger"
-      :needs_attention -> "#{base} state-badge-warning"
       "needs_attention" -> "#{base} state-badge-warning"
       _ -> base
     end
