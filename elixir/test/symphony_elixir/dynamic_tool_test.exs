@@ -111,6 +111,39 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     refute_received {:linear_mutation_allowed, _, _}
   end
 
+  test "linear_graphql detects issueUpdate when GraphQL comments appear before arguments" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => """
+          mutation MoveIssueToState($issueId: String!, $stateId: String!) {
+            issueUpdate # GraphQL ignored tokens may appear here.
+              (id: $issueId, input: {stateId: $stateId}) {
+              success
+            }
+          }
+          """,
+          "variables" => %{"issueId" => "issue-1", "stateId" => "state-review"}
+        },
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{"head" => %{"sha" => "abc123"}, "base" => %{"ref" => "main"}},
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{"check_runs" => []}
+          })
+      )
+
+    assert response["success"] == false
+    assert_received {:workpad_recorded, body}
+    assert body =~ "make-all=missing"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
   test "linear_graphql requires matching app identity for app-bound required checks" do
     test_pid = self()
 
@@ -275,7 +308,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     refute_received {:linear_mutation_allowed, _, _}
   end
 
-  test "linear_graphql accepts a linked PR from the Codex Workpad" do
+  test "linear_graphql does not trust PR links from agent-mutable comments" do
     test_pid = self()
 
     response =
@@ -283,10 +316,28 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         "linear_graphql",
         review_transition_arguments(),
         linear_client: review_linear_client(test_pid, issue_with_workpad_pr()),
+        github_client: fn _url, _opts -> flunk("GitHub should not be checked for comment-only PR links") end
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "no linked GitHub pull request was found"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "no linked GitHub pull request was found"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql URL-encodes protected branch names before fetching required checks" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
         github_client:
           github_client(%{
-            "pulls/42" => %{"head" => %{"sha" => "abc123"}, "base" => %{"ref" => "main"}},
-            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "pulls/42" => %{"head" => %{"sha" => "abc123"}, "base" => %{"ref" => "release/2026-05"}},
+            "branches/release%2F2026-05/protection/required_status_checks" => %{"contexts" => ["make-all"]},
             "commits/abc123/status" => %{"statuses" => []},
             "commits/abc123/check-runs" => %{"check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]}
           })
