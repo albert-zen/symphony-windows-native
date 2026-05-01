@@ -106,6 +106,48 @@ defmodule SymphonyElixir.SSHTest do
     assert {:error, :ssh_not_found} = SSH.run("localhost", "printf ok")
   end
 
+  test "run/3 wraps cmd shims through cmd.exe when ssh.cmd is the available executable" do
+    if windows?() do
+      :ok
+    else
+      test_root = Path.join(System.tmp_dir!(), "symphony-ssh-cmd-shim-test-#{System.unique_integer([:positive])}")
+      trace_file = Path.join(test_root, "ssh.trace")
+      previous_path = System.get_env("PATH")
+
+      on_exit(fn ->
+        restore_env("PATH", previous_path)
+        File.rm_rf(test_root)
+      end)
+
+      fake_bin_dir = Path.join(test_root, "bin")
+      File.mkdir_p!(fake_bin_dir)
+
+      fake_ssh = Path.join(fake_bin_dir, "ssh.cmd")
+      fake_cmd = Path.join(fake_bin_dir, "cmd.exe")
+
+      File.write!(fake_ssh, "")
+
+      File.write!(fake_cmd, """
+      #!/bin/sh
+      printf 'CMD:%s\\n' "$*" >> "#{trace_file}"
+      exit 0
+      """)
+
+      File.chmod!(fake_ssh, 0o755)
+      File.chmod!(fake_cmd, 0o755)
+      System.put_env("PATH", fake_bin_dir)
+
+      assert {:ok, {"", 0}} =
+               SSH.run("localhost:2222", "printf ok", stderr_to_stdout: true)
+
+      trace = File.read!(trace_file)
+      assert trace =~ "/c"
+      assert trace =~ "ssh.cmd"
+      assert trace =~ "-T -p 2222 localhost"
+      assert trace =~ "bash -lc"
+    end
+  end
+
   test "start_port/3 supports binary output without line mode" do
     test_root = Path.join(System.tmp_dir!(), "symphony-ssh-port-test-#{System.unique_integer([:positive])}")
     trace_file = Path.join(test_root, "ssh.trace")

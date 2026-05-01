@@ -35,21 +35,22 @@ defmodule SymphonyElixir.SSH do
   end
 
   defp ssh_executable do
-    case System.find_executable("ssh") do
+    case find_executable(["ssh", "ssh.cmd", "ssh.bat"]) do
       nil -> {:error, :ssh_not_found}
       executable -> {:ok, executable}
     end
   end
 
   defp windows_command_args(executable, args) do
-    if windows?() and String.downcase(Path.extname(executable)) in [".bat", ".cmd"] do
-      {System.find_executable("cmd.exe") || "cmd.exe", ["/c", executable | args]}
+    if String.downcase(Path.extname(executable)) in [".bat", ".cmd"] and
+         not is_nil(System.find_executable("cmd.exe")) do
+      {System.find_executable("cmd.exe"), ["/c", executable | args]}
     else
       {executable, args}
     end
   end
 
-  defp windows?, do: match?({:win32, _}, :os.type())
+  defp find_executable(names), do: Enum.find_value(names, &System.find_executable/1)
 
   defp ssh_args(host, command) do
     %{destination: destination, port: port} = parse_target(host)

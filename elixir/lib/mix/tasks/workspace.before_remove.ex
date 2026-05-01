@@ -129,7 +129,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
   end
 
   defp run_command(command, args) do
-    case System.find_executable(command) do
+    case find_executable(command) do
       nil ->
         {:error, {:enoent, ""}}
 
@@ -144,12 +144,14 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
   end
 
   defp windows_command_args(path, args) do
-    if windows?() and String.downcase(Path.extname(path)) in [".bat", ".cmd"] do
-      {System.find_executable("cmd.exe") || "cmd.exe", ["/c", path | args]}
+    if String.downcase(Path.extname(path)) in [".bat", ".cmd"] and not is_nil(System.find_executable("cmd.exe")) do
+      {System.find_executable("cmd.exe"), ["/c", path | args]}
     else
       {path, args}
     end
   end
 
-  defp windows?, do: match?({:win32, _}, :os.type())
+  defp find_executable(command) do
+    Enum.find_value([command, command <> ".cmd", command <> ".bat"], &System.find_executable/1)
+  end
 end

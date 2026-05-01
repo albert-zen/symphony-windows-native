@@ -233,6 +233,62 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     )
   end
 
+  test "wraps gh cmd shims through cmd.exe when only gh.cmd is available" do
+    if windows?() do
+      :ok
+    else
+      with_only_fake_binaries(
+        %{
+          "gh.cmd" => """
+          #!/bin/sh
+          printf 'GH:%s\n' "$*" >> "$GH_LOG"
+
+          if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+            exit 0
+          fi
+
+          if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
+            printf '101\n'
+            exit 0
+          fi
+
+          if [ "$1" = "pr" ] && [ "$2" = "close" ] && [ "$3" = "101" ]; then
+            exit 0
+          fi
+
+          exit 99
+          """,
+          "cmd.exe" => """
+          #!/bin/sh
+          printf 'CMD:%s\n' "$*" >> "$GH_LOG"
+
+          if [ "$1" = "/c" ]; then
+            shift
+            shim="$1"
+            shift
+            "$shim" "$@"
+            exit $?
+          fi
+
+          exit 99
+          """
+        },
+        fn log_path ->
+          capture_io(fn ->
+            BeforeRemove.run(["--branch", "feature/cmd-shim"])
+          end)
+
+          log = File.read!(log_path)
+          assert log =~ "CMD:/c"
+          assert log =~ "gh.cmd"
+          assert log =~ "GH:auth status"
+          assert log =~ "GH:pr list --repo openai/symphony --head feature/cmd-shim"
+          assert log =~ "GH:pr close 101 --repo openai/symphony"
+        end
+      )
+    end
+  end
+
   test "no-ops when git current branch is blank" do
     with_fake_gh_and_git(
       """
@@ -326,6 +382,14 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
   end
 
   defp with_fake_binaries(scripts, fun) do
+    with_fake_binaries(scripts, true, fun)
+  end
+
+  defp with_only_fake_binaries(scripts, fun) do
+    with_fake_binaries(scripts, false, fun)
+  end
+
+  defp with_fake_binaries(scripts, include_original_path?, fun) do
     unique = System.unique_integer([:positive, :monotonic])
     root = Path.join(System.tmp_dir!(), "workspace-before-remove-task-test-#{unique}")
     bin_dir = Path.join(root, "bin")
@@ -336,7 +400,13 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       File.mkdir_p!(bin_dir)
       File.write!(log_path, "")
       original_path = System.get_env("PATH") || ""
-      path_with_binaries = Enum.join([bin_dir, original_path], path_separator())
+
+      path_with_binaries =
+        if include_original_path? do
+          Enum.join([bin_dir, original_path], path_separator())
+        else
+          bin_dir
+        end
 
       Enum.each(scripts, fn {name, script} ->
         path = Path.join(bin_dir, fake_binary_name(name))
@@ -365,7 +435,13 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     with_env(%{"PATH" => Enum.join(paths, path_separator())}, fun)
   end
 
-  defp fake_binary_name(name), do: if(windows?(), do: name <> ".cmd", else: name)
+  defp fake_binary_name(name) do
+    cond do
+      Path.extname(name) != "" -> name
+      windows?() -> name <> ".cmd"
+      true -> name
+    end
+  end
 
   defp fake_binary_script(name, script) when name in ["gh", "git"] do
     if windows?() do
@@ -374,6 +450,8 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       script
     end
   end
+
+  defp fake_binary_script(_name, script), do: script
 
   defp fake_binary_env(scripts) do
     scripts
