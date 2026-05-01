@@ -146,6 +146,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       last_codex_message: nil,
       last_codex_timestamp: nil,
       last_codex_event: nil,
+      codex_app_server_pid: nil,
       codex_input_tokens: 0,
       codex_output_tokens: 0,
       codex_total_tokens: 0,
@@ -374,6 +375,63 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     refute rendered_snapshot =~ "user:pass"
     refute rendered_snapshot =~ "token=abc123"
     assert rendered_snapshot =~ "[REDACTED]"
+  end
+
+  test "orchestrator snapshot includes active session runtime in codex totals" do
+    issue_id = "issue-active-runtime-snapshot"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-203",
+      title: "Active runtime snapshot test",
+      description: "Keep top-level runtime live while workers are active",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-203"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :ActiveRuntimeOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    completed_runtime_seconds = 30
+    active_runtime_seconds = 14 * 60
+
+    running_entry = %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: nil,
+      turn_count: 1,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      codex_app_server_pid: nil,
+      codex_input_tokens: 0,
+      codex_output_tokens: 0,
+      codex_total_tokens: 0,
+      started_at: DateTime.add(DateTime.utc_now(), -active_runtime_seconds, :second)
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      |> Map.put(:codex_totals, %{initial_state.codex_totals | seconds_running: completed_runtime_seconds})
+    end)
+
+    snapshot = GenServer.call(pid, :snapshot)
+
+    assert %{running: [snapshot_entry], codex_totals: codex_totals} = snapshot
+    assert snapshot_entry.runtime_seconds >= active_runtime_seconds
+    assert codex_totals.seconds_running >= snapshot_entry.runtime_seconds
+    assert codex_totals.seconds_running >= completed_runtime_seconds + active_runtime_seconds
   end
 
   test "orchestrator rejects manager steer messages when the worker session changed" do
