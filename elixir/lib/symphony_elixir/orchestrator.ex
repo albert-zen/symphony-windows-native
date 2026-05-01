@@ -23,6 +23,13 @@ defmodule SymphonyElixir.Orchestrator do
     seconds_running: 0
   }
 
+  @type steer_error ::
+          :unavailable
+          | :worker_not_running
+          | :blank_message
+          | :session_mismatch
+          | :worker_not_accepting_steer
+
   defmodule State do
     @moduledoc """
     Runtime state for the orchestrator polling loop.
@@ -1126,15 +1133,13 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @spec steer_worker(String.t(), String.t(), String.t() | nil) ::
-          {:ok, map()}
-          | {:error, :unavailable | :worker_not_running | :blank_message | :session_mismatch | :worker_not_accepting_steer}
+          {:ok, map()} | {:error, steer_error()}
   def steer_worker(issue_identifier, message, expected_session_id \\ nil) do
     steer_worker(__MODULE__, issue_identifier, message, expected_session_id)
   end
 
   @spec steer_worker(GenServer.server(), String.t(), String.t(), String.t() | nil) ::
-          {:ok, map()}
-          | {:error, :unavailable | :worker_not_running | :blank_message | :session_mismatch | :worker_not_accepting_steer}
+          {:ok, map()} | {:error, steer_error()}
   def steer_worker(server, issue_identifier, message, expected_session_id)
       when is_binary(issue_identifier) and is_binary(message) do
     if Process.whereis(server) do

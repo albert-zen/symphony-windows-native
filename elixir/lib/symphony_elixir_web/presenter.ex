@@ -74,8 +74,8 @@ defmodule SymphonyElixirWeb.Presenter do
     %{
       issue_identifier: issue_identifier,
       issue_id: issue_id_from_entries(running, retry),
-      title: running && Map.get(running, :title),
-      url: running && Map.get(running, :url),
+      title: issue_title(running),
+      url: issue_url(running),
       status: issue_status(running, retry),
       workspace: %{
         path: workspace_path(issue_identifier, running, retry),
@@ -85,20 +85,41 @@ defmodule SymphonyElixirWeb.Presenter do
         restart_count: restart_count(retry),
         current_retry_attempt: retry_attempt(retry)
       },
-      running: running && running_issue_payload(running),
-      retry: retry && retry_issue_payload(retry),
+      running: optional_running_payload(running),
+      retry: optional_retry_payload(retry),
       logs: %{
         codex_session_logs: []
       },
-      recent_events: (running && recent_events_payload(running)) || [],
-      timeline: (running && timeline_payload(running)) || [],
-      last_error: retry && retry.error,
+      recent_events: optional_recent_events(running),
+      timeline: optional_timeline(running),
+      last_error: retry_error(retry),
       tracked: %{}
     }
   end
 
   defp issue_id_from_entries(running, retry),
     do: (running && running.issue_id) || (retry && retry.issue_id)
+
+  defp issue_title(nil), do: nil
+  defp issue_title(running), do: Map.get(running, :title)
+
+  defp issue_url(nil), do: nil
+  defp issue_url(running), do: Map.get(running, :url)
+
+  defp optional_running_payload(nil), do: nil
+  defp optional_running_payload(running), do: running_issue_payload(running)
+
+  defp optional_retry_payload(nil), do: nil
+  defp optional_retry_payload(retry), do: retry_issue_payload(retry)
+
+  defp optional_recent_events(nil), do: []
+  defp optional_recent_events(running), do: recent_events_payload(running)
+
+  defp optional_timeline(nil), do: []
+  defp optional_timeline(running), do: timeline_payload(running)
+
+  defp retry_error(nil), do: nil
+  defp retry_error(retry), do: retry.error
 
   defp restart_count(retry), do: max(retry_attempt(retry) - 1, 0)
   defp retry_attempt(nil), do: 0
