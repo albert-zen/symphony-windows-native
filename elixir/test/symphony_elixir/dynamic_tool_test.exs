@@ -65,6 +65,249 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert response["contentItems"] == [%{"type" => "inputText", "text" => response["output"]}]
   end
 
+  test "linear_graphql allows In Review transition when linked PR required checks pass" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{"head" => %{"sha" => "abc123"}, "base" => %{"ref" => "main"}},
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{"check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]}
+          })
+      )
+
+    assert response["success"] == true
+    assert_received {:linear_mutation_allowed, "issue-1", "state-review"}
+    refute_received {:workpad_recorded, _}
+  end
+
+  test "linear_graphql guards In Review transition when stateId is inside an input variable" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_input_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{"head" => %{"sha" => "abc123"}, "base" => %{"ref" => "main"}},
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{"check_runs" => []}
+          })
+      )
+
+    assert response["success"] == false
+    assert_received {:workpad_recorded, body}
+    assert body =~ "make-all=missing"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql allows non-state issueUpdate input variables" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => """
+          mutation UpdateIssue($issueId: String!, $input: IssueUpdateInput!) {
+            issueUpdate(id: $issueId, input: $input) {
+              success
+            }
+          }
+          """,
+          "variables" => %{"issueId" => "issue-1", "input" => %{"description" => "updated"}}
+        },
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client: fn _url, _opts -> flunk("GitHub should not be checked for non-state updates") end
+      )
+
+    assert response["success"] == true
+    assert_received {:linear_mutation_allowed, "issue-1", nil}
+    refute_received {:workpad_recorded, _}
+  end
+
+  test "linear_graphql keeps explicit stateId variables strict when stateId is missing" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => """
+          mutation MoveIssueToState($issueId: String!, $stateId: String!) {
+            issueUpdate(id: $issueId, input: {stateId: $stateId}) {
+              success
+            }
+          }
+          """,
+          "variables" => %{"issueId" => "issue-1"}
+        },
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client: fn _url, _opts -> flunk("GitHub should not be checked when variables are incomplete") end
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "GraphQL variable `$stateId` was missing"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql accepts a linked PR from the Codex Workpad" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_workpad_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{"head" => %{"sha" => "abc123"}, "base" => %{"ref" => "main"}},
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{"check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]}
+          })
+      )
+
+    assert response["success"] == true
+    assert_received {:linear_mutation_allowed, "issue-1", "state-review"}
+  end
+
+  test "linear_graphql rejects In Review transition when no linked PR exists and records workpad reason" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_without_pr()),
+        github_client: github_client(%{})
+      )
+
+    assert response["success"] == false
+    payload = Jason.decode!(response["output"])
+    assert get_in(payload, ["error", "code"]) == "review_readiness_rejected"
+    assert get_in(payload, ["error", "message"]) =~ "no linked GitHub pull request was found"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "## Codex Workpad"
+    assert body =~ "In Review transition rejected"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql rejects In Review transition when required checks are pending" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{"head" => %{"sha" => "abc123"}, "base" => %{"ref" => "main"}},
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{"check_runs" => [%{"name" => "make-all", "status" => "in_progress", "conclusion" => nil}]}
+          })
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "required GitHub checks are not passing"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "make-all=check:in_progress"
+  end
+
+  test "linear_graphql rejects In Review transition when required checks fail" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{"head" => %{"sha" => "abc123"}, "base" => %{"ref" => "main"}},
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => [%{"context" => "make-all", "state" => "failure"}]},
+            "commits/abc123/check-runs" => %{"check_runs" => []}
+          })
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "required GitHub checks are not passing"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "make-all=status:failure"
+  end
+
+  test "linear_graphql rejects In Review transition when required checks are missing" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{"head" => %{"sha" => "abc123"}, "base" => %{"ref" => "main"}},
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{"check_runs" => []}
+          })
+      )
+
+    assert response["success"] == false
+    assert_received {:workpad_recorded, body}
+    assert body =~ "make-all=missing"
+  end
+
+  test "linear_graphql rejects In Review transition when GitHub readiness is unverifiable" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client: fn _url, _opts -> {:error, :timeout} end
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "GitHub readiness could not be verified"
+    assert_received {:workpad_recorded, body}
+    assert body =~ ":timeout"
+  end
+
+  test "linear_graphql rejects agent-supplied manager override for In Review transition" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(%{
+          "symphonyManagerOverride" => true,
+          "symphonyManagerOverrideReason" => "Manager approved handoff while CI provider is unavailable."
+        }),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client: fn _url, _opts -> flunk("GitHub should not be checked for manager override") end
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "manager override cannot be authorized by an agent tool call"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "manager override cannot be authorized"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
   test "linear_graphql accepts a raw GraphQL query string" do
     test_pid = self()
 
@@ -306,5 +549,91 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
     assert response["success"] == true
     assert response["output"] == ":ok"
+  end
+
+  defp review_transition_arguments(extra_variables \\ %{}) do
+    %{
+      "query" => """
+      mutation MoveIssueToState($issueId: String!, $stateId: String!) {
+        issueUpdate(id: $issueId, input: {stateId: $stateId}) {
+          success
+        }
+      }
+      """,
+      "variables" => Map.merge(%{"issueId" => "issue-1", "stateId" => "state-review"}, extra_variables)
+    }
+  end
+
+  defp review_transition_input_arguments do
+    %{
+      "query" => """
+      mutation MoveIssueToState($issueId: String!, $input: IssueUpdateInput!) {
+        issueUpdate(id: $issueId, input: $input) {
+          success
+        }
+      }
+      """,
+      "variables" => %{"issueId" => "issue-1", "input" => %{"stateId" => "state-review"}}
+    }
+  end
+
+  defp issue_with_pr do
+    %{
+      "id" => "issue-1",
+      "identifier" => "ALB-19",
+      "team" => %{"states" => %{"nodes" => [%{"id" => "state-review", "name" => "In Review"}]}},
+      "attachments" => %{"nodes" => [%{"url" => "https://github.com/albert-zen/symphony-windows-native/pull/42"}]},
+      "comments" => %{"nodes" => []}
+    }
+  end
+
+  defp issue_without_pr do
+    put_in(issue_with_pr(), ["attachments", "nodes"], [])
+  end
+
+  defp issue_with_workpad_pr do
+    issue_with_pr()
+    |> put_in(["attachments", "nodes"], [])
+    |> put_in(["comments", "nodes"], [
+      %{
+        "id" => "comment-1",
+        "body" => "## Codex Workpad\n\nPR: https://github.com/albert-zen/symphony-windows-native/pull/42"
+      }
+    ])
+  end
+
+  defp review_linear_client(test_pid, issue) do
+    fn query, variables, _opts ->
+      cond do
+        query =~ "SymphonyReviewReadinessContext" ->
+          {:ok, %{"data" => %{"issue" => issue}}}
+
+        query =~ "SymphonyReviewReadinessCreateWorkpad" ->
+          send(test_pid, {:workpad_recorded, variables["body"]})
+          {:ok, %{"data" => %{"commentCreate" => %{"success" => true}}}}
+
+        query =~ "SymphonyReviewReadinessUpdateWorkpad" ->
+          send(test_pid, {:workpad_recorded, variables["body"]})
+          {:ok, %{"data" => %{"commentUpdate" => %{"success" => true}}}}
+
+        query =~ "issueUpdate" ->
+          state_id = variables["stateId"] || get_in(variables, ["input", "stateId"])
+          send(test_pid, {:linear_mutation_allowed, variables["issueId"], state_id})
+          {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+      end
+    end
+  end
+
+  defp github_client(responses) do
+    fn url, _opts ->
+      case github_response(responses, url) do
+        {_suffix, payload} -> {:ok, %{status: 200, body: payload}}
+        nil -> {:ok, %{status: 404, body: %{"message" => "not found"}}}
+      end
+    end
+  end
+
+  defp github_response(responses, url) do
+    Enum.find(responses, fn {suffix, _payload} -> String.ends_with?(url, suffix) end)
   end
 end
