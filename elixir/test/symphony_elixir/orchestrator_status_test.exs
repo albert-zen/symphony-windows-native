@@ -437,10 +437,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end)
 
     rate_limits = %{
-      "limit_id" => "codex",
-      "primary" => %{"remaining" => 90, "limit" => 100},
-      "secondary" => nil,
-      "credits" => %{"has_credits" => false, "unlimited" => false, "balance" => nil}
+      "primary" => %{"usedPercent" => 54, "windowDurationMins" => 300},
+      "secondary" => %{"usedPercent" => 12, "windowDurationMins" => 60}
     }
 
     send(
@@ -449,15 +447,9 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
        %{
          event: :notification,
          payload: %{
-           "method" => "codex/event/token_count",
+           "method" => "account/rateLimits/updated",
            "params" => %{
-             "msg" => %{
-               "type" => "event_msg",
-               "payload" => %{
-                 "type" => "token_count",
-                 "rate_limits" => rate_limits
-               }
-             }
+             "rateLimits" => rate_limits
            }
          },
          timestamp: DateTime.utc_now()
@@ -466,6 +458,9 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     snapshot = GenServer.call(pid, :snapshot)
     assert snapshot.rate_limits == rate_limits
+
+    assert [%{codex_rate_limits: ^rate_limits, codex_rate_limits_updated_at: %DateTime{}}] =
+             snapshot.running
   end
 
   test "orchestrator token accounting prefers total_token_usage over last_token_usage in token_count payloads" do
