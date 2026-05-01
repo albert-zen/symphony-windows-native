@@ -171,6 +171,13 @@ Use the helper script:
 .\scripts\start-windows-native.ps1 -WorkflowPath .\WORKFLOW.windows.md -Port 4011
 ```
 
+The script writes PID metadata to `$env:LOCALAPPDATA\Symphony\logs\symphony.pid.json` by default.
+Use `-Background` when you want the launcher to return after starting a hidden PowerShell process:
+
+```powershell
+.\scripts\start-windows-native.ps1 -WorkflowPath .\WORKFLOW.windows.md -Port 4011 -Background
+```
+
 Or run the escript directly:
 
 ```powershell
@@ -183,6 +190,56 @@ Open the dashboard:
 ```text
 http://127.0.0.1:4011/
 ```
+
+## Stop Symphony
+
+Stop a launcher started by `start-windows-native.ps1`:
+
+```powershell
+.\scripts\stop-windows-native.ps1 -Force
+```
+
+The stop script reads the PID metadata and verifies that the target command line is a
+`start-windows-native.ps1` process before terminating that process tree. If the PID file is missing,
+pass `-WorkflowPath` to locate a matching launcher process:
+
+```powershell
+.\scripts\stop-windows-native.ps1 -WorkflowPath .\WORKFLOW.windows.md -Force
+```
+
+## Install a Windows long-running task
+
+The recommended Windows-native long-running setup is Task Scheduler. It runs under the same
+interactive Windows account that already has Codex, GitHub CLI, and `LINEAR_API_KEY` configured:
+
+```powershell
+.\scripts\install-windows-native-service.ps1 -WorkflowPath .\WORKFLOW.windows.md -Port 4011
+Start-ScheduledTask -TaskName "Symphony Windows Native"
+```
+
+Remove the task with:
+
+```powershell
+.\scripts\install-windows-native-service.ps1 -Uninstall
+```
+
+This script intentionally installs a scheduled task rather than a Windows service wrapper. That keeps
+the Codex and GitHub authentication context tied to the user account and avoids adding a service-host
+dependency such as NSSM.
+
+## Cleanup
+
+Use the cleanup helper for explicit maintenance tasks:
+
+```powershell
+.\scripts\cleanup-windows-native.ps1 -WorkflowPath .\WORKFLOW.windows.md -IssueIdentifier ALB-11
+.\scripts\cleanup-windows-native.ps1 -WorkflowPath .\WORKFLOW.windows.md -AllWorkspaces
+.\scripts\cleanup-windows-native.ps1 -Logs
+.\scripts\cleanup-windows-native.ps1 -BuildArtifacts
+```
+
+Cleanup refuses to treat the source checkout, a Git checkout, the current directory, the user profile,
+or a drive root as a workspace/log root. Use `-WhatIf` to preview removals before deleting.
 
 ## Linear state flow
 
@@ -292,6 +349,9 @@ issue in `In Progress` unless a manager explicitly chooses another state.
 
 When the issue moves to a terminal state such as `Done`, Symphony stops the
 active agent and runs `hooks.before_remove` before removing the workspace.
+At startup, Symphony also queries terminal states and removes matching issue workspaces under the
+configured `workspace.root`. The cleanup script above is for manual retention cleanup, log cleanup,
+and operator-initiated workspace cleanup.
 
 ## Known Windows limitations
 
