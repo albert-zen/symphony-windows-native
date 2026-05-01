@@ -34,7 +34,7 @@ defmodule SymphonyElixir.TestSupport.Snapshot do
     else
       case File.read(path) do
         {:ok, expected} ->
-          assert normalized == expected,
+          assert normalized == normalize_content(expected),
                  "Snapshot mismatch for `#{relative_path}`. #{@update_snapshot_hint}"
 
         {:error, :enoent} ->
