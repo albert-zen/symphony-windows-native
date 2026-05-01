@@ -13,6 +13,7 @@ defmodule SymphonyElixir.MixProject do
           threshold: 100
         ],
         ignore_modules: [
+          Mix.Tasks.Symphony.Preflight.Windows,
           SymphonyElixir.Config,
           SymphonyElixir.Linear.Client,
           SymphonyElixir.LocalShell,
@@ -27,6 +28,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.StatusDashboard,
           SymphonyElixir.LogFile,
           SymphonyElixir.Workspace,
+          SymphonyElixir.WindowsPreflight,
           SymphonyElixirWeb.DashboardLive,
           SymphonyElixirWeb.Endpoint,
           SymphonyElixirWeb.ErrorHTML,

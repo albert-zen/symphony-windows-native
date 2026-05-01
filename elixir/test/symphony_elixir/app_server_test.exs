@@ -1205,6 +1205,47 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server strict stdio mode rejects non-json startup output" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-strict-stdio-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-STRICT")
+      codex_script = Path.join(test_root, "fake-codex.js")
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_script, """
+      process.stdout.write("startup banner\\n");
+
+      process.stdin.on("data", chunk => {
+        const line = chunk.toString();
+
+        if (line.includes('"id":1')) {
+          process.stdout.write('{"id":1,"result":{}}\\n');
+        } else if (line.includes('"id":2')) {
+          process.stdout.write('{"id":2,"result":{"thread":{"id":"thread-strict"}}}\\n');
+        } else {
+          process.exit(0);
+        }
+      });
+      """)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "node #{codex_script} app-server"
+      )
+
+      assert {:error, {:non_json_stdio, "startup banner"}} =
+               AppServer.start_session(workspace, strict_stdio: true)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server emits malformed events for JSON-like protocol lines that fail to decode" do
     test_root =
       Path.join(
