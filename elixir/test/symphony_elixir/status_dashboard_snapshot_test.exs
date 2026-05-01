@@ -194,8 +194,89 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
     Snapshot.assert_dashboard_snapshot!("credits_unlimited", render_snapshot(snapshot_data, 42.0))
   end
 
+  test "rate-limit header aggregates fresh worker rate-limit data" do
+    snapshot_data =
+      {:ok,
+       %{
+         running: [
+           running_entry(%{
+             identifier: "MT-201",
+             codex_rate_limits: %{primary: %{usedPercent: 54, windowDurationMins: 300}},
+             codex_rate_limits_updated_at: DateTime.utc_now()
+           })
+         ],
+         retrying: [],
+         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         rate_limits: %{primary: %{usedPercent: 55, windowDurationMins: 300}}
+       }}
+
+    assert rate_limit_header(snapshot_data) =~ "Rate Limits: workers 1/1 known | MT-201 primary 54% / 300m"
+  end
+
+  test "rate-limit header makes partially known worker data explicit" do
+    snapshot_data =
+      {:ok,
+       %{
+         running: [
+           running_entry(%{
+             identifier: "MT-211",
+             codex_rate_limits: %{primary: %{usedPercent: 55, windowDurationMins: 300}},
+             codex_rate_limits_updated_at: DateTime.utc_now()
+           }),
+           running_entry(%{identifier: "MT-212"})
+         ],
+         retrying: [],
+         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         rate_limits: %{primary: %{usedPercent: 46, windowDurationMins: 300}}
+       }}
+
+    header = rate_limit_header(snapshot_data)
+    assert header =~ "Rate Limits: workers 1/2 known | MT-211 primary 55% / 300m"
+    assert header =~ "unknown/stale 1"
+  end
+
+  test "rate-limit header treats old worker rate-limit data as stale" do
+    snapshot_data =
+      {:ok,
+       %{
+         running: [
+           running_entry(%{
+             identifier: "MT-301",
+             codex_rate_limits: %{primary: %{usedPercent: 46, windowDurationMins: 300}},
+             codex_rate_limits_updated_at: DateTime.add(DateTime.utc_now(), -11 * 60, :second)
+           })
+         ],
+         retrying: [],
+         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         rate_limits: nil
+       }}
+
+    assert rate_limit_header(snapshot_data) =~ "Rate Limits: unavailable (worker data stale: MT-301)"
+  end
+
+  test "rate-limit header explains unavailable worker rate-limit data" do
+    snapshot_data =
+      {:ok,
+       %{
+         running: [running_entry(%{identifier: "MT-401"})],
+         retrying: [],
+         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         rate_limits: nil
+       }}
+
+    assert rate_limit_header(snapshot_data) =~ "Rate Limits: unavailable (no worker rate-limit data)"
+  end
+
   defp render_snapshot(snapshot_data, tps) do
     StatusDashboard.format_snapshot_content_for_test(snapshot_data, tps, @terminal_columns)
+  end
+
+  defp rate_limit_header(snapshot_data) do
+    snapshot_data
+    |> render_snapshot(0.0)
+    |> Snapshot.strip_ansi()
+    |> String.split("\n")
+    |> Enum.find(&String.contains?(&1, "Rate Limits:"))
   end
 
   defp running_entry(overrides) do
