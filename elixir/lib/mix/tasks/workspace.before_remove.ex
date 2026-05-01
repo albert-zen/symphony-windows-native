@@ -53,7 +53,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
   end
 
   defp gh_available? do
-    not is_nil(System.find_executable("gh"))
+    not is_nil(find_executable("gh"))
   end
 
   defp gh_authenticated? do
