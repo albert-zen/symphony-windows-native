@@ -117,6 +117,120 @@ defmodule SymphonyElixir.WindowsPreflightTest do
     assert message =~ ":missing_linear_project_slug"
   end
 
+  test "redacts credential-bearing clone URLs from preflight output" do
+    workflow_path =
+      workflow_with_preflight_config(
+        hook_after_create: """
+        git clone 'https://token:secret@github.com/albert-zen/symphony-windows-native.git' .
+        """
+      )
+
+    deps =
+      ready_deps(%{
+        local_shell_run: fn
+          command, _opts when is_binary(command) ->
+            cond do
+              String.contains?(command, "[scriptblock]::Create") ->
+                {:ok, {"hook after_create parsed\n7.5.0\n", 0}}
+
+              String.starts_with?(command, "git clone --depth 1") ->
+                {:ok, {"fatal: could not read from https://token:secret@github.com/albert-zen/symphony-windows-native.git", 128}}
+
+              command == "gh auth status" ->
+                {:ok, {"Logged in\n", 0}}
+
+              true ->
+                flunk("unexpected command: #{command}")
+            end
+        end
+      })
+
+    assert {:error, checks} = WindowsPreflight.run(workflow_path, deps)
+
+    output = WindowsPreflight.format(checks)
+    refute output =~ "token"
+    refute output =~ "secret"
+    assert output =~ "https://[redacted]@github.com/albert-zen/symphony-windows-native.git"
+  end
+
+  test "redacts credential-bearing clone URLs from PowerShell hook parse output" do
+    workflow_path =
+      workflow_with_preflight_config(
+        hook_after_create: """
+        git clone "https://token:secret@github.com/albert-zen/symphony-windows-native.git" .
+        """
+      )
+
+    deps =
+      ready_deps(%{
+        local_shell_run: fn
+          command, _opts when is_binary(command) ->
+            cond do
+              String.contains?(command, "[scriptblock]::Create") ->
+                {:ok, {"At line:1 char:1 git clone https://token:secret@github.com/albert-zen/symphony-windows-native.git", 1}}
+
+              String.starts_with?(command, "git clone --depth 1") ->
+                {:ok, {"Cloning into preflight\n", 0}}
+
+              command == "gh auth status" ->
+                {:ok, {"Logged in\n", 0}}
+
+              true ->
+                flunk("unexpected command: #{command}")
+            end
+        end
+      })
+
+    assert {:error, checks} = WindowsPreflight.run(workflow_path, deps)
+
+    output = WindowsPreflight.format(checks)
+    refute output =~ "token"
+    refute output =~ "secret"
+    assert output =~ "https://[redacted]@github.com/albert-zen/symphony-windows-native.git"
+  end
+
+  test "validates a fresh workspace root before cloning into it" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-preflight-fresh-root-#{System.unique_integer([:positive])}"
+      )
+
+    File.rm_rf!(workspace_root)
+
+    workflow_path = workflow_with_preflight_config(workspace_root: workspace_root)
+
+    deps =
+      ready_deps(%{
+        start_codex_session: fn workspace ->
+          assert File.dir?(workspace)
+          File.rm_rf!(workspace_root)
+          :ok
+        end,
+        local_shell_run: fn
+          command, _opts when is_binary(command) ->
+            cond do
+              String.contains?(command, "[scriptblock]::Create") ->
+                {:ok, {"hook after_create parsed\n7.5.0\n", 0}}
+
+              String.starts_with?(command, "git clone --depth 1") ->
+                assert File.dir?(workspace_root)
+                {:ok, {"Cloning into preflight\n", 0}}
+
+              command == "gh auth status" ->
+                {:ok, {"Logged in\n", 0}}
+
+              true ->
+                flunk("unexpected command: #{command}")
+            end
+        end
+      })
+
+    assert {:ok, checks} = WindowsPreflight.run(workflow_path, deps)
+    assert %WindowsPreflight.Check{status: :pass} = Enum.find(checks, &(&1.name == "Workspace root"))
+    assert %WindowsPreflight.Check{status: :pass} = Enum.find(checks, &(&1.name == "Git repository"))
+  end
+
   defp workflow_with_preflight_config(overrides \\ []) do
     workflow_path =
       Path.join(
@@ -146,5 +260,23 @@ defmodule SymphonyElixir.WindowsPreflightTest do
     write_workflow_file!(workflow_path, options)
 
     workflow_path
+  end
+
+  defp ready_deps(overrides) do
+    Map.merge(
+      %{
+        find_executable: fn _name -> "C:/tools/bin.exe" end,
+        codex_command_resolves?: fn _command, _workspace_root -> :ok end,
+        linear_graphql: fn _query, _variables ->
+          {:ok, %{"data" => %{"viewer" => %{"id" => "viewer-1"}}}}
+        end,
+        port_available?: fn 4011 -> true end,
+        start_codex_session: fn workspace ->
+          assert File.dir?(workspace)
+          :ok
+        end
+      },
+      overrides
+    )
   end
 end

@@ -52,8 +52,8 @@ defmodule SymphonyElixir.WindowsPreflight do
             path_tools_check(settings, deps),
             github_cli_check(deps),
             codex_app_server_check(settings, deps),
-            git_clone_check(settings, deps),
             workspace_root_check(settings),
+            git_clone_check(settings, deps),
             dashboard_port_check(settings, deps),
             powershell_hooks_check(settings, deps)
           ]
@@ -251,12 +251,12 @@ defmodule SymphonyElixir.WindowsPreflight do
 
           case local_shell_run.("git clone --depth 1 #{shell_quote(clone_url)} #{shell_quote(clone_target)}", cd: File.cwd!()) do
             {:ok, {_output, 0}} ->
-              pass("Git repository", "Git can clone #{clone_url}.")
+              pass("Git repository", "Git can clone #{redact_url(clone_url)}.")
 
             {:ok, {output, status}} ->
               fail(
                 "Git repository",
-                "Git clone check failed with exit #{status}: #{String.trim(output)}",
+                "Git clone check failed with exit #{status}: #{sanitize_command_output(output)}",
                 "Verify repository URL, GitHub credentials, network access, and clone hooks before starting Symphony."
               )
 
@@ -329,7 +329,7 @@ defmodule SymphonyElixir.WindowsPreflight do
         {:ok, {output, status}} ->
           fail(
             "PowerShell hooks",
-            "PowerShell hook parse probe exited #{status}: #{String.trim(output)}",
+            "PowerShell hook parse probe exited #{status}: #{sanitize_command_output(output)}",
             "Fix the configured hook script syntax or install PowerShell 5.1+ / PowerShell 7 for non-interactive execution."
           )
 
@@ -348,10 +348,20 @@ defmodule SymphonyElixir.WindowsPreflight do
   defp configured_clone_url(nil), do: nil
 
   defp configured_clone_url(command) when is_binary(command) do
-    case Regex.run(~r/\bgit\s+clone(?:\s+\S+)*\s+((?:https?:\/\/|ssh:\/\/|git@)[^\s]+)/, command) do
+    case Regex.run(~r/\bgit\s+clone(?:\s+\S+)*\s+['"]?((?:https?:\/\/|ssh:\/\/|git@)[^\s'"]+)/, command) do
       [_match, url] -> String.trim(url, "'\"")
       _ -> nil
     end
+  end
+
+  defp sanitize_command_output(output) when is_binary(output) do
+    output
+    |> String.trim()
+    |> then(&Regex.replace(~r/[a-z][a-z0-9+.-]*:\/\/[^\s'"]+/i, &1, fn url -> redact_url(url) end))
+  end
+
+  defp redact_url(url) when is_binary(url) do
+    Regex.replace(~r/^([a-z][a-z0-9+.-]*:\/\/)[^\/\s@]+@/i, url, "\\1[redacted]@")
   end
 
   defp hooks_configured?(hooks) do
