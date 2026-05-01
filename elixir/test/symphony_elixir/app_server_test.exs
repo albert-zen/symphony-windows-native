@@ -745,6 +745,120 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server records manager steer rejection responses from codex" do
+    if SymphonyElixir.LocalShell.windows?() do
+      :ok
+    else
+      do_test_app_server_records_manager_steer_rejection_response()
+    end
+  end
+
+  defp do_test_app_server_records_manager_steer_rejection_response do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-steer-reject-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-721")
+      codex_binary = Path.join(test_root, "fake-codex")
+      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
+
+      on_exit(fn ->
+        if is_binary(previous_trace) do
+          System.put_env("SYMP_TEST_CODEx_TRACE", previous_trace)
+        else
+          System.delete_env("SYMP_TEST_CODEx_TRACE")
+        end
+      end)
+
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-721"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-721"}}}'
+            ;;
+          5)
+            steer_id=$(printf '%s' "$line" | sed -n 's/.*"id":\\([0-9][0-9]*\\).*/\\1/p')
+            printf '{"id":%s,"error":{"code":"turn_not_running","message":"turn stopped"}}\\n' "$steer_id"
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-steer-reject",
+        identifier: "MT-721",
+        title: "Steer rejected turn",
+        description: "Record app-server steer rejection",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-721",
+        labels: ["backend"]
+      }
+
+      parent = self()
+      on_message = fn message -> send(parent, {:app_server_message, message}) end
+
+      task =
+        Task.async(fn ->
+          {:ok, session} = AppServer.start_session(workspace)
+
+          try do
+            AppServer.run_turn(session, "Wait for manager steer rejection", issue, on_message: on_message)
+          after
+            AppServer.stop_session(session)
+          end
+        end)
+
+      assert_receive {:app_server_message, %{event: :session_started, session_id: "thread-721-turn-721"}},
+                     1_000
+
+      request_ref = make_ref()
+      send(task.pid, {:codex_steer, self(), request_ref, "thread-721-turn-721", "Retry the focused test."})
+      assert_receive {:codex_steer_request_result, ^request_ref, {:ok, "thread-721-turn-721"}}, 1_000
+
+      assert {:ok, _result} = Task.await(task, 1_000)
+
+      assert_receive {:app_server_message,
+                      %{
+                        event: :manager_steer_failed,
+                        session_id: "thread-721-turn-721",
+                        reason: %{"code" => "turn_not_running", "message" => "turn stopped"}
+                      }},
+                     1_000
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   defp do_test_app_server_sends_manager_steer_messages_to_the_active_turn do
     test_root =
       Path.join(

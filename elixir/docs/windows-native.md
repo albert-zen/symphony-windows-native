@@ -215,7 +215,10 @@ The observability dashboard links each running worker row to
 `/workers/<issue-identifier>`. The detail page shows the issue identity, active
 session id, workspace path, token totals, and a bounded timeline of recent Codex
 app-server events. Timeline rows render a human-readable message first and keep
-the raw payload in an expandable JSON panel for diagnosis.
+the sanitized payload in an expandable JSON panel for diagnosis. Symphony
+redacts common secret keys, bearer/basic auth values, credential-bearing URLs,
+and token-like query parameters before storing Codex event payloads in
+orchestrator state or presenting them through the dashboard/API.
 
 Managers can send a steer message from the detail page while the worker is
 running. Symphony routes the message through the orchestrator to the worker task
@@ -224,6 +227,11 @@ submits the current session id, and the app-server `turn/steer` request includes
 the active `threadId` plus `expectedTurnId`. Symphony records queued and sent
 steer messages in the worker timeline so later reviewers can see when a human
 intervened.
+
+If the dashboard is bound to a non-loopback host such as `0.0.0.0`, steering is
+locked unless an operator token is configured with `observability.steer_token` or
+the `SYMPHONY_STEER_TOKEN` environment variable. The token is required only for
+steer submission; read-only dashboard and JSON views remain available.
 
 ### Progress tracking
 

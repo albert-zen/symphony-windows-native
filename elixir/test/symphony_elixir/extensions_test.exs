@@ -678,6 +678,108 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert_received {:steer_worker_called, "MT-HTTP", "Use the narrower UI fix.", "thread-http"}
   end
 
+  test "worker detail projections redact secret-like raw event values" do
+    orchestrator_name = Module.concat(__MODULE__, :WorkerDetailRedactionOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: secret_snapshot()
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    api_payload = json_response(get(build_conn(), "/api/v1/MT-SECRET"), 200)
+    rendered_api = inspect(api_payload, limit: :infinity)
+
+    refute rendered_api =~ "sk-live-secret"
+    refute rendered_api =~ "p4ss"
+    refute rendered_api =~ "live-token"
+    refute rendered_api =~ "user:pass"
+    refute rendered_api =~ "token=abc123"
+    assert rendered_api =~ "[REDACTED]"
+
+    {:ok, _view, html} = live(build_conn(), "/workers/MT-SECRET")
+
+    refute html =~ "sk-live-secret"
+    refute html =~ "p4ss"
+    refute html =~ "live-token"
+    refute html =~ "user:pass"
+    refute html =~ "token=abc123"
+    assert html =~ "[REDACTED]"
+  end
+
+  test "worker detail liveview requires operator token when steer auth is enabled" do
+    orchestrator_name = Module.concat(__MODULE__, :WorkerDetailSteerAuthOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        parent: self(),
+        snapshot: static_snapshot()
+      )
+
+    start_test_endpoint(
+      orchestrator: orchestrator_name,
+      snapshot_timeout_ms: 50,
+      steer_auth_required: true,
+      steer_token: "letmein"
+    )
+
+    {:ok, view, html} = live(build_conn(), "/workers/MT-HTTP")
+    assert html =~ "Operator token"
+
+    render_submit(view, "steer", %{
+      "steer" => %{
+        "message" => "Do not send this.",
+        "session_id" => "thread-http",
+        "operator_token" => "wrong"
+      }
+    })
+
+    refute_received {:steer_worker_called, "MT-HTTP", "Do not send this.", "thread-http"}
+
+    render_submit(view, "steer", %{
+      "steer" => %{
+        "message" => "Use the authenticated steer path.",
+        "session_id" => "thread-http",
+        "operator_token" => "letmein"
+      }
+    })
+
+    assert_received {:steer_worker_called, "MT-HTTP", "Use the authenticated steer path.", "thread-http"}
+  end
+
+  test "worker detail liveview locks steering when exposed without an operator token" do
+    orchestrator_name = Module.concat(__MODULE__, :WorkerDetailSteerLockedOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        parent: self(),
+        snapshot: static_snapshot()
+      )
+
+    start_test_endpoint(
+      orchestrator: orchestrator_name,
+      snapshot_timeout_ms: 50,
+      steer_auth_required: true,
+      steer_token: "   "
+    )
+
+    {:ok, view, html} = live(build_conn(), "/workers/MT-HTTP")
+    assert html =~ "Steering is locked"
+
+    render_submit(view, "steer", %{
+      "steer" => %{
+        "message" => "Do not send this.",
+        "session_id" => "thread-http"
+      }
+    })
+
+    refute_received {:steer_worker_called, "MT-HTTP", "Do not send this.", "thread-http"}
+  end
+
   test "dashboard liveview renders an unavailable state without crashing" do
     start_test_endpoint(
       orchestrator: Module.concat(__MODULE__, :MissingDashboardOrchestrator),
@@ -811,6 +913,42 @@ defmodule SymphonyElixir.ExtensionsTest do
       codex_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},
       rate_limits: %{"primary" => %{"remaining" => 11}}
     }
+  end
+
+  defp secret_snapshot do
+    snapshot = static_snapshot()
+
+    secret_event = %{
+      event: :notification,
+      message: %{
+        payload: %{
+          "method" => "item/commandExecution/outputDelta",
+          "params" => %{
+            "outputDelta" => "OPENAI_API_KEY=sk-live-secret curl https://user:pass@example.org?token=abc123",
+            "authorization" => "Bearer live-token"
+          }
+        }
+      },
+      raw: ~s({"api_key":"sk-live-secret","password":"p4ss","access_token":"live-token","url":"https://user:pass@example.org?token=abc123"}),
+      session_id: "thread-secret",
+      thread_id: "thread-secret",
+      turn_id: "turn-secret",
+      timestamp: ~U[2026-01-01 00:00:00Z]
+    }
+
+    secret_running =
+      snapshot.running
+      |> List.first()
+      |> Map.merge(%{
+        identifier: "MT-SECRET",
+        session_id: "thread-secret",
+        thread_id: "thread-secret",
+        turn_id: "turn-secret",
+        last_codex_message: secret_event.message,
+        recent_codex_events: [secret_event]
+      })
+
+    %{snapshot | running: [secret_running]}
   end
 
   defp wait_for_bound_port do

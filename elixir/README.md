@@ -197,6 +197,12 @@ The observability UI now runs on a minimal Phoenix stack:
 - JSON API for operational debugging under `/api/v1/*`
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
+- Worker detail pages at `/workers/<issue_identifier>` with sanitized Codex
+  timelines and session-scoped manager steering.
+
+When binding the server to a non-loopback host, configure
+`observability.steer_token` or `SYMPHONY_STEER_TOKEN`; otherwise steer
+submission is locked while read-only dashboard views remain available.
 
 ## Project Layout
 

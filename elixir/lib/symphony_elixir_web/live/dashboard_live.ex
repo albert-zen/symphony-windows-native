@@ -16,6 +16,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:detail_payload, nil)
       |> assign(:detail_error, nil)
       |> assign(:issue_identifier, nil)
+      |> assign(:steer_auth_required, steer_auth_required?())
+      |> assign(:steer_token_configured, steer_token_configured?())
       |> assign(:now, DateTime.utc_now())
 
     if connected?(socket) do
@@ -62,9 +64,22 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   @impl true
-  def handle_event("steer", %{"steer" => %{"message" => message, "session_id" => session_id}}, socket) do
+  def handle_event("steer", %{"steer" => steer_params}, socket) do
     issue_identifier = socket.assigns.issue_identifier
+    message = Map.get(steer_params, "message", "")
+    session_id = Map.get(steer_params, "session_id")
+    operator_token = Map.get(steer_params, "operator_token")
 
+    case authorize_steer(operator_token) do
+      :ok ->
+        submit_steer(socket, issue_identifier, message, session_id)
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, steer_error_message(reason))}
+    end
+  end
+
+  defp submit_steer(socket, issue_identifier, message, session_id) do
     case Presenter.steer_payload(issue_identifier, message, session_id, orchestrator()) do
       {:ok, _payload} ->
         {:noreply,
@@ -144,7 +159,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <h2 class="section-title">Steer worker</h2>
                 <p class="section-copy">
                   <%= if detail.running do %>
-                    Send an auditable manager message to this exact active session.
+                    <%= if @steer_auth_required and not @steer_token_configured do %>
+                      Steering is locked because this dashboard is exposed without an operator token.
+                    <% else %>
+                      Send an auditable manager message to this exact active session.
+                    <% end %>
                   <% else %>
                     This worker is not running, so steering is disabled.
                   <% end %>
@@ -154,14 +173,27 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
             <.form for={%{}} as={:steer} phx-submit="steer" class="steer-form">
               <input type="hidden" name="steer[session_id]" value={running.session_id || ""} />
+              <%= if @steer_auth_required and @steer_token_configured do %>
+                <input
+                  type="password"
+                  name="steer[operator_token]"
+                  class="steer-token"
+                  placeholder="Operator token"
+                  autocomplete="off"
+                  disabled={is_nil(running.session_id)}
+                />
+              <% end %>
               <textarea
                 name="steer[message]"
                 class="steer-input"
                 rows="4"
                 placeholder="Send a targeted instruction to this running worker"
-                disabled={is_nil(running.session_id)}
+                disabled={is_nil(running.session_id) or steer_locked?(@steer_auth_required, @steer_token_configured)}
               ></textarea>
-              <button type="submit" disabled={is_nil(running.session_id)}>Send steer</button>
+              <button
+                type="submit"
+                disabled={is_nil(running.session_id) or steer_locked?(@steer_auth_required, @steer_token_configured)}
+              >Send steer</button>
             </.form>
           </section>
 
@@ -443,6 +475,46 @@ defmodule SymphonyElixirWeb.DashboardLive do
     Endpoint.config(:snapshot_timeout_ms) || 15_000
   end
 
+  defp steer_auth_required?, do: Endpoint.config(:steer_auth_required) == true
+
+  defp steer_token_configured? do
+    case Endpoint.config(:steer_token) do
+      token when is_binary(token) -> String.trim(token) != ""
+      _ -> false
+    end
+  end
+
+  defp authorize_steer(operator_token) do
+    if steer_auth_required?(), do: authorize_exposed_steer(operator_token), else: :ok
+  end
+
+  defp authorize_exposed_steer(operator_token) do
+    case Endpoint.config(:steer_token) do
+      token when is_binary(token) ->
+        case String.trim(token) do
+          "" -> {:error, :steer_auth_required}
+          expected_token -> compare_steer_token(operator_token, expected_token)
+        end
+
+      _ ->
+        {:error, :steer_auth_required}
+    end
+  end
+
+  defp compare_steer_token(operator_token, expected_token) do
+    submitted_token = String.trim(operator_token || "")
+
+    if byte_size(submitted_token) == byte_size(expected_token) and
+         Plug.Crypto.secure_compare(submitted_token, expected_token) do
+      :ok
+    else
+      {:error, :invalid_steer_token}
+    end
+  end
+
+  defp steer_locked?(true, false), do: true
+  defp steer_locked?(_required, _configured), do: false
+
   defp completed_runtime_seconds(payload) do
     payload.codex_totals.seconds_running || 0
   end
@@ -497,6 +569,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp steer_error_message(:blank_message), do: "Steer message cannot be blank."
   defp steer_error_message(:worker_not_running), do: "Worker is no longer running."
   defp steer_error_message(:session_mismatch), do: "Worker session changed before the steer was sent."
+  defp steer_error_message(:steer_auth_required), do: "Operator token is required before steering exposed workers."
+  defp steer_error_message(:invalid_steer_token), do: "Operator token is invalid."
   defp steer_error_message(reason), do: "Steer failed: #{inspect(reason)}"
 
   defp state_badge_class(state) do

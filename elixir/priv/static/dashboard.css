@@ -436,10 +436,9 @@ pre,
   margin-top: 1rem;
 }
 
-.steer-input {
+.steer-input,
+.steer-token {
   width: 100%;
-  min-height: 7rem;
-  resize: vertical;
   border: 1px solid var(--line-strong);
   border-radius: 12px;
   padding: 0.8rem;
@@ -449,7 +448,17 @@ pre,
   line-height: 1.45;
 }
 
-.steer-input:focus {
+.steer-input {
+  min-height: 7rem;
+  resize: vertical;
+}
+
+.steer-token {
+  max-width: 24rem;
+}
+
+.steer-input:focus,
+.steer-token:focus {
   outline: 2px solid rgba(16, 163, 127, 0.24);
   border-color: var(--accent);
 }
