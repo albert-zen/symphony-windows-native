@@ -45,6 +45,13 @@ Continuation context:
 - Resume from the current workspace state instead of restarting from scratch.
 - Do not repeat already-completed investigation or validation unless needed for new code changes.
 - Do not end the turn while the issue remains in an active state unless you are blocked by missing required permissions/secrets.
+{% if retry_error %}
+- Previous retry/backoff signal: {{ retry_error }}
+{% if retry_error_kind %}- Retry error kind: {{ retry_error_kind }}{% endif %}
+{% if retry_workspace_path %}- Existing workspace path: {{ retry_workspace_path }}{% endif %}
+{% if retry_worker_host %}- Worker host: {{ retry_worker_host }}{% endif %}
+- Record this retry/backoff signal in the existing `## Codex Workpad` before continuing implementation.
+{% endif %}
   {% endif %}
 
 Issue context:
