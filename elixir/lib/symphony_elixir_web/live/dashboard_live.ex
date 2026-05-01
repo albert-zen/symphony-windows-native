@@ -515,15 +515,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp steer_locked?(true, false), do: true
   defp steer_locked?(_required, _configured), do: false
 
-  defp completed_runtime_seconds(payload) do
-    payload.codex_totals.seconds_running || 0
-  end
-
   defp total_runtime_seconds(payload, now) do
-    completed_runtime_seconds(payload) +
-      Enum.reduce(payload.running, 0, fn entry, total ->
-        total + runtime_seconds_from_started_at(entry.started_at, now)
-      end)
+    base_seconds = payload.codex_totals.seconds_running || 0
+    active_count = length(payload.running || [])
+
+    base_seconds + active_count * runtime_seconds_since_generated_at(payload.generated_at, now)
   end
 
   defp format_runtime_and_turns(started_at, turn_count, now) when is_integer(turn_count) and turn_count > 0 do
@@ -552,6 +548,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp runtime_seconds_from_started_at(_started_at, _now), do: 0
+
+  defp runtime_seconds_since_generated_at(generated_at, %DateTime{} = now) when is_binary(generated_at) do
+    case DateTime.from_iso8601(generated_at) do
+      {:ok, parsed, _offset} -> max(DateTime.diff(now, parsed, :second), 0)
+      _ -> 0
+    end
+  end
+
+  defp runtime_seconds_since_generated_at(_generated_at, _now), do: 0
 
   defp format_int(value) when is_integer(value) do
     value

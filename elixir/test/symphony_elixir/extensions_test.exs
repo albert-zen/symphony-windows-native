@@ -1124,6 +1124,27 @@ defmodule SymphonyElixir.ExtensionsTest do
     end)
   end
 
+  test "dashboard liveview does not double-count active runtime totals" do
+    orchestrator_name = Module.concat(__MODULE__, :DashboardRuntimeOrchestrator)
+
+    snapshot =
+      static_snapshot()
+      |> put_in([:codex_totals, :seconds_running], 120)
+      |> put_in([:running, Access.at(0), :started_at], DateTime.add(DateTime.utc_now(), -120, :second))
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, html} = live(build_conn(), "/")
+    assert html =~ "2m "
+    refute html =~ "4m "
+  end
+
   test "worker detail liveview renders timeline and submits session-scoped steer messages" do
     orchestrator_name = Module.concat(__MODULE__, :WorkerDetailOrchestrator)
 
