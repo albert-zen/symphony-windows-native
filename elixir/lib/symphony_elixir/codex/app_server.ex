@@ -45,20 +45,21 @@ defmodule SymphonyElixir.Codex.AppServer do
          {:ok, port} <- start_port(expanded_workspace, worker_host) do
       metadata = port_metadata(port, worker_host)
 
-      with {:ok, thread_id} <- do_start_session(port, expanded_workspace, session_policies) do
-        {:ok,
-         %{
-           port: port,
-           metadata: metadata,
-           approval_policy: session_policies.approval_policy,
-           auto_approve_requests: session_policies.approval_policy == "never",
-           thread_sandbox: session_policies.thread_sandbox,
-           turn_sandbox_policy: session_policies.turn_sandbox_policy,
-           thread_id: thread_id,
-           workspace: expanded_workspace,
-           worker_host: worker_host
-         }}
-      else
+      case do_start_session(port, expanded_workspace, session_policies) do
+        {:ok, thread_id} ->
+          {:ok,
+           %{
+             port: port,
+             metadata: metadata,
+             approval_policy: session_policies.approval_policy,
+             auto_approve_requests: session_policies.approval_policy == "never",
+             thread_sandbox: session_policies.thread_sandbox,
+             turn_sandbox_policy: session_policies.turn_sandbox_policy,
+             thread_id: thread_id,
+             workspace: expanded_workspace,
+             worker_host: worker_host
+           }}
+
         {:error, reason} ->
           stop_port(port)
           {:error, reason}
