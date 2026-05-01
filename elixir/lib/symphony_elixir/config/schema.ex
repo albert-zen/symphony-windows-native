@@ -250,12 +250,13 @@ defmodule SymphonyElixir.Config.Schema do
       field(:dashboard_enabled, :boolean, default: true)
       field(:refresh_ms, :integer, default: 1_000)
       field(:render_interval_ms, :integer, default: 16)
+      field(:steer_token, :string)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
-      |> cast(attrs, [:dashboard_enabled, :refresh_ms, :render_interval_ms], empty_values: [])
+      |> cast(attrs, [:dashboard_enabled, :refresh_ms, :render_interval_ms, :steer_token], empty_values: [])
       |> validate_number(:refresh_ms, greater_than: 0)
       |> validate_number(:render_interval_ms, greater_than: 0)
     end
@@ -405,7 +406,12 @@ defmodule SymphonyElixir.Config.Schema do
         review_readiness_required_checks: normalize_required_checks(settings.codex.review_readiness_required_checks)
     }
 
-    %{settings | tracker: tracker, workspace: workspace, codex: codex}
+    observability = %{
+      settings.observability
+      | steer_token: resolve_secret_setting(settings.observability.steer_token, System.get_env("SYMPHONY_STEER_TOKEN"))
+    }
+
+    %{settings | tracker: tracker, workspace: workspace, codex: codex, observability: observability}
   end
 
   defp normalize_keys(value) when is_map(value) do
@@ -533,7 +539,8 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp normalize_secret_value(value) when is_binary(value) do
-    if value == "", do: nil, else: value
+    trimmed = String.trim(value)
+    if trimmed == "", do: nil, else: trimmed
   end
 
   defp normalize_secret_value(_value), do: nil

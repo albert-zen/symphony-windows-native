@@ -3,7 +3,7 @@ defmodule SymphonyElixirWeb.Presenter do
   Shared projections for the observability API and dashboard.
   """
 
-  alias SymphonyElixir.{Config, Orchestrator, StatusDashboard}
+  alias SymphonyElixir.{Config, Orchestrator, Redactor, StatusDashboard}
 
   @spec state_payload(GenServer.name(), timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
@@ -49,6 +49,16 @@ defmodule SymphonyElixirWeb.Presenter do
     end
   end
 
+  @spec steer_payload(String.t(), String.t(), String.t() | nil, GenServer.name()) ::
+          {:ok, map()} | {:error, atom()}
+  def steer_payload(issue_identifier, message, expected_session_id, orchestrator)
+      when is_binary(issue_identifier) and is_binary(message) do
+    case Orchestrator.steer_worker(orchestrator, issue_identifier, message, expected_session_id) do
+      {:ok, payload} -> {:ok, Map.update!(payload, :queued_at, &DateTime.to_iso8601/1)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   @spec refresh_payload(GenServer.name()) :: {:ok, map()} | {:error, :unavailable}
   def refresh_payload(orchestrator) do
     case Orchestrator.request_refresh(orchestrator) do
@@ -64,6 +74,8 @@ defmodule SymphonyElixirWeb.Presenter do
     %{
       issue_identifier: issue_identifier,
       issue_id: issue_id_from_entries(running, retry),
+      title: issue_title(running),
+      url: issue_url(running),
       status: issue_status(running, retry),
       workspace: %{
         path: workspace_path(issue_identifier, running, retry),
@@ -73,19 +85,41 @@ defmodule SymphonyElixirWeb.Presenter do
         restart_count: restart_count(retry),
         current_retry_attempt: retry_attempt(retry)
       },
-      running: running && running_issue_payload(running),
-      retry: retry && retry_issue_payload(retry),
+      running: optional_running_payload(running),
+      retry: optional_retry_payload(retry),
       logs: %{
         codex_session_logs: []
       },
-      recent_events: (running && recent_events_payload(running)) || [],
-      last_error: retry && retry.error,
+      recent_events: optional_recent_events(running),
+      timeline: optional_timeline(running),
+      last_error: retry_error(retry),
       tracked: %{}
     }
   end
 
   defp issue_id_from_entries(running, retry),
     do: (running && running.issue_id) || (retry && retry.issue_id)
+
+  defp issue_title(nil), do: nil
+  defp issue_title(running), do: Map.get(running, :title)
+
+  defp issue_url(nil), do: nil
+  defp issue_url(running), do: Map.get(running, :url)
+
+  defp optional_running_payload(nil), do: nil
+  defp optional_running_payload(running), do: running_issue_payload(running)
+
+  defp optional_retry_payload(nil), do: nil
+  defp optional_retry_payload(retry), do: retry_issue_payload(retry)
+
+  defp optional_recent_events(nil), do: []
+  defp optional_recent_events(running), do: recent_events_payload(running)
+
+  defp optional_timeline(nil), do: []
+  defp optional_timeline(running), do: timeline_payload(running)
+
+  defp retry_error(nil), do: nil
+  defp retry_error(retry), do: retry.error
 
   defp restart_count(retry), do: max(retry_attempt(retry) - 1, 0)
   defp retry_attempt(nil), do: 0
@@ -99,10 +133,14 @@ defmodule SymphonyElixirWeb.Presenter do
     %{
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
+      title: Map.get(entry, :title),
+      url: Map.get(entry, :url),
       state: entry.state,
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
       session_id: entry.session_id,
+      thread_id: Map.get(entry, :thread_id),
+      turn_id: Map.get(entry, :turn_id),
       turn_count: Map.get(entry, :turn_count, 0),
       last_event: entry.last_codex_event,
       last_message: summarize_message(entry.last_codex_message),
@@ -138,6 +176,8 @@ defmodule SymphonyElixirWeb.Presenter do
       worker_host: Map.get(running, :worker_host),
       workspace_path: Map.get(running, :workspace_path),
       session_id: running.session_id,
+      thread_id: Map.get(running, :thread_id),
+      turn_id: Map.get(running, :turn_id),
       turn_count: Map.get(running, :turn_count, 0),
       state: running.state,
       started_at: iso8601(running.started_at),
@@ -188,8 +228,30 @@ defmodule SymphonyElixirWeb.Presenter do
     |> Enum.reject(&is_nil(&1.at))
   end
 
+  defp timeline_payload(running) do
+    running
+    |> Map.get(:recent_codex_events, [])
+    |> Enum.map(&timeline_event_payload/1)
+  end
+
+  defp timeline_event_payload(event) when is_map(event) do
+    %{
+      at: iso8601(event[:timestamp]),
+      event: event[:event],
+      message: summarize_message(event),
+      raw: raw_event_payload(event),
+      session_id: event[:session_id],
+      thread_id: event[:thread_id],
+      turn_id: event[:turn_id]
+    }
+  end
+
+  defp raw_event_payload(event) when is_map(event) do
+    Redactor.redact(event[:raw] || event[:message])
+  end
+
   defp summarize_message(nil), do: nil
-  defp summarize_message(message), do: StatusDashboard.humanize_codex_message(message)
+  defp summarize_message(message), do: message |> Redactor.redact() |> StatusDashboard.humanize_codex_message()
 
   defp command_watchdog_payload(nil), do: nil
 

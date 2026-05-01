@@ -23,6 +23,7 @@ defmodule SymphonyElixir.HttpServer do
         host = Keyword.get(opts, :host, Config.settings!().server.host)
         orchestrator = Keyword.get(opts, :orchestrator, Orchestrator)
         snapshot_timeout_ms = Keyword.get(opts, :snapshot_timeout_ms, 15_000)
+        steer_token = Config.settings!().observability.steer_token
 
         with {:ok, ip} <- parse_host(host) do
           endpoint_opts = [
@@ -31,6 +32,8 @@ defmodule SymphonyElixir.HttpServer do
             url: [host: normalize_host(host)],
             orchestrator: orchestrator,
             snapshot_timeout_ms: snapshot_timeout_ms,
+            steer_auth_required: !loopback_ip?(ip),
+            steer_token: steer_token,
             secret_key_base: secret_key_base()
           ]
 
@@ -81,6 +84,10 @@ defmodule SymphonyElixir.HttpServer do
   defp normalize_host(host) when host in ["", nil], do: "127.0.0.1"
   defp normalize_host(host) when is_binary(host), do: host
   defp normalize_host(host), do: to_string(host)
+
+  defp loopback_ip?({127, _, _, _}), do: true
+  defp loopback_ip?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
+  defp loopback_ip?(_ip), do: false
 
   defp secret_key_base do
     Base.encode64(:crypto.strong_rand_bytes(@secret_key_bytes), padding: false)
