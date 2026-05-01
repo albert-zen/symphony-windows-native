@@ -8,6 +8,7 @@ defmodule SymphonyElixir.Orchestrator do
   import Bitwise, only: [<<<: 2]
 
   alias SymphonyElixir.{AgentRunner, Config, Redactor, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.Codex.CommandWatchdog
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -206,9 +207,11 @@ defmodule SymphonyElixir.Orchestrator do
           state
           |> apply_codex_token_delta(token_delta)
           |> apply_codex_rate_limits(update)
+          |> put_running_entry(issue_id, updated_running_entry)
+          |> maybe_record_stalled_command(issue_id, DateTime.utc_now())
 
         notify_dashboard()
-        {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
+        {:noreply, state}
     end
   end
 
@@ -508,25 +511,38 @@ defmodule SymphonyElixir.Orchestrator do
   defp reconcile_stalled_running_issues(%State{} = state) do
     timeout_ms = Config.settings!().codex.stall_timeout_ms
 
-    cond do
-      timeout_ms <= 0 ->
-        state
+    if map_size(state.running) == 0 do
+      state
+    else
+      now = DateTime.utc_now()
 
-      map_size(state.running) == 0 ->
-        state
+      Enum.reduce(state.running, state, fn {issue_id, running_entry}, state_acc ->
+        running_entry = refresh_command_watchdog(running_entry, now)
 
-      true ->
-        now = DateTime.utc_now()
-
-        Enum.reduce(state.running, state, fn {issue_id, running_entry}, state_acc ->
-          restart_stalled_issue(state_acc, issue_id, running_entry, now, timeout_ms)
-        end)
+        state_acc
+        |> put_running_entry(issue_id, running_entry)
+        |> maybe_record_stalled_command(issue_id, now)
+        |> restart_stalled_issue(issue_id, running_entry, now, timeout_ms)
+      end)
     end
   end
 
   defp restart_stalled_issue(state, issue_id, running_entry, now, timeout_ms) do
     elapsed_ms = stall_elapsed_ms(running_entry, now)
 
+    cond do
+      active_command?(running_entry) ->
+        state
+
+      timeout_ms <= 0 ->
+        state
+
+      true ->
+        do_restart_stalled_issue(state, issue_id, running_entry, elapsed_ms, timeout_ms)
+    end
+  end
+
+  defp do_restart_stalled_issue(state, issue_id, running_entry, elapsed_ms, timeout_ms) do
     if is_integer(elapsed_ms) and elapsed_ms > timeout_ms do
       identifier = Map.get(running_entry, :identifier, issue_id)
       session_id = running_entry_session_id(running_entry)
@@ -561,8 +577,6 @@ defmodule SymphonyElixir.Orchestrator do
   defp last_activity_timestamp(running_entry) when is_map(running_entry) do
     Map.get(running_entry, :last_codex_timestamp) || Map.get(running_entry, :started_at)
   end
-
-  defp last_activity_timestamp(_running_entry), do: nil
 
   defp terminate_task(pid) when is_pid(pid) do
     case Task.Supervisor.terminate_child(SymphonyElixir.TaskSupervisor, pid) do
@@ -783,6 +797,7 @@ defmodule SymphonyElixir.Orchestrator do
             last_codex_message: nil,
             last_codex_timestamp: nil,
             last_codex_event: nil,
+            command_watchdog: nil,
             codex_app_server_pid: nil,
             codex_input_tokens: 0,
             codex_output_tokens: 0,
@@ -1229,6 +1244,12 @@ defmodule SymphonyElixir.Orchestrator do
           last_codex_message: metadata.last_codex_message,
           last_codex_event: metadata.last_codex_event,
           recent_codex_events: Map.get(metadata, :recent_codex_events, []),
+          command_watchdog:
+            CommandWatchdog.snapshot(
+              Map.get(metadata, :command_watchdog),
+              now,
+              command_watchdog_policy()
+            ),
           codex_rate_limits: Map.get(metadata, :codex_rate_limits),
           codex_rate_limits_updated_at: Map.get(metadata, :codex_rate_limits_updated_at),
           runtime_seconds: runtime_seconds
@@ -1337,6 +1358,11 @@ defmodule SymphonyElixir.Orchestrator do
     last_reported_total = Map.get(running_entry, :codex_last_reported_total_tokens, 0)
     turn_count = Map.get(running_entry, :turn_count, 0)
 
+    command_watchdog =
+      running_entry
+      |> Map.get(:command_watchdog)
+      |> CommandWatchdog.update(update, command_watchdog_policy())
+
     {
       Map.merge(running_entry, %{
         last_codex_timestamp: timestamp,
@@ -1353,12 +1379,102 @@ defmodule SymphonyElixir.Orchestrator do
         codex_last_reported_input_tokens: max(last_reported_input, token_delta.input_reported),
         codex_last_reported_output_tokens: max(last_reported_output, token_delta.output_reported),
         codex_last_reported_total_tokens: max(last_reported_total, token_delta.total_reported),
-        turn_count: turn_count_for_update(turn_count, running_entry.session_id, update)
+        turn_count: turn_count_for_update(turn_count, running_entry.session_id, update),
+        command_watchdog: command_watchdog
       })
       |> maybe_put_rate_limits(rate_limits, timestamp),
       token_delta
     }
   end
+
+  defp put_running_entry(%State{} = state, issue_id, running_entry) when is_binary(issue_id) and is_map(running_entry) do
+    %{state | running: Map.put(state.running, issue_id, running_entry)}
+  end
+
+  defp refresh_command_watchdog(running_entry, %DateTime{} = now) when is_map(running_entry) do
+    command_watchdog =
+      running_entry
+      |> Map.get(:command_watchdog)
+      |> CommandWatchdog.classify(now, command_watchdog_policy())
+
+    Map.put(running_entry, :command_watchdog, command_watchdog)
+  end
+
+  defp active_command?(%{command_watchdog: %{status: :running}}), do: true
+  defp active_command?(_running_entry), do: false
+
+  defp maybe_record_stalled_command(%State{} = state, issue_id, %DateTime{} = now) do
+    case Map.get(state.running, issue_id) do
+      %{command_watchdog: %{classification: :stalled, stalled_policy_action?: false} = command} = running_entry ->
+        identifier = Map.get(running_entry, :identifier, issue_id)
+        session_id = running_entry_session_id(running_entry)
+        policy = command_watchdog_policy()
+
+        Logger.warning(
+          "Command watchdog stalled: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} command=#{inspect(command.command)} age_ms=#{elapsed_value(command.started_at, now)} idle_ms=#{elapsed_value(command.last_progress_at || command.started_at, now)} reason=#{inspect(command.classification_reason)}"
+        )
+
+        :ok = create_stalled_command_comment(issue_id, identifier, session_id, command, now)
+        :ok = maybe_block_stalled_command(issue_id, policy)
+
+        updated_command = %{command | stalled_policy_action?: true}
+        put_running_entry(state, issue_id, %{running_entry | command_watchdog: updated_command})
+
+      _ ->
+        state
+    end
+  end
+
+  defp create_stalled_command_comment(issue_id, identifier, session_id, command, now) do
+    body =
+      [
+        "## Symphony Command Watchdog",
+        "",
+        "Issue: #{identifier}",
+        "Session: #{session_id}",
+        "Classification: stalled",
+        "Command: #{command.command}",
+        "Reason: #{command.classification_reason}",
+        "Observed at: #{DateTime.to_iso8601(now)}",
+        "",
+        "The worker was left running so an operator can decide whether the command is still useful."
+      ]
+      |> Enum.join("\n")
+
+    case Tracker.create_comment(issue_id, body) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Failed to create stalled command watchdog comment: issue_id=#{issue_id} reason=#{inspect(reason)}")
+        :ok
+    end
+  end
+
+  defp maybe_block_stalled_command(issue_id, %{block_on_stall: true}) do
+    case Tracker.update_issue_state(issue_id, "Blocked") do
+      :ok ->
+        :ok
+
+      {:error, :state_not_found} ->
+        Logger.warning("Blocked state missing for stalled command: issue_id=#{issue_id}")
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Failed to move stalled command issue to Blocked: issue_id=#{issue_id} reason=#{inspect(reason)}")
+        :ok
+    end
+  end
+
+  defp maybe_block_stalled_command(_issue_id, _policy), do: :ok
+
+  defp command_watchdog_policy do
+    Config.settings!().codex
+    |> CommandWatchdog.policy_from_config()
+  end
+
+  defp elapsed_value(%DateTime{} = from, %DateTime{} = to), do: DateTime.diff(to, from, :millisecond)
+  defp elapsed_value(_from, _to), do: nil
 
   defp maybe_put_rate_limits(running_entry, %{} = rate_limits, timestamp) do
     running_entry

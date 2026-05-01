@@ -146,6 +146,7 @@ defmodule SymphonyElixirWeb.Presenter do
       last_message: summarize_message(entry.last_codex_message),
       started_at: iso8601(entry.started_at),
       last_event_at: iso8601(entry.last_codex_timestamp),
+      command_watchdog: command_watchdog_payload(Map.get(entry, :command_watchdog)),
       tokens: %{
         input_tokens: entry.codex_input_tokens,
         output_tokens: entry.codex_output_tokens,
@@ -179,6 +180,7 @@ defmodule SymphonyElixirWeb.Presenter do
       last_event: running.last_codex_event,
       last_message: summarize_message(running.last_codex_message),
       last_event_at: iso8601(running.last_codex_timestamp),
+      command_watchdog: command_watchdog_payload(Map.get(running, :command_watchdog)),
       tokens: %{
         input_tokens: running.codex_input_tokens,
         output_tokens: running.codex_output_tokens,
@@ -242,6 +244,23 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp summarize_message(nil), do: nil
   defp summarize_message(message), do: message |> Redactor.redact() |> StatusDashboard.humanize_codex_message()
+
+  defp command_watchdog_payload(nil), do: nil
+
+  defp command_watchdog_payload(watchdog) when is_map(watchdog) do
+    %{
+      command: Map.get(watchdog, :command),
+      status: Map.get(watchdog, :status),
+      classification: Map.get(watchdog, :classification),
+      classification_reason: Map.get(watchdog, :classification_reason),
+      age_ms: Map.get(watchdog, :age_ms),
+      idle_ms: Map.get(watchdog, :idle_ms),
+      repeated_output_count: Map.get(watchdog, :repeated_output_count),
+      started_at: iso8601(Map.get(watchdog, :started_at)),
+      last_output_at: iso8601(Map.get(watchdog, :last_output_at)),
+      last_progress_at: iso8601(Map.get(watchdog, :last_progress_at))
+    }
+  end
 
   defp due_at_iso8601(due_in_ms) when is_integer(due_in_ms) do
     DateTime.utc_now()

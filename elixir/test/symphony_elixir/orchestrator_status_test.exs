@@ -101,6 +101,95 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
            }
   end
 
+  test "orchestrator snapshot includes command watchdog metadata and stalled policy comments" do
+    write_workflow_file!(
+      Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      codex_stall_timeout_ms: 0,
+      codex_command_watchdog_long_running_ms: 1_000,
+      codex_command_watchdog_idle_ms: 2_000,
+      codex_command_watchdog_stalled_ms: 5_000,
+      codex_command_watchdog_repeated_output_limit: 3
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    issue_id = "issue-command-watchdog"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-240",
+      title: "Command watchdog",
+      description: "Track command progress",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-240"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :CommandWatchdogOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    process_ref = make_ref()
+    started_at = ~U[2026-05-01 00:00:00Z]
+
+    running_entry = %{
+      pid: self(),
+      ref: process_ref,
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: "thread-watchdog",
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      codex_input_tokens: 0,
+      codex_output_tokens: 0,
+      codex_total_tokens: 0,
+      codex_last_reported_input_tokens: 0,
+      codex_last_reported_output_tokens: 0,
+      codex_last_reported_total_tokens: 0,
+      started_at: started_at
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    send(pid, {:codex_worker_update, issue_id, command_begin("make all", started_at)})
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :notification,
+         payload: %{"method" => "codex/event/agent_reasoning", "params" => %{"msg" => %{}}},
+         timestamp: DateTime.add(started_at, 6, :second)
+       }}
+    )
+
+    snapshot =
+      wait_for_snapshot(pid, fn snapshot ->
+        match?(%{running: [%{command_watchdog: %{classification: :stalled}}]}, snapshot)
+      end)
+
+    assert %{running: [snapshot_entry]} = snapshot
+    assert snapshot_entry.command_watchdog.command == "make all"
+    assert snapshot_entry.command_watchdog.age_ms >= 6_000
+    assert snapshot_entry.command_watchdog.idle_ms >= 6_000
+
+    assert_receive {:memory_tracker_comment, ^issue_id, body}
+    assert body =~ "## Symphony Command Watchdog"
+    assert body =~ "Classification: stalled"
+    assert body =~ "Command: make all"
+  end
+
   test "orchestrator snapshot tracks codex thread totals and app-server pid" do
     issue_id = "issue-usage-snapshot"
 
@@ -1660,25 +1749,35 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
   test "status dashboard renders last codex message in EVENT column" do
     row =
-      StatusDashboard.format_running_summary_for_test(%{
-        identifier: "MT-233",
-        state: "running",
-        session_id: "thread-1234567890",
-        codex_app_server_pid: "4242",
-        codex_total_tokens: 12,
-        runtime_seconds: 15,
-        last_codex_event: :notification,
-        last_codex_message: %{
-          event: :notification,
-          message: %{
-            "method" => "turn/completed",
-            "params" => %{"turn" => %{"status" => "completed"}}
+      StatusDashboard.format_running_summary_for_test(
+        %{
+          identifier: "MT-233",
+          state: "running",
+          session_id: "thread-1234567890",
+          codex_app_server_pid: "4242",
+          codex_total_tokens: 12,
+          runtime_seconds: 15,
+          last_codex_event: :notification,
+          last_codex_message: %{
+            event: :notification,
+            message: %{
+              "method" => "turn/completed",
+              "params" => %{"turn" => %{"status" => "completed"}}
+            }
+          },
+          command_watchdog: %{
+            command: "make all",
+            classification: :healthy,
+            age_ms: 90_000
           }
-        }
-      })
+        },
+        160
+      )
 
-    plain = Regex.replace(~r/\e\[[\\d;]*m/, row, "")
+    plain = Regex.replace(~r/\e\[[0-9;]*m/, row, "")
 
+    assert plain =~ "cmd healthy"
+    assert plain =~ "make all"
     assert plain =~ "turn completed (completed)"
     assert (String.split(plain, "turn completed (completed)") |> length()) - 1 == 1
     refute plain =~ " notification "
@@ -1955,6 +2054,17 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   defp wait_until_dead(pid, 0), do: refute(Process.alive?(pid))
+
+  defp command_begin(command, timestamp) do
+    %{
+      event: :notification,
+      timestamp: timestamp,
+      payload: %{
+        "method" => "codex/event/exec_command_begin",
+        "params" => %{"msg" => %{"command" => command}}
+      }
+    }
+  end
 
   defp do_wait_for_snapshot(pid, predicate, deadline_ms) do
     snapshot = GenServer.call(pid, :snapshot)
