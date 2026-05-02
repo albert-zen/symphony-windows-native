@@ -10,7 +10,7 @@ defmodule SymphonyElixir.WindowsPreflight do
     defstruct [:name, :status, :message, :remediation]
   end
 
-  @type check_status :: :pass | :fail | :skip
+  @type check_status :: :pass | :fail | :skip | :warn
   @type check :: %Check{
           name: String.t(),
           status: check_status(),
@@ -51,6 +51,7 @@ defmodule SymphonyElixir.WindowsPreflight do
             linear_check(settings, deps),
             path_tools_check(settings, deps),
             github_cli_check(deps),
+            git_main_tracking_check(deps),
             codex_app_server_check(settings, deps),
             workspace_root_check(settings),
             git_clone_check(settings, deps),
@@ -230,6 +231,74 @@ defmodule SymphonyElixir.WindowsPreflight do
           "Could not run gh auth status: #{inspect(reason)}",
           "Install GitHub CLI and make sure gh.exe is on PATH."
         )
+    end
+  end
+
+  defp git_main_tracking_check(deps) do
+    local_shell_run = Map.get(deps, :local_shell_run, &LocalShell.run/2)
+
+    with {:ok, repo_root} <- git_output(local_shell_run, "git rev-parse --show-toplevel", File.cwd!()),
+         {:ok, _fetch_output} <- git_output(local_shell_run, "git -C #{shell_quote(repo_root)} fetch origin main", repo_root),
+         {:ok, main_sha} <- git_output(local_shell_run, "git -C #{shell_quote(repo_root)} rev-parse --verify main", repo_root),
+         {:ok, origin_main_sha} <-
+           git_output(local_shell_run, "git -C #{shell_quote(repo_root)} rev-parse --verify origin/main", repo_root),
+         {:ok, upstream} <-
+           git_output(local_shell_run, "git -C #{shell_quote(repo_root)} rev-parse --abbrev-ref main@{upstream}", repo_root) do
+      cond do
+        upstream == "origin/main" ->
+          pass("Git main remote", "Local main tracks canonical origin/main.")
+
+        main_sha != origin_main_sha and git_ancestor?(local_shell_run, repo_root, "main", "origin/main") ->
+          warn(
+            "Git main remote",
+            "Local main tracks #{upstream}, but canonical origin/main is newer.",
+            "Run manager-side stale-base checks against origin/main or reconfigure local main with `git branch --set-upstream-to=origin/main main`."
+          )
+
+        true ->
+          pass(
+            "Git main remote",
+            "Canonical GitHub ref is origin/main; local main currently tracks #{upstream}."
+          )
+      end
+    else
+      {:missing_ref, ref} ->
+        skip("Git main remote", "Could not inspect #{ref}; run preflight from a checkout with local main and origin/main.")
+
+      {:error, reason} ->
+        skip("Git main remote", "Could not inspect local main tracking: #{inspect(reason)}.")
+    end
+  end
+
+  defp git_output(local_shell_run, command, cwd) do
+    case local_shell_run.(command, cd: cwd) do
+      {:ok, {output, 0}} ->
+        {:ok, String.trim(output)}
+
+      {:ok, {output, status}} ->
+        cond do
+          String.contains?(command, "rev-parse --verify main") ->
+            {:missing_ref, "main"}
+
+          String.contains?(command, "rev-parse --verify origin/main") ->
+            {:missing_ref, "origin/main"}
+
+          true ->
+            {:error, {command, status, sanitize_command_output(output)}}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp git_ancestor?(local_shell_run, repo_root, ancestor, descendant) do
+    command = "git -C #{shell_quote(repo_root)} merge-base --is-ancestor #{ancestor} #{descendant}"
+
+    case local_shell_run.(command, cd: repo_root) do
+      {:ok, {_output, 0}} -> true
+      {:ok, {_output, _status}} -> false
+      {:error, _reason} -> false
     end
   end
 
@@ -427,6 +496,7 @@ defmodule SymphonyElixir.WindowsPreflight do
 
   defp pass(name, message), do: %Check{name: name, status: :pass, message: message}
   defp skip(name, message), do: %Check{name: name, status: :skip, message: message}
+  defp warn(name, message, remediation), do: %Check{name: name, status: :warn, message: message, remediation: remediation}
 
   defp fail(name, message, remediation) do
     %Check{name: name, status: :fail, message: message, remediation: remediation}
@@ -435,4 +505,5 @@ defmodule SymphonyElixir.WindowsPreflight do
   defp status_label(:pass), do: "PASS"
   defp status_label(:fail), do: "FAIL"
   defp status_label(:skip), do: "SKIP"
+  defp status_label(:warn), do: "WARN"
 end
