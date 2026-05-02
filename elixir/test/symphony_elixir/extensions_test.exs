@@ -5,6 +5,7 @@ defmodule SymphonyElixir.ExtensionsTest do
   import Phoenix.LiveViewTest
 
   alias SymphonyElixir.Linear.Adapter
+  alias SymphonyElixir.LogFile.Formatter
   alias SymphonyElixir.Tracker.Memory
 
   @endpoint SymphonyElixirWeb.Endpoint
@@ -1154,6 +1155,38 @@ defmodule SymphonyElixir.ExtensionsTest do
     refute html =~ "4m "
   end
 
+  test "dashboard liveview requests log unicode timings through the file formatter" do
+    orchestrator_name = Module.concat(__MODULE__, :DashboardFormatterOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot()
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    log =
+      with_file_log_handler(fn ->
+        :logger.log(:debug, {"Replied in ~B~ts", [409, ~c"µs"]}, %{request_path: "/"})
+        {:ok, _index_view, index_html} = live(build_conn(), "/")
+
+        :logger.log(:debug, {"Replied in ~B~ts", [512, ~c"µs"]}, %{
+          request_path: "/workers/MT-HTTP"
+        })
+
+        {:ok, _detail_view, detail_html} = live(build_conn(), "/workers/MT-HTTP")
+
+        assert index_html =~ "Operations Dashboard"
+        assert detail_html =~ "Worker Detail"
+      end)
+
+    assert log =~ "Replied in 409µs"
+    assert log =~ "Replied in 512µs"
+    assert String.valid?(log)
+    refute log =~ "FORMATTER ERROR"
+  end
+
   test "worker detail liveview renders timeline and submits session-scoped steer messages" do
     orchestrator_name = Module.concat(__MODULE__, :WorkerDetailOrchestrator)
 
@@ -1399,6 +1432,35 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     Application.put_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, endpoint_config)
     start_supervised!({SymphonyElixirWeb.Endpoint, []})
+  end
+
+  defp with_file_log_handler(fun) do
+    path = Path.join(System.tmp_dir!(), "symphony-dashboard-log-#{System.unique_integer([:positive])}.log")
+    handler_id = :"symphony_dashboard_log_test_#{System.unique_integer([:positive])}"
+    primary_level = :logger.get_primary_config() |> Map.fetch!(:level)
+
+    :ok =
+      :logger.add_handler(handler_id, :logger_std_h, %{
+        level: :debug,
+        formatter:
+          {Formatter,
+           %{
+             single_line: true,
+             template: [:time, " ", :level, " event_id=", :event_id, " ", :msg, "\n"]
+           }},
+        config: %{type: {:file, String.to_charlist(path)}}
+      })
+
+    try do
+      :ok = :logger.set_primary_config(:level, :debug)
+      fun.()
+      :ok = :logger.remove_handler(handler_id)
+      File.read!(path)
+    after
+      :logger.remove_handler(handler_id)
+      :logger.set_primary_config(:level, primary_level)
+      File.rm(path)
+    end
   end
 
   defp static_snapshot do
