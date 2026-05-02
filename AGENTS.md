@@ -67,6 +67,9 @@ mise exec -- mix symphony.preflight.windows .\WORKFLOW.optimization.windows.md
 - Use exactly one Linear comment whose first line is `## Codex Workpad`; update
   it instead of creating progress spam.
 - Use the linked GitHub issue as the public implementation spec.
+- Do not accept or continue work labeled `manager-owned`, or whose Workpad says
+  `Manager classification: manager-owned`, unless the manager has decomposed a
+  narrow worker-safe subtask for you.
 - Open the PR against `main`, link it in the Workpad, and wait for required
   GitHub checks before moving Linear to `In Review`.
 - If checks are pending, failing, or unverifiable, record the exact reason in the
@@ -124,3 +127,7 @@ Workpad. Blocking findings keep the issue in `In Progress` or return it to
   tests to reach mechanical perfection.
 - Path and environment handling must preserve Windows drive paths, forward-slash
   compatibility, `$VAR` workflow expansion rules, and secret redaction.
+- The human worker page and `GET /api/v1/<issue>` expose a processed
+  `conversation` projection for agent messages. Raw timeline/debug endpoints are
+  diagnostic surfaces and may include system warnings, streaming deltas, and
+  other low-level events.

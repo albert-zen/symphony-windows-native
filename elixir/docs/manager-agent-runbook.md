@@ -32,6 +32,30 @@ system defects into durable issues.
   auth, rate-limit, deployment, or queue-control failure, stop feeding that wall
   and fix the shared path.
 
+## Quick start on a fresh machine
+
+Before releasing work, establish the current truth across all three control
+planes:
+
+1. Open the dashboard and confirm active workers, token/rate-limit status,
+   runtime commit, PID file, and workflow path.
+2. Check GitHub open PRs, required checks, and recently updated optimization
+   issues.
+3. Check Linear states for the optimization project across `Backlog`, `Todo`,
+   `In Progress`, `In Review`, `Blocked`, and terminal states.
+4. Confirm the running runtime commit matches `origin/main` after any recently
+   merged system PR. If not, rebuild and restart before launching more work.
+5. Review completed or `In Review` work before releasing another issue.
+6. Inspect `Blocked` work to root cause. Do not let new workers rediscover a
+   shared blocker.
+7. Only then choose the next Backlog issue, complete its spec/testing/acceptance,
+   classify it as worker-safe or manager-owned, and move it to `Todo`.
+
+The useful default rhythm is review, triage, release, wait, then repeat. Worker
+runs often take 10 to 20 minutes; the manager should use that time to review
+finished work or root-cause shared friction instead of launching speculative
+issues.
+
 ## Manager-owned work
 
 Some issues should stay with the manager instead of being released to an
@@ -50,11 +74,22 @@ Examples:
   old code.
 - Changing manager automation, concurrency policy, release criteria, or review
   policy.
+- Designing risk-tiered worker profiles, validation policy, or other rules that
+  change how future issues are released to workers.
 
 Workers are a good fit for bounded implementation tasks with a complete public
 spec, test intent, acceptance criteria, and no need to decide cross-system
 policy. If a manager-owned issue can be decomposed, create narrower worker-safe
 subtasks and keep the policy decision in the manager Workpad.
+
+Mark manager-owned work explicitly so it is not released accidentally:
+
+- Add the GitHub label `manager-owned` when it exists.
+- Record `Manager classification: manager-owned` in the Linear `## Codex
+  Workpad`.
+- Keep the issue in `Backlog` until a manager handles it or creates narrower
+  worker-safe subtasks.
+- Do not move manager-owned issues to `Todo` merely to keep concurrency high.
 
 ## Worker blocker handoff
 
@@ -103,6 +138,11 @@ Run this loop until the operator deliberately pauses the flywheel.
      `Blocked`, and terminal states.
    - Check runtime logs, PID files, workflow config, and the deployed commit
      when the runtime may be stale.
+   - For worker detail pages, use the processed conversation surface for normal
+     reading. `GET /api/v1/<issue>` and the `/workers/<issue>` page use the
+     `conversation` projection, which filters streaming deltas and system
+     warnings into completed agent messages. Use
+     `/api/v1/workers/<issue>/timeline` or debug events only for diagnosis.
 2. Review completed work first.
    - Read the original human request, the GitHub issue, the Linear Workpad, the
      PR diff, CI results, and review evidence.
