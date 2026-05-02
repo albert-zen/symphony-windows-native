@@ -117,6 +117,8 @@ base for later agents. These guardrails are the minimum bar:
   status, and any CI/runtime failures.
 - The PR body follows the repository template and includes concrete validation
   evidence.
+- PRs for Linear issues with one unambiguous origin GitHub issue include a closing
+  keyword such as `Fixes #NN` in the PR body.
 - `make all` is the repository gate when the local environment supports it.
 - `windows-native-test` runs for Windows shell, workspace/config, workflow, or
   path-handling changes.
