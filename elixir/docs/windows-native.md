@@ -76,6 +76,13 @@ Symphony:
 gh auth login
 ```
 
+For the open-source Windows-native distribution, treat
+`https://github.com/albert-zen/symphony-windows-native.git` as the canonical
+repository and `origin/main` as the canonical base ref unless your workflow
+explicitly configures another trusted remote. Manager-side stale-base checks
+should compare PR branches to `origin/main` directly instead of assuming the
+local `main` branch tracks the canonical remote.
+
 ## Configure a workflow
 
 Start from the profile that matches the trust boundary for the run:
@@ -171,12 +178,15 @@ Before starting an unattended run, execute the Windows preflight from `elixir/`:
 mise exec -- mix symphony.preflight.windows .\WORKFLOW.windows.md
 ```
 
-The command reports `PASS`, `FAIL`, or `SKIP` for each dependency and exits
-non-zero when a required check fails. It verifies:
+The command reports `PASS`, `WARN`, `FAIL`, or `SKIP` for each dependency and
+exits non-zero when a required check fails. Warnings are operator-visible but do
+not fail preflight. It verifies:
 
 - `LINEAR_API_KEY` is available and Linear GraphQL is reachable.
 - `git`, `gh`, `node`, and the configured Codex app-server command resolve on `PATH`.
 - `gh auth status` succeeds for GitHub operations.
+- The local checkout's `main` branch does not hide a newer `origin/main` behind
+  a stale noncanonical upstream such as `windows/main`.
 - `codex app-server` can start without non-JSON startup output on stdio.
 - The repository URL in `hooks.after_create` can be cloned by Git.
 - `workspace.root` is writable.
@@ -187,6 +197,18 @@ If preflight reports the workspace root as writable but Codex later prints a
 project trust warning for `.codex`, trust the configured `workspace.root` used
 for Symphony issue workspaces. The workspace root should be a dedicated
 automation directory, not your everyday development checkout.
+
+If preflight prints `WARN` for `Git main remote`, update the manager checkout
+or make stale-base checks explicit:
+
+```powershell
+git fetch origin main
+git branch --set-upstream-to=origin/main main
+git status --short --branch
+```
+
+When intentionally using a fork or mirror, keep the workflow and manager runbook
+explicit about that remote and compare against its fully qualified remote ref.
 
 ### Optimization flywheel routing
 

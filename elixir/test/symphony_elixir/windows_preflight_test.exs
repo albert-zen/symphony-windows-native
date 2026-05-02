@@ -15,6 +15,9 @@ defmodule SymphonyElixir.WindowsPreflightTest do
       local_shell_run: fn
         hook_probe, _opts when is_binary(hook_probe) ->
           cond do
+            git_main_tracking_command?(hook_probe) ->
+              ready_git_main_tracking_response(hook_probe)
+
             String.contains?(hook_probe, "[scriptblock]::Create") ->
               {:ok, {"hook after_create parsed\n7.5.0\n", 0}}
 
@@ -60,10 +63,20 @@ defmodule SymphonyElixir.WindowsPreflightTest do
       local_shell_run: fn
         hook_probe, _opts when is_binary(hook_probe) ->
           cond do
-            String.contains?(hook_probe, "[scriptblock]::Create") -> {:ok, {"blocked", 1}}
-            String.starts_with?(hook_probe, "git clone --depth 1") -> {:ok, {"denied", 128}}
-            hook_probe == "gh auth status" -> {:ok, {"not logged in", 1}}
-            true -> flunk("unexpected command: #{hook_probe}")
+            git_main_tracking_command?(hook_probe) ->
+              ready_git_main_tracking_response(hook_probe)
+
+            String.contains?(hook_probe, "[scriptblock]::Create") ->
+              {:ok, {"blocked", 1}}
+
+            String.starts_with?(hook_probe, "git clone --depth 1") ->
+              {:ok, {"denied", 128}}
+
+            hook_probe == "gh auth status" ->
+              {:ok, {"not logged in", 1}}
+
+            true ->
+              flunk("unexpected command: #{hook_probe}")
           end
       end,
       port_available?: fn 4011 -> false end,
@@ -92,6 +105,9 @@ defmodule SymphonyElixir.WindowsPreflightTest do
       local_shell_run: fn
         hook_probe, _opts when is_binary(hook_probe) ->
           cond do
+            git_main_tracking_command?(hook_probe) ->
+              ready_git_main_tracking_response(hook_probe)
+
             String.contains?(hook_probe, "[scriptblock]::Create") ->
               {:ok, {"hook after_create parsed\n7.5.0\n", 0}}
 
@@ -130,6 +146,9 @@ defmodule SymphonyElixir.WindowsPreflightTest do
         local_shell_run: fn
           command, _opts when is_binary(command) ->
             cond do
+              git_main_tracking_command?(command) ->
+                ready_git_main_tracking_response(command)
+
               String.contains?(command, "[scriptblock]::Create") ->
                 {:ok, {"hook after_create parsed\n7.5.0\n", 0}}
 
@@ -166,6 +185,9 @@ defmodule SymphonyElixir.WindowsPreflightTest do
         local_shell_run: fn
           command, _opts when is_binary(command) ->
             cond do
+              git_main_tracking_command?(command) ->
+                ready_git_main_tracking_response(command)
+
               String.contains?(command, "[scriptblock]::Create") ->
                 {:ok, {"At line:1 char:1 git clone https://token:secret@github.com/albert-zen/symphony-windows-native.git", 1}}
 
@@ -210,6 +232,9 @@ defmodule SymphonyElixir.WindowsPreflightTest do
         local_shell_run: fn
           command, _opts when is_binary(command) ->
             cond do
+              git_main_tracking_command?(command) ->
+                ready_git_main_tracking_response(command)
+
               String.contains?(command, "[scriptblock]::Create") ->
                 {:ok, {"hook after_create parsed\n7.5.0\n", 0}}
 
@@ -229,6 +254,55 @@ defmodule SymphonyElixir.WindowsPreflightTest do
     assert {:ok, checks} = WindowsPreflight.run(workflow_path, deps)
     assert %WindowsPreflight.Check{status: :pass} = Enum.find(checks, &(&1.name == "Workspace root"))
     assert %WindowsPreflight.Check{status: :pass} = Enum.find(checks, &(&1.name == "Git repository"))
+  end
+
+  test "warns when local main tracks a noncanonical stale remote while origin main is newer" do
+    workflow_path = workflow_with_preflight_config()
+
+    deps =
+      ready_deps(%{
+        local_shell_run: fn
+          command, _opts when is_binary(command) ->
+            cond do
+              command == "git rev-parse --show-toplevel" ->
+                {:ok, {"C:/repo/symphony-windows-native\n", 0}}
+
+              String.contains?(command, "rev-parse --verify main") ->
+                {:ok, {"local-main-sha\n", 0}}
+
+              String.contains?(command, "rev-parse --verify origin/main") ->
+                {:ok, {"origin-main-sha\n", 0}}
+
+              String.contains?(command, "rev-parse --abbrev-ref main@{upstream}") ->
+                {:ok, {"windows/main\n", 0}}
+
+              String.contains?(command, "merge-base --is-ancestor main origin/main") ->
+                {:ok, {"", 0}}
+
+              String.contains?(command, "[scriptblock]::Create") ->
+                {:ok, {"hook after_create parsed\n7.5.0\n", 0}}
+
+              String.starts_with?(command, "git clone --depth 1") ->
+                {:ok, {"Cloning into preflight\n", 0}}
+
+              command == "gh auth status" ->
+                {:ok, {"Logged in\n", 0}}
+
+              true ->
+                flunk("unexpected command: #{command}")
+            end
+        end
+      })
+
+    assert {:ok, checks} = WindowsPreflight.run(workflow_path, deps)
+
+    assert %WindowsPreflight.Check{status: :warn, message: message, remediation: remediation} =
+             Enum.find(checks, &(&1.name == "Git main remote"))
+
+    assert message =~ "tracks windows/main"
+    assert message =~ "origin/main is newer"
+    assert remediation =~ "git branch --set-upstream-to=origin/main main"
+    assert WindowsPreflight.format(checks) =~ "[WARN] Git main remote"
   end
 
   defp workflow_with_preflight_config(overrides \\ []) do
@@ -278,5 +352,33 @@ defmodule SymphonyElixir.WindowsPreflightTest do
       },
       overrides
     )
+  end
+
+  defp git_main_tracking_command?(command) do
+    command == "git rev-parse --show-toplevel" or
+      String.contains?(command, "rev-parse --verify main") or
+      String.contains?(command, "rev-parse --verify origin/main") or
+      String.contains?(command, "rev-parse --abbrev-ref main@{upstream}") or
+      String.contains?(command, "merge-base --is-ancestor main origin/main")
+  end
+
+  defp ready_git_main_tracking_response("git rev-parse --show-toplevel") do
+    {:ok, {"C:/repo/symphony-windows-native\n", 0}}
+  end
+
+  defp ready_git_main_tracking_response(command) do
+    cond do
+      String.contains?(command, "rev-parse --verify main") ->
+        {:ok, {"main-sha\n", 0}}
+
+      String.contains?(command, "rev-parse --verify origin/main") ->
+        {:ok, {"main-sha\n", 0}}
+
+      String.contains?(command, "rev-parse --abbrev-ref main@{upstream}") ->
+        {:ok, {"origin/main\n", 0}}
+
+      String.contains?(command, "merge-base --is-ancestor main origin/main") ->
+        {:ok, {"", 1}}
+    end
   end
 end
