@@ -8,7 +8,7 @@ defmodule SymphonyElixir.Codex.ValidationEvidence do
   @heavy_check_regex ~r/(^|[^a-z0-9_-])(make(?:\.cmd)?\s+(-C\s+elixir\s+)?all|make-all)([^a-z0-9_-]|$)/i
   @ci_only_regex ~r/(?:(?:^\s*(?:ci|github actions?)\b\s*(?::|-|[a-z]+\b))|\b(?:in|by|via|on|from)\s+(?:ci|github actions?)\b)/i
   @skip_words ~w(skip skipped not cannot can't unable unavailable pending later)
-  @restated_skip_words ~w(all check gate heavy local locally make not run skipped validation)
+  @restated_skip_words ~w(all cannot can't check gate heavy local locally make not run skipped unable unavailable validation)
   @inline_code_regex ~r/`([^`]+)`/
   @validation_command_regex ~r/^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*(?:(?:mix\s+(?:test|format|pr_body\.check|specs\.check|symphony\.preflight\.windows)\b)|(?:make(?:\.cmd)?(?:\s+-C\s+\S+)?\s+(?:all|test|windows-native-test|diff-check|validate-pr-description|[\w.-]*test[\w.-]*|[\w.-]*check[\w.-]*))|(?:git\s+diff\s+--check\b)|(?:(?:npm|pnpm|yarn)\s+(?:test|lint|format|check|typecheck|type-check)\b)|(?:gh\s+(?:pr\s+checks|run\s+view)\b))/i
 

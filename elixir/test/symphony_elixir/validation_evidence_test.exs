@@ -82,6 +82,21 @@ defmodule SymphonyElixir.Codex.ValidationEvidenceTest do
     end
   end
 
+  test "rejects inability words as because and due to reasons" do
+    for reason <- ["because cannot", "because can't", "because unable", "because unavailable", "due to unavailable"] do
+      body = """
+      #### Test Plan
+
+      - [ ] `make -C elixir all` not run locally #{reason}.
+      - [x] `mix test test/symphony_elixir/validation_evidence_test.exs` passed locally.
+      """
+
+      assert ValidationEvidence.lint_pr_body(body) == [
+               "Test Plan must explain why the heavy local validation check was not run."
+             ]
+    end
+  end
+
   test "accepts concrete inability reason for skipped heavy validation" do
     body = """
     #### Test Plan
