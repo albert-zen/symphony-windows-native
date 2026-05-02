@@ -2,6 +2,9 @@
 
 This directory contains the Elixir agent orchestration service that polls Linear, creates per-issue workspaces, and runs Codex in app-server mode.
 
+Start with the repository-level [agent entrypoint playbook](../AGENTS.md), then use this file for
+Elixir-specific conventions.
+
 ## Environment
 
 - Elixir: `1.19.x` (OTP 28) via `mise`.
