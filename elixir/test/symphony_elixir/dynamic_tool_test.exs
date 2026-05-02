@@ -106,7 +106,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         github_client:
           github_client(%{
             "pulls/42" => %{
-              "body" => "#### Context\n\nImplements the linked spec.\n\nFixes #46",
+              "body" => with_validation_evidence("#### Context\n\nImplements the linked spec.\n\nFixes #46"),
               "head" => %{"sha" => "abc123"},
               "base" => %{"ref" => "main"}
             },
@@ -132,7 +132,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         github_client:
           github_client(%{
             "pulls/42" => %{
-              "body" => "#### Context\n\nImplements the linked spec.\n\nFixes albert-zen/symphony-windows-native#46",
+              "body" => with_validation_evidence("#### Context\n\nImplements the linked spec.\n\nFixes albert-zen/symphony-windows-native#46"),
               "head" => %{"sha" => "abc123"},
               "base" => %{"ref" => "main"}
             },
@@ -160,7 +160,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         github_client:
           github_client(%{
             "pulls/42" => %{
-              "body" => "#### Context\n\nImplements the linked spec.\n\nFixes: #46",
+              "body" => with_validation_evidence("#### Context\n\nImplements the linked spec.\n\nFixes: #46"),
               "head" => %{"sha" => "abc123"},
               "base" => %{"ref" => "main"}
             },
@@ -215,7 +215,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         github_client:
           github_client(%{
             "pulls/42" => %{
-              "body" => "#### Context\n\nImplements the linked spec without a closing keyword.",
+              "body" => with_validation_evidence("#### Context\n\nImplements the linked spec without a closing keyword."),
               "head" => %{"sha" => "abc123"},
               "base" => %{"ref" => "main"}
             }
@@ -240,7 +240,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         github_client:
           github_client(%{
             "pulls/42" => %{
-              "body" => "#### Context\n\nImplements the linked spec without a closing keyword.",
+              "body" => with_validation_evidence("#### Context\n\nImplements the linked spec without a closing keyword."),
               "head" => %{"sha" => "abc123"},
               "base" => %{"ref" => "main"}
             }
@@ -265,7 +265,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         github_client:
           github_client(%{
             "pulls/42" => %{
-              "body" => "#### Context\n\nImplements the linked spec without a closing keyword.",
+              "body" => with_validation_evidence("#### Context\n\nImplements the linked spec without a closing keyword."),
               "head" => %{"sha" => "abc123"},
               "base" => %{"ref" => "main"}
             }
@@ -2082,6 +2082,8 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
   end
 
   defp passing_review_readiness_responses(pr_payload) do
+    pr_payload = Map.update(pr_payload, "body", targeted_validation_pr_body(), &with_validation_evidence/1)
+
     %{
       "pulls/42" =>
         Map.merge(
@@ -2094,6 +2096,17 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         "check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]
       }
     }
+  end
+
+  defp with_validation_evidence(body) do
+    body <>
+      """
+
+      #### Test Plan
+
+      - [ ] `make -C elixir all` not run locally because this test simulates targeted review-readiness validation.
+      - [x] `mix test test/symphony_elixir/dynamic_tool_test.exs` passed locally.
+      """
   end
 
   defp default_pr_payload(url, %{"head" => head} = payload) when is_map(head) do
