@@ -216,12 +216,15 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_issues_by_states([" in progress ", 42])
     assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_issue_states_by_ids(["issue-1"])
     assert {:ok, %{id: "memory-issue-1", owner: "memory"}} = SymphonyElixir.Tracker.acquire_issue_claim(issue)
+    assert :ok = SymphonyElixir.Tracker.recover_stale_issue_claim(issue)
     assert :ok = SymphonyElixir.Tracker.release_issue_claim("issue-1")
     assert :ok = Memory.release_issue_claim("issue-1")
     assert {:error, :invalid_issue_claim} = Memory.acquire_issue_claim(%{})
+    assert {:error, :invalid_issue_claim} = Memory.recover_stale_issue_claim(%{})
     assert :ok = SymphonyElixir.Tracker.create_comment("issue-1", "comment")
     assert :ok = SymphonyElixir.Tracker.update_issue_state("issue-1", "Done")
     assert_receive {:memory_tracker_claim_acquired, "issue-1", "MT-1", %{owner: "memory"}}
+    assert_receive {:memory_tracker_claim_recovery_checked, "issue-1", "MT-1"}
     assert_receive {:memory_tracker_claim_released, "issue-1"}
     assert_receive {:memory_tracker_comment, "issue-1", "comment"}
     assert_receive {:memory_tracker_state_update, "issue-1", "Done"}
@@ -464,6 +467,229 @@ defmodule SymphonyElixir.ExtensionsTest do
     refute Process.get(:claim_body)
   end
 
+  test "linear adapter recovers same-host stale claim when owner pid is not alive" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+    Application.put_env(:symphony_elixir, :local_os_pid_alive?, fn "424242" -> false end)
+
+    claimed_at = DateTime.add(DateTime.utc_now(), -60, :second)
+    expires_at = DateTime.add(claimed_at, 4, :hour)
+    owner = "#{test_hostname()}:424242:#PID<0.1.0>:1"
+    claim_body = signed_claim_body("ALB-CLAIM", owner, "stale-token", claimed_at, expires_at)
+
+    Process.put({FakeLinearClient, :graphql_results}, [
+      claim_comments([%{"id" => "claim-stale", "body" => claim_body, "createdAt" => DateTime.to_iso8601(claimed_at)}]),
+      fn query, variables ->
+        assert String.contains?(query, "commentCreate")
+        assert variables.issueId == "issue-claim"
+        assert variables.body =~ "## Symphony Claim Release"
+        assert variables.body =~ "claim_id: claim-stale"
+        assert variables.body =~ "owner: #{owner}"
+        assert variables.body =~ "token: stale-token"
+
+        {:ok, %{"data" => %{"commentCreate" => %{"success" => true}}}}
+      end,
+      empty_claim_comments(),
+      fn query, variables ->
+        assert String.contains?(query, "commentCreate")
+        Process.put(:claim_body, variables.body)
+
+        {:ok,
+         %{
+           "data" => %{
+             "commentCreate" => %{
+               "success" => true,
+               "comment" => %{"id" => "claim-own", "createdAt" => DateTime.to_iso8601(DateTime.utc_now())}
+             }
+           }
+         }}
+      end,
+      fn query, _variables ->
+        assert String.contains?(query, "SymphonyIssueClaimComments")
+
+        claim_body = Process.get(:claim_body)
+
+        claim_comments([
+          %{"id" => "claim-own", "body" => claim_body, "createdAt" => DateTime.to_iso8601(DateTime.utc_now())}
+        ])
+      end
+    ])
+
+    assert :ok = Adapter.recover_stale_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+    assert {:ok, %{id: "claim-own"}} = Adapter.acquire_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+  end
+
+  test "linear adapter preserves same-host claim when owner pid is still alive" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+    Application.put_env(:symphony_elixir, :local_os_pid_alive?, fn "31337" -> true end)
+
+    claimed_at = DateTime.add(DateTime.utc_now(), -60, :second)
+    expires_at = DateTime.add(claimed_at, 4, :hour)
+    owner = "#{test_hostname()}:31337:#PID<0.1.0>:1"
+    claim_body = signed_claim_body("ALB-CLAIM", owner, "live-token", claimed_at, expires_at)
+
+    Process.put(
+      {FakeLinearClient, :graphql_result},
+      claim_comments([%{"id" => "claim-live", "body" => claim_body, "createdAt" => DateTime.to_iso8601(claimed_at)}])
+    )
+
+    assert :ok = Adapter.recover_stale_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+
+    assert {:error, {:issue_claimed, %{id: "claim-live", owner: ^owner}}} =
+             Adapter.acquire_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+  end
+
+  test "linear adapter default pid probe releases missing same-host owner" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+    Application.delete_env(:symphony_elixir, :local_os_pid_alive?)
+
+    claimed_at = DateTime.add(DateTime.utc_now(), -60, :second)
+    expires_at = DateTime.add(claimed_at, 4, :hour)
+    owner = "#{test_hostname()}:999999:#PID<0.1.0>:1"
+    claim_body = signed_claim_body("ALB-CLAIM", owner, "missing-pid-token", claimed_at, expires_at)
+
+    Application.put_env(:symphony_elixir, :tasklist_lookup, fn "tasklist" -> nil end)
+
+    Process.put({FakeLinearClient, :graphql_results}, [
+      claim_comments([%{"id" => "claim-missing-tasklist", "body" => claim_body, "createdAt" => DateTime.to_iso8601(claimed_at)}]),
+      fn query, variables ->
+        assert String.contains?(query, "commentCreate")
+        assert variables.body =~ "claim_id: claim-missing-tasklist"
+
+        {:ok, %{"data" => %{"commentCreate" => %{"success" => true}}}}
+      end
+    ])
+
+    assert :ok = Adapter.recover_stale_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+
+    Application.put_env(:symphony_elixir, :tasklist_lookup, fn "tasklist" -> "tasklist.exe" end)
+    Application.put_env(:symphony_elixir, :tasklist_cmd, fn "tasklist.exe", _args, _opts -> {"", 1} end)
+
+    Process.put({FakeLinearClient, :graphql_results}, [
+      claim_comments([%{"id" => "claim-tasklist-error", "body" => claim_body, "createdAt" => DateTime.to_iso8601(claimed_at)}]),
+      fn query, variables ->
+        assert String.contains?(query, "commentCreate")
+        assert variables.body =~ "claim_id: claim-tasklist-error"
+
+        {:ok, %{"data" => %{"commentCreate" => %{"success" => true}}}}
+      end
+    ])
+
+    assert :ok = Adapter.recover_stale_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+
+    Application.put_env(:symphony_elixir, :tasklist_cmd, fn "tasklist.exe", _args, _opts ->
+      {~s("Image Name","PID","Session Name"\n"beam.smp.exe","123456","Console"), 0}
+    end)
+
+    Process.put({FakeLinearClient, :graphql_results}, [
+      claim_comments([%{"id" => "claim-missing-pid", "body" => claim_body, "createdAt" => DateTime.to_iso8601(claimed_at)}]),
+      fn query, variables ->
+        assert String.contains?(query, "commentCreate")
+        assert variables.body =~ "claim_id: claim-missing-pid"
+        assert variables.body =~ "token: missing-pid-token"
+
+        {:ok, %{"data" => %{"commentCreate" => %{"success" => true}}}}
+      end
+    ])
+
+    assert :ok = Adapter.recover_stale_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+  end
+
+  test "linear adapter default pid probe preserves listed same-host owner" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+    Application.delete_env(:symphony_elixir, :local_os_pid_alive?)
+    Application.put_env(:symphony_elixir, :tasklist_lookup, fn "tasklist" -> "tasklist.exe" end)
+
+    Application.put_env(:symphony_elixir, :tasklist_cmd, fn "tasklist.exe", _args, _opts ->
+      {~s("Image Name","PID","Session Name"\n"beam.smp.exe","31337","Console"), 0}
+    end)
+
+    claimed_at = DateTime.add(DateTime.utc_now(), -60, :second)
+    expires_at = DateTime.add(claimed_at, 4, :hour)
+    owner = "#{test_hostname()}:31337:#PID<0.1.0>:1"
+    claim_body = signed_claim_body("ALB-CLAIM", owner, "listed-pid-token", claimed_at, expires_at)
+
+    Process.put(
+      {FakeLinearClient, :graphql_result},
+      claim_comments([%{"id" => "claim-listed-pid", "body" => claim_body, "createdAt" => DateTime.to_iso8601(claimed_at)}])
+    )
+
+    assert :ok = Adapter.recover_stale_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+
+    assert {:error, {:issue_claimed, %{id: "claim-listed-pid", owner: ^owner}}} =
+             Adapter.acquire_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+  end
+
+  test "linear adapter stops recovery when stale claim release fails" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+    Application.put_env(:symphony_elixir, :local_os_pid_alive?, fn "424242" -> false end)
+
+    claimed_at = DateTime.add(DateTime.utc_now(), -60, :second)
+    expires_at = DateTime.add(claimed_at, 4, :hour)
+    owner = "#{test_hostname()}:424242:#PID<0.1.0>:1"
+    claim_body = signed_claim_body("ALB-CLAIM", owner, "stale-token", claimed_at, expires_at)
+
+    Process.put({FakeLinearClient, :graphql_results}, [
+      claim_comments([%{"id" => "claim-stale", "body" => claim_body, "createdAt" => DateTime.to_iso8601(claimed_at)}]),
+      {:ok, %{"data" => %{"commentCreate" => %{"success" => false}}}}
+    ])
+
+    assert {:error, :claim_release_failed} =
+             Adapter.recover_stale_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+  end
+
+  test "linear adapter preserves other-host active claim during recovery" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+    Application.put_env(:symphony_elixir, :local_os_pid_alive?, fn _pid -> flunk("other-host pid must not be inspected") end)
+
+    claimed_at = DateTime.add(DateTime.utc_now(), -60, :second)
+    expires_at = DateTime.add(claimed_at, 4, :hour)
+    owner = "other-host:424242:#PID<0.1.0>:1"
+    claim_body = signed_claim_body("ALB-CLAIM", owner, "other-token", claimed_at, expires_at)
+
+    Process.put(
+      {FakeLinearClient, :graphql_result},
+      claim_comments([%{"id" => "claim-other", "body" => claim_body, "createdAt" => DateTime.to_iso8601(claimed_at)}])
+    )
+
+    assert :ok = Adapter.recover_stale_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+
+    assert {:error, {:issue_claimed, %{id: "claim-other", owner: ^owner}}} =
+             Adapter.acquire_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+  end
+
+  test "linear adapter preserves malformed-owner active claim during recovery" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+    Application.put_env(:symphony_elixir, :local_os_pid_alive?, fn _pid -> flunk("malformed owner pid must not be inspected") end)
+
+    claimed_at = DateTime.add(DateTime.utc_now(), -60, :second)
+    expires_at = DateTime.add(claimed_at, 4, :hour)
+    owner = "#{test_hostname()}:not-a-pid:#PID<0.1.0>:1"
+    claim_body = signed_claim_body("ALB-CLAIM", owner, "malformed-token", claimed_at, expires_at)
+
+    Process.put(
+      {FakeLinearClient, :graphql_result},
+      claim_comments([%{"id" => "claim-malformed", "body" => claim_body, "createdAt" => DateTime.to_iso8601(claimed_at)}])
+    )
+
+    assert :ok = Adapter.recover_stale_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+
+    assert {:error, {:issue_claimed, %{id: "claim-malformed", owner: ^owner}}} =
+             Adapter.acquire_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+
+    owner = "malformed-owner"
+    claim_body = signed_claim_body("ALB-CLAIM", owner, "malformed-token-2", claimed_at, expires_at)
+
+    Process.put(
+      {FakeLinearClient, :graphql_result},
+      claim_comments([%{"id" => "claim-malformed-2", "body" => claim_body, "createdAt" => DateTime.to_iso8601(claimed_at)}])
+    )
+
+    assert :ok = Adapter.recover_stale_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+
+    assert {:error, {:issue_claimed, %{id: "claim-malformed-2", owner: ^owner}}} =
+             Adapter.acquire_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+  end
+
   test "linear adapter ignores unsigned spoofed claims before dispatch" do
     Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
     older = DateTime.add(DateTime.utc_now(), -60, :second)
@@ -598,9 +824,18 @@ defmodule SymphonyElixir.ExtensionsTest do
     Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
 
     assert {:error, :invalid_issue_claim} = Adapter.acquire_issue_claim(%{})
+    assert {:error, :invalid_issue_claim} = Adapter.recover_stale_issue_claim(%{})
     assert :ok = Adapter.release_issue_claim("issue-claim")
     assert :ok = Adapter.release_issue_claim("issue-claim", %{})
     assert :ok = Adapter.release_issue_claim("issue-claim", :invalid_claim)
+
+    Process.put({FakeLinearClient, :graphql_result}, empty_claim_comments())
+    assert :ok = Adapter.recover_stale_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
+
+    Process.put({FakeLinearClient, :graphql_result}, {:error, :recovery_timeout})
+
+    assert {:error, :recovery_timeout} =
+             Adapter.recover_stale_issue_claim(%Issue{id: "issue-claim", identifier: "ALB-CLAIM"})
 
     Process.put(
       {FakeLinearClient, :graphql_result},
@@ -2790,12 +3025,16 @@ defmodule SymphonyElixir.ExtensionsTest do
   defp assert_eventually(_fun, 0), do: flunk("condition not met in time")
 
   defp empty_claim_comments do
+    claim_comments([])
+  end
+
+  defp claim_comments(nodes) do
     {:ok,
      %{
        "data" => %{
          "issue" => %{
            "comments" => %{
-             "nodes" => [],
+             "nodes" => nodes,
              "pageInfo" => %{"hasNextPage" => false}
            }
          }
@@ -2828,6 +3067,11 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   defp signed_release_body(claim_id, owner, token, released_at) do
     Adapter.release_body_for_test(claim_id, owner, token, released_at)
+  end
+
+  defp test_hostname do
+    {:ok, hostname} = :inet.gethostname()
+    List.to_string(hostname)
   end
 
   defp ensure_workflow_store_running do

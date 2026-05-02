@@ -65,6 +65,12 @@ defmodule SymphonyElixir.TestSupport do
           Application.delete_env(:symphony_elixir, :server_port_override)
           Application.delete_env(:symphony_elixir, :memory_tracker_issues)
           Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
+          Application.delete_env(:symphony_elixir, :local_os_pid_alive?)
+          Application.delete_env(:symphony_elixir, :linear_client_module)
+          Application.delete_env(:symphony_elixir, :task_supervisor_start_child)
+          Application.delete_env(:symphony_elixir, :orchestrator_status_fake_linear)
+          Application.delete_env(:symphony_elixir, :tasklist_lookup)
+          Application.delete_env(:symphony_elixir, :tasklist_cmd)
           File.rm_rf(workflow_root)
         end)
 

@@ -1,6 +1,35 @@
 defmodule SymphonyElixir.OrchestratorStatusTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.Linear.Adapter
+
+  defmodule FakeLinearClient do
+    def fetch_candidate_issues do
+      {:ok, Keyword.get(config(), :candidate_issues, [])}
+    end
+
+    def fetch_issues_by_states(_states), do: {:ok, []}
+
+    def fetch_issue_states_by_ids(issue_ids) do
+      issues =
+        config()
+        |> Keyword.get(:candidate_issues, [])
+        |> Enum.filter(&(&1.id in issue_ids))
+
+      {:ok, issues}
+    end
+
+    def graphql(query, variables) do
+      config()
+      |> Keyword.fetch!(:graphql)
+      |> then(& &1.(query, variables))
+    end
+
+    defp config do
+      Application.fetch_env!(:symphony_elixir, :orchestrator_status_fake_linear)
+    end
+  end
+
   test "snapshot returns :timeout when snapshot server is unresponsive" do
     server_name = Module.concat(__MODULE__, :UnresponsiveSnapshotServer)
     parent = self()
@@ -99,6 +128,125 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              message: %{method: "some-event"},
              timestamp: now
            }
+  end
+
+  test "orchestrator releases durable claim when a controlled worker exits" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    issue_id = "issue-shutdown-release"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-189",
+      title: "Shutdown release",
+      description: "Release claim on controlled exit",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-189"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :ShutdownReleaseOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    ref = make_ref()
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: issue.identifier,
+      issue: issue,
+      claim: %{id: "claim-shutdown", owner: "memory", token: "token"},
+      session_id: "thread-shutdown",
+      turn_count: 0,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    send(pid, {:DOWN, ref, :process, self(), :normal})
+
+    assert_receive {:memory_tracker_claim_released, ^issue_id}, 1_000
+    assert %{running: [], retrying: retrying} = wait_for_snapshot(pid, &match?(%{running: []}, &1))
+    assert Enum.any?(retrying, &(&1.issue_id == issue_id and &1.error_kind == "continuation"))
+  end
+
+  test "orchestrator exposes external claim in retry state without spawning duplicate worker" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear", polling_interval_ms: 50)
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+    Application.put_env(:symphony_elixir, :task_supervisor_start_child, fn _fun -> flunk("external claim must not spawn") end)
+
+    issue_id = "issue-external-claim"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-190",
+      title: "External claim",
+      description: "Do not duplicate externally claimed workers",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-190"
+    }
+
+    claimed_at = DateTime.add(DateTime.utc_now(), -60, :second)
+    expires_at = DateTime.add(claimed_at, 4, :hour)
+    owner = "other-host:424242:#PID<0.1.0>:1"
+    claim_body = Adapter.claim_body_for_test(issue.identifier, owner, "external-token", claimed_at, expires_at)
+
+    Application.put_env(:symphony_elixir, :orchestrator_status_fake_linear,
+      candidate_issues: [issue],
+      graphql: fn query, _variables ->
+        assert String.contains?(query, "SymphonyIssueClaimComments")
+
+        {:ok,
+         %{
+           "data" => %{
+             "issue" => %{
+               "comments" => %{
+                 "nodes" => [
+                   %{"id" => "claim-external", "body" => claim_body, "createdAt" => DateTime.to_iso8601(claimed_at)}
+                 ],
+                 "pageInfo" => %{"hasNextPage" => false}
+               }
+             }
+           }
+         }}
+      end
+    )
+
+    orchestrator_name = Module.concat(__MODULE__, :ExternalClaimOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    snapshot =
+      wait_for_snapshot(pid, fn
+        %{running: [], retrying: retrying} ->
+          Enum.any?(retrying, &(&1.issue_id == issue_id and &1.error_kind == "external_claim"))
+
+        _ ->
+          false
+      end)
+
+    assert snapshot.running == []
+    assert [%{error: error, error_kind: "external_claim"}] = snapshot.retrying
+    assert error =~ "durable claim held by #{owner}"
   end
 
   test "orchestrator snapshot includes command watchdog metadata and stalled policy comments" do

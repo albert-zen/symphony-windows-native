@@ -314,6 +314,15 @@ pass `-WorkflowPath` to locate a matching launcher process:
 .\scripts\stop-windows-native.ps1 -WorkflowPath .\WORKFLOW.windows.md -Force
 ```
 
+Linear claim leases are also cleaned up as workers stop. If the host or runtime
+exits before a release comment is written, the next runtime startup checks active
+Linear claim comments before dispatch. A claim owned by the same Windows host is
+released only when its recorded OS process ID is no longer alive; claims from
+other hosts, malformed owners, or still-running local processes remain protected.
+While another active lease is preserved, the issue appears in the dashboard
+backoff queue with an `external_claim` reason instead of being shown as a local
+running worker.
+
 ## Install a Windows long-running task
 
 The recommended Windows-native long-running setup is Task Scheduler. It runs under the same
