@@ -124,7 +124,15 @@ Operating model:
       the next operator's attention.
     - Problem comments must include what failed, the command/subsystem involved, whether recovery
       succeeded, and the next thing an operator should inspect.
-14. If a true blocker prevents completion, update the workpad, then try to move the issue to
+14. For environment or pipeline blockers, include capability/preflight evidence before handoff:
+    - Run or cite `mix symphony.preflight.windows --capabilities-only --json <WORKFLOW>` when the
+      blocker may involve OS, shell, PowerShell, tasklist, GitHub CLI, Linear auth, coverage policy,
+      or line endings.
+    - Write these exact Workpad fields: failed command, capability result, local recovery attempted,
+      and manager action needed.
+    - If a canonical issue exists for the same shared friction, comment there with the new evidence
+      instead of creating a duplicate.
+15. If a true blocker prevents completion, update the workpad, then try to move the issue to
     `Blocked`. If the Linear team has no `Blocked` state, record `Blocked state missing` in the
     workpad/problem comment and keep the issue in its active state unless a manager explicitly moves
     it elsewhere.

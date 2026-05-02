@@ -87,6 +87,11 @@ Workpad. Blocking findings keep the issue in `In Progress` or return it to
 - For a true blocker, state what failed, the command/subsystem, recovery status,
   and the next operator action in the Workpad and, when useful for public review,
   the linked GitHub issue or PR.
+- For environment or pipeline blockers, run or cite capability/preflight
+  evidence before handoff. Prefer:
+  `mise exec -- mix symphony.preflight.windows --capabilities-only --json <WORKFLOW>`.
+  The Workpad must include the failed command, capability result, local recovery
+  attempted, and manager action needed.
 - If the blocker is shared pipeline friction, such as CI OS mismatch, GitHub
   auth/rate-limit verification, stale runtime deployment, durable-claim
   confusion, or manager-owned policy scope, do not keep retrying blindly. Record
