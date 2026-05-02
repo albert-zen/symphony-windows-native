@@ -106,7 +106,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         github_client:
           github_client(%{
             "pulls/42" => %{
-              "body" => "#### Context\n\nImplements the linked spec.\n\nFixes #46",
+              "body" => with_validation_evidence("#### Context\n\nImplements the linked spec.\n\nFixes #46"),
               "head" => %{"sha" => "abc123"},
               "base" => %{"ref" => "main"}
             },
@@ -132,7 +132,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         github_client:
           github_client(%{
             "pulls/42" => %{
-              "body" => "#### Context\n\nImplements the linked spec.\n\nFixes albert-zen/symphony-windows-native#46",
+              "body" => with_validation_evidence("#### Context\n\nImplements the linked spec.\n\nFixes albert-zen/symphony-windows-native#46"),
               "head" => %{"sha" => "abc123"},
               "base" => %{"ref" => "main"}
             },
@@ -160,7 +160,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         github_client:
           github_client(%{
             "pulls/42" => %{
-              "body" => "#### Context\n\nImplements the linked spec.\n\nFixes: #46",
+              "body" => with_validation_evidence("#### Context\n\nImplements the linked spec.\n\nFixes: #46"),
               "head" => %{"sha" => "abc123"},
               "base" => %{"ref" => "main"}
             },
@@ -215,7 +215,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         github_client:
           github_client(%{
             "pulls/42" => %{
-              "body" => "#### Context\n\nImplements the linked spec without a closing keyword.",
+              "body" => with_validation_evidence("#### Context\n\nImplements the linked spec without a closing keyword."),
               "head" => %{"sha" => "abc123"},
               "base" => %{"ref" => "main"}
             }
@@ -240,7 +240,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         github_client:
           github_client(%{
             "pulls/42" => %{
-              "body" => "#### Context\n\nImplements the linked spec without a closing keyword.",
+              "body" => with_validation_evidence("#### Context\n\nImplements the linked spec without a closing keyword."),
               "head" => %{"sha" => "abc123"},
               "base" => %{"ref" => "main"}
             }
@@ -265,7 +265,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         github_client:
           github_client(%{
             "pulls/42" => %{
-              "body" => "#### Context\n\nImplements the linked spec without a closing keyword.",
+              "body" => with_validation_evidence("#### Context\n\nImplements the linked spec without a closing keyword."),
               "head" => %{"sha" => "abc123"},
               "base" => %{"ref" => "main"}
             }
@@ -1543,6 +1543,107 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert body =~ "make-all=check:in_progress"
   end
 
+  test "linear_graphql rejects In Review transition when linked PR lacks local validation evidence" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{
+              "body" => """
+              #### Context
+
+              Context text.
+
+              #### TL;DR
+
+              Summary.
+
+              #### Summary
+
+              - Change.
+
+              #### Alternatives
+
+              - None.
+
+              #### Test Plan
+
+              - [ ] `make -C elixir all`
+              - CI will validate this later.
+              """,
+              "head" => %{"sha" => "abc123"},
+              "base" => %{"ref" => "main"}
+            },
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{"check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]}
+          })
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "local validation evidence is missing"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "local validation evidence is missing"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql accepts targeted local evidence without requiring local make all" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{
+              "body" => targeted_validation_pr_body(),
+              "head" => %{"sha" => "abc123"},
+              "base" => %{"ref" => "main"}
+            },
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{"check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]}
+          })
+      )
+
+    assert response["success"] == true
+    assert_received {:linear_mutation_allowed, "issue-1", "state-review"}
+    refute_received {:workpad_recorded, _}
+  end
+
+  test "linear_graphql accepts justified skipped heavy validation with narrower local evidence" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{
+              "body" => justified_skip_pr_body(),
+              "head" => %{"sha" => "abc123"},
+              "base" => %{"ref" => "main"}
+            },
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{"check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]}
+          })
+      )
+
+    assert response["success"] == true
+    assert_received {:linear_mutation_allowed, "issue-1", "state-review"}
+    refute_received {:workpad_recorded, _}
+  end
+
   test "linear_graphql rejects In Review transition when required checks fail" do
     test_pid = self()
 
@@ -1981,6 +2082,8 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
   end
 
   defp passing_review_readiness_responses(pr_payload) do
+    pr_payload = Map.update(pr_payload, "body", targeted_validation_pr_body(), &with_validation_evidence/1)
+
     %{
       "pulls/42" =>
         Map.merge(
@@ -1993,6 +2096,17 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         "check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]
       }
     }
+  end
+
+  defp with_validation_evidence(body) do
+    body <>
+      """
+
+      #### Test Plan
+
+      - [ ] `make -C elixir all` not run locally because this test simulates targeted review-readiness validation.
+      - [x] `mix test test/symphony_elixir/dynamic_tool_test.exs` passed locally.
+      """
   end
 
   defp default_pr_payload(url, %{"head" => head} = payload) when is_map(head) do
@@ -2009,6 +2123,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         |> Map.put_new("sha", "base123")
 
       payload
+      |> Map.put_new("body", targeted_validation_pr_body())
       |> put_in(["head"], default_head)
       |> put_in(["base"], default_base)
     else
@@ -2017,6 +2132,56 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
   end
 
   defp default_pr_payload(_url, payload), do: payload
+
+  defp targeted_validation_pr_body do
+    """
+    #### Context
+
+    Context text.
+
+    #### TL;DR
+
+    Summary.
+
+    #### Summary
+
+    - Change.
+
+    #### Alternatives
+
+    - None.
+
+    #### Test Plan
+
+    - [ ] `make -C elixir all` not run locally because this test simulates targeted review-readiness validation.
+    - [x] `mix test test/symphony_elixir/dynamic_tool_test.exs` passed locally.
+    """
+  end
+
+  defp justified_skip_pr_body do
+    """
+    #### Context
+
+    Context text.
+
+    #### TL;DR
+
+    Summary.
+
+    #### Summary
+
+    - Change.
+
+    #### Alternatives
+
+    - None.
+
+    #### Test Plan
+
+    - [ ] `make -C elixir all` not run locally because this test simulates a narrower handoff.
+    - [x] `mix test test/symphony_elixir/dynamic_tool_test.exs` passed locally as narrower validation.
+    """
+  end
 
   defp default_github_response(url) do
     cond do

@@ -1,6 +1,8 @@
 defmodule Mix.Tasks.PrBody.Check do
   use Mix.Task
 
+  alias SymphonyElixir.Codex.ValidationEvidence
+
   @shortdoc "Validate PR body format against the repository PR template"
 
   @moduledoc """
@@ -131,23 +133,26 @@ defmodule Mix.Tasks.PrBody.Check do
   end
 
   defp check_sections_from_template(errors, template, body, headings) do
-    Enum.reduce(headings, errors, fn heading, acc ->
-      template_section = capture_heading_section(template, heading, headings)
-      body_section = capture_heading_section(body, heading, headings)
+    section_errors =
+      Enum.reduce(headings, errors, fn heading, acc ->
+        template_section = capture_heading_section(template, heading, headings)
+        body_section = capture_heading_section(body, heading, headings)
 
-      cond do
-        is_nil(body_section) ->
-          acc
+        cond do
+          is_nil(body_section) ->
+            acc
 
-        String.trim(body_section) == "" ->
-          acc ++ ["Section cannot be empty: #{heading}"]
+          String.trim(body_section) == "" ->
+            acc ++ ["Section cannot be empty: #{heading}"]
 
-        true ->
-          acc
-          |> maybe_require_bullets(heading, template_section, body_section)
-          |> maybe_require_checkboxes(heading, template_section, body_section)
-      end
-    end)
+          true ->
+            acc
+            |> maybe_require_bullets(heading, template_section, body_section)
+            |> maybe_require_checkboxes(heading, template_section, body_section)
+        end
+      end)
+
+    section_errors ++ ValidationEvidence.lint_pr_body(body)
   end
 
   defp maybe_require_bullets(errors, heading, template_section, body_section) do

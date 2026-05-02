@@ -46,7 +46,8 @@ defmodule Mix.Tasks.PrBody.CheckTest do
 
   #### Test Plan
 
-  - [x] Ran targeted checks.
+  - [ ] `make -C elixir all` not run locally because this unit test fixture uses targeted validation only.
+  - [x] `mix test test/mix/tasks/pr_body_check_test.exs` passed locally.
   """
 
   setup do
@@ -159,6 +160,7 @@ defmodule Mix.Tasks.PrBody.CheckTest do
 
       #### Test Plan
 
+      - [ ] `make -C elixir all` not run locally because this fixture validates heading order only.
       - [x] Ran targeted checks.
       """
 
@@ -215,6 +217,7 @@ defmodule Mix.Tasks.PrBody.CheckTest do
 
       #### Test Plan
 
+      - [ ] `make -C elixir all` not run locally because this fixture validates section parsing only.
       - [x] Ran targeted checks.
       """
 
@@ -313,6 +316,320 @@ defmodule Mix.Tasks.PrBody.CheckTest do
         end)
 
       assert output =~ "PR body format OK"
+    end)
+  end
+
+  test "fails when Test Plan has no checked local validation evidence" do
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      missing_evidence = """
+      #### Context
+
+      Context text.
+
+      #### TL;DR
+
+      Short summary.
+
+      #### Summary
+
+      - First change.
+
+      #### Alternatives
+
+      - Alternative considered.
+
+      #### Test Plan
+
+      - [ ] `make -C elixir all`
+      - CI will validate this later.
+      """
+
+      File.write!("body.md", missing_evidence)
+
+      error_output =
+        capture_io(:stderr, fn ->
+          assert_raise Mix.Error, ~r/PR body format invalid/, fn ->
+            Check.run(["lint", "--file", "body.md"])
+          end
+        end)
+
+      assert error_output =~ "Test Plan must include at least one checked local validation command or targeted check"
+    end)
+  end
+
+  test "fails when checked Test Plan item only has backticked non-command prose" do
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      invalid_evidence = """
+      #### Context
+
+      Context text.
+
+      #### TL;DR
+
+      Short summary.
+
+      #### Summary
+
+      - First change.
+
+      #### Alternatives
+
+      - Alternative considered.
+
+      #### Test Plan
+
+      - [x] `README.md passed locally`
+      """
+
+      File.write!("body.md", invalid_evidence)
+
+      error_output =
+        capture_io(:stderr, fn ->
+          assert_raise Mix.Error, ~r/PR body format invalid/, fn ->
+            Check.run(["lint", "--file", "body.md"])
+          end
+        end)
+
+      assert error_output =~ "Test Plan must include at least one checked local validation command or targeted check"
+    end)
+  end
+
+  test "passes with valid targeted local evidence without requiring make all" do
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      targeted_evidence = """
+      #### Context
+
+      Context text.
+
+      #### TL;DR
+
+      Short summary.
+
+      #### Summary
+
+      - First change.
+
+      #### Alternatives
+
+      - Alternative considered.
+
+      #### Test Plan
+
+      - [ ] `make -C elixir all` not run locally because this test exercises targeted evidence.
+      - [x] `mix test test/mix/tasks/pr_body_check_test.exs` passed locally.
+      """
+
+      File.write!("body.md", targeted_evidence)
+
+      output =
+        capture_io(fn ->
+          Check.run(["lint", "--file", "body.md"])
+        end)
+
+      assert output =~ "PR body format OK"
+    end)
+  end
+
+  test "fails when targeted evidence omits heavy validation or skip justification" do
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      missing_heavy_gate = """
+      #### Context
+
+      Context text.
+
+      #### TL;DR
+
+      Short summary.
+
+      #### Summary
+
+      - First change.
+
+      #### Alternatives
+
+      - Alternative considered.
+
+      #### Test Plan
+
+      - [x] `mix test test/mix/tasks/pr_body_check_test.exs` passed locally.
+      """
+
+      File.write!("body.md", missing_heavy_gate)
+
+      error_output =
+        capture_io(:stderr, fn ->
+          assert_raise Mix.Error, ~r/PR body format invalid/, fn ->
+            Check.run(["lint", "--file", "body.md"])
+          end
+        end)
+
+      assert error_output =~ "Test Plan must explain why the heavy local validation check was not run"
+    end)
+  end
+
+  test "fails when checked validation command only ran in CI" do
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      ci_only_evidence = """
+      #### Context
+
+      Context text.
+
+      #### TL;DR
+
+      Short summary.
+
+      #### Summary
+
+      - First change.
+
+      #### Alternatives
+
+      - Alternative considered.
+
+      #### Test Plan
+
+      - [ ] `make -C elixir all` not run locally because the full gate is unavailable.
+      - [x] `mix test test/mix/tasks/pr_body_check_test.exs` passed in CI.
+      """
+
+      File.write!("body.md", ci_only_evidence)
+
+      error_output =
+        capture_io(:stderr, fn ->
+          assert_raise Mix.Error, ~r/PR body format invalid/, fn ->
+            Check.run(["lint", "--file", "body.md"])
+          end
+        end)
+
+      assert error_output =~ "Test Plan must include at least one checked local validation command or targeted check"
+    end)
+  end
+
+  test "fails when checked validation command reports a local failure" do
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      failed_evidence = """
+      #### Context
+
+      Context text.
+
+      #### TL;DR
+
+      Short summary.
+
+      #### Summary
+
+      - First change.
+
+      #### Alternatives
+
+      - Alternative considered.
+
+      #### Test Plan
+
+      - [ ] `make -C elixir all` not run locally because the focused check failed first.
+      - [x] `mix test test/mix/tasks/pr_body_check_test.exs` failed locally.
+      """
+
+      File.write!("body.md", failed_evidence)
+
+      error_output =
+        capture_io(:stderr, fn ->
+          assert_raise Mix.Error, ~r/PR body format invalid/, fn ->
+            Check.run(["lint", "--file", "body.md"])
+          end
+        end)
+
+      assert error_output =~ "Test Plan must include at least one checked local validation command or targeted check"
+    end)
+  end
+
+  test "passes when skipped heavy validation is justified with narrower local evidence" do
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      justified_skip = """
+      #### Context
+
+      Context text.
+
+      #### TL;DR
+
+      Short summary.
+
+      #### Summary
+
+      - First change.
+
+      #### Alternatives
+
+      - Alternative considered.
+
+      #### Test Plan
+
+      - [ ] `make -C elixir all` not run locally because dependency install is unavailable in this workspace.
+      - [x] `mix test test/mix/tasks/pr_body_check_test.exs` passed locally as narrower validation.
+      """
+
+      File.write!("body.md", justified_skip)
+
+      output =
+        capture_io(fn ->
+          Check.run(["lint", "--file", "body.md"])
+        end)
+
+      assert output =~ "PR body format OK"
+    end)
+  end
+
+  test "fails when skipped heavy validation reason is only attached to targeted evidence" do
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      misplaced_reason = """
+      #### Context
+
+      Context text.
+
+      #### TL;DR
+
+      Short summary.
+
+      #### Summary
+
+      - First change.
+
+      #### Alternatives
+
+      - Alternative considered.
+
+      #### Test Plan
+
+      - [ ] `make -C elixir all`
+      - [x] `mix test test/mix/tasks/pr_body_check_test.exs` passed locally because it covers the changed code.
+      """
+
+      File.write!("body.md", misplaced_reason)
+
+      error_output =
+        capture_io(:stderr, fn ->
+          assert_raise Mix.Error, ~r/PR body format invalid/, fn ->
+            Check.run(["lint", "--file", "body.md"])
+          end
+        end)
+
+      assert error_output =~ "Test Plan must explain why the heavy local validation check was not run"
     end)
   end
 
