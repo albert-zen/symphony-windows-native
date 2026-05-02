@@ -59,6 +59,14 @@ defmodule SymphonyElixir.Tracker.Memory do
     :ok
   end
 
+  @spec recover_stale_issue_claim(Issue.t()) :: :ok | {:error, term()}
+  def recover_stale_issue_claim(%Issue{id: issue_id, identifier: identifier}) when is_binary(issue_id) do
+    send_event({:memory_tracker_claim_recovery_checked, issue_id, identifier})
+    :ok
+  end
+
+  def recover_stale_issue_claim(_issue), do: {:error, :invalid_issue_claim}
+
   @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}
   def create_comment(issue_id, body) do
     send_event({:memory_tracker_comment, issue_id, body})

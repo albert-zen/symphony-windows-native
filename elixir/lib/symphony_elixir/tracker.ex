@@ -10,6 +10,7 @@ defmodule SymphonyElixir.Tracker do
   @callback fetch_issue_states_by_ids([String.t()]) :: {:ok, [term()]} | {:error, term()}
   @callback acquire_issue_claim(term()) :: {:ok, map()} | {:error, term()}
   @callback release_issue_claim(String.t(), map() | nil) :: :ok | {:error, term()}
+  @callback recover_stale_issue_claim(term()) :: :ok | {:error, term()}
   @callback create_comment(String.t(), String.t()) :: :ok | {:error, term()}
   @callback update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
 
@@ -39,6 +40,11 @@ defmodule SymphonyElixir.Tracker do
   @spec release_issue_claim(String.t(), map() | nil) :: :ok | {:error, term()}
   def release_issue_claim(issue_id, claim) do
     adapter().release_issue_claim(issue_id, claim)
+  end
+
+  @spec recover_stale_issue_claim(term()) :: :ok | {:error, term()}
+  def recover_stale_issue_claim(issue) do
+    adapter().recover_stale_issue_claim(issue)
   end
 
   @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}

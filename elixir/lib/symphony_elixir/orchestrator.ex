@@ -790,12 +790,23 @@ defmodule SymphonyElixir.Orchestrator do
     recipient = self()
 
     with worker_host when worker_host != :no_worker_capacity <- select_worker_host(state, preferred_worker_host),
+         :ok <- recover_stale_issue_claim(issue),
          {:ok, claim} <- acquire_issue_claim(issue) do
       spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host, claim, retry_metadata)
     else
       {:error, {:issue_claimed, claim}} ->
         Logger.info("Skipping dispatch; durable claim is held for #{issue_context(issue)} owner=#{claim.owner} expires_at=#{DateTime.to_iso8601(claim.expires_at)}")
-        state
+
+        schedule_issue_retry(state, issue.id, next_claim_retry_attempt(attempt), %{
+          identifier: issue.identifier,
+          error: "durable claim held by #{claim.owner} until #{DateTime.to_iso8601(claim.expires_at)}",
+          error_kind: "external_claim",
+          worker_host: preferred_worker_host,
+          workspace_path: Map.get(retry_metadata, :workspace_path),
+          branch_name: retry_metadata[:branch_name] || issue.branch_name,
+          prior_error: Map.get(retry_metadata, :prior_error),
+          prior_error_kind: Map.get(retry_metadata, :prior_error_kind)
+        })
 
       {:error, reason} ->
         Logger.warning("Skipping dispatch; unable to acquire durable claim for #{issue_context(issue)}: #{inspect(reason)}")
@@ -810,6 +821,13 @@ defmodule SymphonyElixir.Orchestrator do
   defp acquire_issue_claim(%Issue{} = issue) do
     Tracker.acquire_issue_claim(issue)
   end
+
+  defp recover_stale_issue_claim(%Issue{} = issue) do
+    Tracker.recover_stale_issue_claim(issue)
+  end
+
+  defp next_claim_retry_attempt(attempt) when is_integer(attempt), do: attempt + 1
+  defp next_claim_retry_attempt(_attempt), do: nil
 
   defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, claim, retry_metadata) do
     case start_agent_task(fn ->
