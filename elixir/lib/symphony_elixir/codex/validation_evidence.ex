@@ -5,10 +5,10 @@ defmodule SymphonyElixir.Codex.ValidationEvidence do
   @heading_regex ~r/^\#{1,6}\s+.+$/m
   @checked_checkbox_regex ~r/^\s*[-*]\s+\[[xX]\]\s+(.+)$/m
   @unchecked_checkbox_regex ~r/^\s*[-*]\s+\[ \]\s+(.+)$/m
-  @heavy_check_regex ~r/(^|[^a-z0-9_-])(make\s+(-C\s+elixir\s+)?all|make-all)([^a-z0-9_-]|$)/i
-  @ci_only_regex ~r/(?:(?:^\s*(?:ci|github actions?)\b\s*(?::|-|[a-z]+\b))|\b(?:in|by|via|on)\s+(?:ci|github actions?)\b)/i
+  @heavy_check_regex ~r/(^|[^a-z0-9_-])(make(?:\.cmd)?\s+(-C\s+elixir\s+)?all|make-all)([^a-z0-9_-]|$)/i
+  @ci_only_regex ~r/(?:(?:^\s*(?:ci|github actions?)\b\s*(?::|-|[a-z]+\b))|\b(?:in|by|via|on|from)\s+(?:ci|github actions?)\b)/i
   @skip_words ~w(skip skipped not cannot can't unable unavailable pending later)
-  @why_regex ~r/\b(because|due to|cannot|can't|unable|unavailable|not run|skipped|skip)\b/i
+  @restated_skip_words ~w(all check gate heavy local locally make not run skipped validation)
   @inline_code_regex ~r/`([^`]+)`/
   @validation_command_regex ~r/^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*(?:(?:mix\s+(?:test|format|pr_body\.check|specs\.check|symphony\.preflight\.windows)\b)|(?:make(?:\.cmd)?(?:\s+-C\s+\S+)?\s+(?:all|test|windows-native-test|diff-check|validate-pr-description|[\w.-]*test[\w.-]*|[\w.-]*check[\w.-]*))|(?:git\s+diff\s+--check\b)|(?:(?:npm|pnpm|yarn)\s+(?:test|lint|format|check|typecheck|type-check)\b)|(?:gh\s+(?:pr\s+checks|run\s+view)\b))/i
 
@@ -43,7 +43,7 @@ defmodule SymphonyElixir.Codex.ValidationEvidence do
       heavy_checked? ->
         errors
 
-      not Enum.any?(heavy_skip_items, &Regex.match?(@why_regex, &1)) ->
+      not Enum.any?(heavy_skip_items, &heavy_skip_justified?/1) ->
         errors ++ ["Test Plan must explain why the heavy local validation check was not run."]
 
       no_narrower_local_evidence?(local_evidence_items) ->
@@ -95,6 +95,26 @@ defmodule SymphonyElixir.Codex.ValidationEvidence do
   defp ci_only_evidence?(item), do: Regex.match?(@ci_only_regex, item)
 
   defp heavy_check?(text), do: Regex.match?(@heavy_check_regex, text)
+
+  defp heavy_skip_justified?(item) do
+    normalized = normalize(item)
+
+    concrete_due_to_reason?(normalized) or Regex.match?(~r/\b(cannot|can't|unable|unavailable)\b/, normalized)
+  end
+
+  defp concrete_due_to_reason?(normalized) do
+    case Regex.run(~r/\b(?:because|due to)\b\s+(.+)$/, normalized) do
+      [_, reason] -> concrete_reason?(reason)
+      _ -> false
+    end
+  end
+
+  defp concrete_reason?(reason) do
+    reason
+    |> String.replace(@inline_code_regex, " ")
+    |> String.split(~r/[^a-z0-9']+/, trim: true)
+    |> Enum.any?(&(&1 not in @restated_skip_words))
+  end
 
   defp checked_items(section), do: checkbox_items(section, @checked_checkbox_regex)
 

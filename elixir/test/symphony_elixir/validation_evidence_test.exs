@@ -41,12 +41,48 @@ defmodule SymphonyElixir.Codex.ValidationEvidenceTest do
            ]
   end
 
+  test "rejects skipped heavy validation that only restates it was not run" do
+    body = """
+    #### Test Plan
+
+    - [ ] `make -C elixir all` not run locally.
+    - [x] `mix test test/symphony_elixir/validation_evidence_test.exs` passed locally.
+    """
+
+    assert ValidationEvidence.lint_pr_body(body) == [
+             "Test Plan must explain why the heavy local validation check was not run."
+           ]
+  end
+
+  test "rejects skipped heavy validation with because plus only skip wording" do
+    body = """
+    #### Test Plan
+
+    - [ ] `make -C elixir all` not run locally because skipped.
+    - [x] `mix test test/symphony_elixir/validation_evidence_test.exs` passed locally.
+    """
+
+    assert ValidationEvidence.lint_pr_body(body) == [
+             "Test Plan must explain why the heavy local validation check was not run."
+           ]
+  end
+
   test "accepts justified skipped heavy validation with narrower local evidence" do
     body = """
     #### Test Plan
 
     - [ ] `make -C elixir all` not run locally because the full gate is unavailable.
     - [x] `mix test test/symphony_elixir/validation_evidence_test.exs` passed locally.
+    """
+
+    assert ValidationEvidence.lint_pr_body(body) == []
+  end
+
+  test "accepts make.cmd all as the heavy local validation gate" do
+    body = """
+    #### Test Plan
+
+    - [x] `make.cmd all` passed locally.
     """
 
     assert ValidationEvidence.lint_pr_body(body) == []
@@ -120,6 +156,34 @@ defmodule SymphonyElixir.Codex.ValidationEvidenceTest do
 
     - [ ] `make -C elixir all` not run locally because CI reported the broader gate.
     - [x] `mix test test/symphony_elixir/validation_evidence_test.exs` passed in CI.
+    """
+
+    assert ValidationEvidence.lint_pr_body(body) == [
+             "Test Plan must include at least one checked local validation command or targeted check.",
+             "Test Plan must name narrower local validation when the heavy check is skipped."
+           ]
+  end
+
+  test "rejects validation commands reported as results from CI" do
+    body = """
+    #### Test Plan
+
+    - [ ] `make -C elixir all` not run locally because CI reported the broader gate.
+    - [x] `mix test test/symphony_elixir/validation_evidence_test.exs` results from CI.
+    """
+
+    assert ValidationEvidence.lint_pr_body(body) == [
+             "Test Plan must include at least one checked local validation command or targeted check.",
+             "Test Plan must name narrower local validation when the heavy check is skipped."
+           ]
+  end
+
+  test "rejects validation commands reported as GitHub Actions results" do
+    body = """
+    #### Test Plan
+
+    - [ ] `make -C elixir all` not run locally because GitHub Actions reported the broader gate.
+    - [x] `mix test test/symphony_elixir/validation_evidence_test.exs` results from GitHub Actions.
     """
 
     assert ValidationEvidence.lint_pr_body(body) == [
