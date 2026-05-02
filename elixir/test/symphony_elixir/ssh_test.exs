@@ -3,6 +3,13 @@ defmodule SymphonyElixir.SSHTest do
 
   alias SymphonyElixir.SSH
 
+  @fake_ssh_skip if(SymphonyElixir.TestSupport.windows?(),
+                   do: "Fake ssh tests use a Unix executable script; Windows coverage for remote SSH uses real ssh.exe.",
+                   else: nil
+                 )
+
+  if @fake_ssh_skip, do: @tag(skip: @fake_ssh_skip)
+
   test "run/3 keeps bracketed IPv6 host:port targets intact" do
     test_root = Path.join(System.tmp_dir!(), "symphony-ssh-ipv6-test-#{System.unique_integer([:positive])}")
     trace_file = Path.join(test_root, "ssh.trace")
@@ -24,6 +31,8 @@ defmodule SymphonyElixir.SSHTest do
     assert trace =~ "printf ok"
   end
 
+  if @fake_ssh_skip, do: @tag(skip: @fake_ssh_skip)
+
   test "run/3 leaves unbracketed IPv6-style targets unchanged" do
     test_root = Path.join(System.tmp_dir!(), "symphony-ssh-ipv6-raw-test-#{System.unique_integer([:positive])}")
     trace_file = Path.join(test_root, "ssh.trace")
@@ -44,6 +53,8 @@ defmodule SymphonyElixir.SSHTest do
     assert trace =~ "bash -lc"
     refute trace =~ "-p 2200"
   end
+
+  if @fake_ssh_skip, do: @tag(skip: @fake_ssh_skip)
 
   test "run/3 passes host:port targets through ssh -p" do
     test_root = Path.join(System.tmp_dir!(), "symphony-ssh-test-#{System.unique_integer([:positive])}")
@@ -69,6 +80,8 @@ defmodule SymphonyElixir.SSHTest do
     assert trace =~ "bash -lc"
     assert trace =~ "echo ready"
   end
+
+  if @fake_ssh_skip, do: @tag(skip: @fake_ssh_skip)
 
   test "run/3 keeps the user prefix when parsing user@host:port targets" do
     test_root = Path.join(System.tmp_dir!(), "symphony-ssh-user-test-#{System.unique_integer([:positive])}")
@@ -148,6 +161,8 @@ defmodule SymphonyElixir.SSHTest do
     end
   end
 
+  if @fake_ssh_skip, do: @tag(skip: @fake_ssh_skip)
+
   test "start_port/3 supports binary output without line mode" do
     test_root = Path.join(System.tmp_dir!(), "symphony-ssh-port-test-#{System.unique_integer([:positive])}")
     trace_file = Path.join(test_root, "ssh.trace")
@@ -178,6 +193,8 @@ defmodule SymphonyElixir.SSHTest do
     assert trace =~ "bash -lc"
     refute trace =~ " -F "
   end
+
+  if @fake_ssh_skip, do: @tag(skip: @fake_ssh_skip)
 
   test "start_port/3 supports line mode" do
     test_root = Path.join(System.tmp_dir!(), "symphony-ssh-line-port-test-#{System.unique_integer([:positive])}")
@@ -219,7 +236,7 @@ defmodule SymphonyElixir.SSHTest do
     File.write!(fake_ssh, fake_ssh_script(trace_file, script))
 
     File.chmod!(fake_ssh, 0o755)
-    System.put_env("PATH", fake_bin_dir <> path_separator() <> (System.get_env("PATH") || ""))
+    System.put_env("PATH", fake_bin_dir <> SymphonyElixir.TestSupport.path_separator() <> (System.get_env("PATH") || ""))
   end
 
   defp fake_ssh_script(trace_file, nil) do
@@ -251,7 +268,6 @@ defmodule SymphonyElixir.SSHTest do
     end
   end
 
-  defp path_separator, do: if(windows?(), do: ";", else: ":")
   defp windows?, do: match?({:win32, _}, :os.type())
 
   defp wait_for_trace!(trace_file, attempts \\ 20)

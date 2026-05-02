@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.AppServerTest do
   use SymphonyElixir.TestSupport
 
+  @symlink_skip_reason SymphonyElixir.TestSupport.symlink_skip_reason()
+
   test "app server rejects the workspace root and paths outside workspace root" do
     test_root =
       Path.join(
@@ -38,6 +40,8 @@ defmodule SymphonyElixir.AppServerTest do
       File.rm_rf(test_root)
     end
   end
+
+  if @symlink_skip_reason, do: @tag(skip: @symlink_skip_reason)
 
   test "app server rejects symlink escape cwd paths under the workspace root" do
     test_root =
@@ -101,37 +105,17 @@ defmodule SymphonyElixir.AppServerTest do
       System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
-      File.write!(codex_binary, """
-      #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-supported-turn-policies.trace}"
-      count=0
-
-      while IFS= read -r line; do
-        count=$((count + 1))
-        printf 'JSON:%s\\n' "$line" >> "$trace_file"
-
-        case "$count" in
-          1)
-            printf '%s\\n' '{"id":1,"result":{}}'
-            ;;
-          2)
-            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-1001"}}}'
-            ;;
-          3)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-1001"}}}'
-            ;;
-          4)
-            printf '%s\\n' '{"method":"turn/completed"}'
-            exit 0
-            ;;
-          *)
-            exit 0
-            ;;
-        esac
-      done
-      """)
-
-      File.chmod!(codex_binary, 0o755)
+      write_fake_codex!(
+        codex_binary,
+        [
+          ~s({"id":1,"result":{}}),
+          ~s({"id":2,"result":{"thread":{"id":"thread-1001"}}}),
+          ~s({"id":3,"result":{"turn":{"id":"turn-1001"}}}),
+          %{stdout: ~s({"method":"turn/completed"}), exit: 0}
+        ],
+        trace_env: "SYMP_TEST_CODEx_TRACE",
+        default_trace: "/tmp/codex-supported-turn-policies.trace"
+      )
 
       issue = %Issue{
         id: "issue-supported-turn-policies",
@@ -208,35 +192,17 @@ defmodule SymphonyElixir.AppServerTest do
       System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
-      File.write!(codex_binary, """
-      #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-input.trace}"
-      count=0
-      while IFS= read -r line; do
-        count=$((count + 1))
-        printf 'JSON:%s\\n' \"$line\" >> \"$trace_file\"
-
-        case \"$count\" in
-          1)
-            printf '%s\\n' '{\"id\":1,\"result\":{}}'
-            ;;
-          2)
-            printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-88\"}}}'
-            ;;
-          3)
-            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-88\"}}}'
-            ;;
-          4)
-            printf '%s\\n' '{\"method\":\"turn/input_required\",\"id\":\"resp-1\",\"params\":{\"requiresInput\":true,\"reason\":\"blocked\"}}'
-            ;;
-          *)
-            exit 0
-            ;;
-        esac
-      done
-      """)
-
-      File.chmod!(codex_binary, 0o755)
+      write_fake_codex!(
+        codex_binary,
+        [
+          ~s({"id":1,"result":{}}),
+          ~s({"id":2,"result":{"thread":{"id":"thread-88"}}}),
+          ~s({"id":3,"result":{"turn":{"id":"turn-88"}}}),
+          ~s({"method":"turn/input_required","id":"resp-1","params":{"requiresInput":true,"reason":"blocked"}})
+        ],
+        trace_env: "SYMP_TEST_CODEx_TRACE",
+        default_trace: "/tmp/codex-input.trace"
+      )
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
@@ -275,31 +241,17 @@ defmodule SymphonyElixir.AppServerTest do
       codex_binary = Path.join(test_root, "fake-codex")
       File.mkdir_p!(workspace)
 
-      File.write!(codex_binary, """
-      #!/bin/sh
-      count=0
-      while IFS= read -r _line; do
-        count=$((count + 1))
-
-        case "$count" in
-          1)
-            printf '%s\\n' '{"id":1,"result":{}}'
-            ;;
-          2)
-            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-89"}}}'
-            ;;
-          3)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-89"}}}'
-            printf '%s\\n' '{"id":99,"method":"item/commandExecution/requestApproval","params":{"command":"gh pr view","cwd":"/tmp","reason":"need approval"}}'
-            ;;
-          *)
-            sleep 1
-            ;;
-        esac
-      done
-      """)
-
-      File.chmod!(codex_binary, 0o755)
+      write_fake_codex!(codex_binary, [
+        ~s({"id":1,"result":{}}),
+        ~s({"id":2,"result":{"thread":{"id":"thread-89"}}}),
+        %{
+          stdout: [
+            ~s({"id":3,"result":{"turn":{"id":"turn-89"}}}),
+            ~s({"id":99,"method":"item/commandExecution/requestApproval","params":{"command":"gh pr view","cwd":"/tmp","reason":"need approval"}})
+          ]
+        },
+        %{hold: true}
+      ])
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
@@ -350,39 +302,23 @@ defmodule SymphonyElixir.AppServerTest do
       System.put_env("SYMP_TEST_CODex_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
-      File.write!(codex_binary, """
-      #!/bin/sh
-      trace_file="${SYMP_TEST_CODex_TRACE:-/tmp/codex-auto-approve.trace}"
-      count=0
-      while IFS= read -r line; do
-        count=$((count + 1))
-        printf 'JSON:%s\\n' \"$line\" >> \"$trace_file\"
-
-        case \"$count\" in
-          1)
-            printf '%s\\n' '{\"id\":1,\"result\":{}}'
-            ;;
-          2)
-            ;;
-          3)
-            printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-89\"}}}'
-            ;;
-          4)
-            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-89\"}}}'
-            printf '%s\\n' '{\"id\":99,\"method\":\"item/commandExecution/requestApproval\",\"params\":{\"command\":\"gh pr view\",\"cwd\":\"/tmp\",\"reason\":\"need approval\"}}'
-            ;;
-          5)
-            printf '%s\\n' '{\"method\":\"turn/completed\"}'
-            exit 0
-            ;;
-          *)
-            exit 0
-            ;;
-        esac
-      done
-      """)
-
-      File.chmod!(codex_binary, 0o755)
+      write_fake_codex!(
+        codex_binary,
+        [
+          ~s({"id":1,"result":{}}),
+          %{},
+          ~s({"id":2,"result":{"thread":{"id":"thread-89"}}}),
+          %{
+            stdout: [
+              ~s({"id":3,"result":{"turn":{"id":"turn-89"}}}),
+              ~s({"id":99,"method":"item/commandExecution/requestApproval","params":{"command":"gh pr view","cwd":"/tmp","reason":"need approval"}})
+            ]
+          },
+          %{stdout: ~s({"method":"turn/completed"}), exit: 0}
+        ],
+        trace_env: "SYMP_TEST_CODex_TRACE",
+        default_trace: "/tmp/codex-auto-approve.trace"
+      )
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
@@ -487,39 +423,46 @@ defmodule SymphonyElixir.AppServerTest do
       System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
-      File.write!(codex_binary, """
-      #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-tool-user-input-auto-approve.trace}"
-      count=0
-      while IFS= read -r line; do
-        count=$((count + 1))
-        printf 'JSON:%s\\n' \"$line\" >> \"$trace_file\"
-
-        case \"$count\" in
-          1)
-            printf '%s\\n' '{\"id\":1,\"result\":{}}'
-            ;;
-          2)
-            ;;
-          3)
-            printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-717\"}}}'
-            ;;
-          4)
-            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-717\"}}}'
-            printf '%s\\n' '{\"id\":110,\"method\":\"item/tool/requestUserInput\",\"params\":{\"itemId\":\"call-717\",\"questions\":[{\"header\":\"Approve app tool call?\",\"id\":\"mcp_tool_call_approval_call-717\",\"isOther\":false,\"isSecret\":false,\"options\":[{\"description\":\"Run the tool and continue.\",\"label\":\"Approve Once\"},{\"description\":\"Run the tool and remember this choice for this session.\",\"label\":\"Approve this Session\"},{\"description\":\"Decline this tool call and continue.\",\"label\":\"Deny\"},{\"description\":\"Cancel this tool call\",\"label\":\"Cancel\"}],\"question\":\"The linear MCP server wants to run the tool \\\"Save issue\\\", which may modify or delete data. Allow this action?\"}],\"threadId\":\"thread-717\",\"turnId\":\"turn-717\"}}'
-            ;;
-          5)
-            printf '%s\\n' '{\"method\":\"turn/completed\"}'
-            exit 0
-            ;;
-          *)
-            exit 0
-            ;;
-        esac
-      done
-      """)
-
-      File.chmod!(codex_binary, 0o755)
+      write_fake_codex!(
+        codex_binary,
+        [
+          ~s({"id":1,"result":{}}),
+          %{},
+          ~s({"id":2,"result":{"thread":{"id":"thread-717"}}}),
+          %{
+            stdout: [
+              ~s({"id":3,"result":{"turn":{"id":"turn-717"}}}),
+              Jason.encode!(%{
+                id: 110,
+                method: "item/tool/requestUserInput",
+                params: %{
+                  itemId: "call-717",
+                  questions: [
+                    %{
+                      header: "Approve app tool call?",
+                      id: "mcp_tool_call_approval_call-717",
+                      isOther: false,
+                      isSecret: false,
+                      options: [
+                        %{description: "Run the tool and continue.", label: "Approve Once"},
+                        %{description: "Run the tool and remember this choice for this session.", label: "Approve this Session"},
+                        %{description: "Decline this tool call and continue.", label: "Deny"},
+                        %{description: "Cancel this tool call", label: "Cancel"}
+                      ],
+                      question: "The linear MCP server wants to run the tool \"Save issue\", which may modify or delete data. Allow this action?"
+                    }
+                  ],
+                  threadId: "thread-717",
+                  turnId: "turn-717"
+                }
+              })
+            ]
+          },
+          %{stdout: ~s({"method":"turn/completed"}), exit: 0}
+        ],
+        trace_env: "SYMP_TEST_CODEx_TRACE",
+        default_trace: "/tmp/codex-tool-user-input-auto-approve.trace"
+      )
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
@@ -574,37 +517,18 @@ defmodule SymphonyElixir.AppServerTest do
       codex_binary = Path.join(test_root, "fake-codex")
       File.mkdir_p!(workspace)
 
-      File.write!(codex_binary, """
-      #!/bin/sh
-      count=0
-      while IFS= read -r _line; do
-        count=$((count + 1))
-
-        case "$count" in
-          1)
-            printf '%s\\n' '{"id":1,"result":{}}'
-            ;;
-          2)
-            ;;
-          3)
-            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-718"}}}'
-            ;;
-          4)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-718"}}}'
-            printf '%s\\n' '{"id":111,"method":"item/tool/requestUserInput","params":{"itemId":"call-718","questions":[{"header":"Provide context","id":"freeform-718","isOther":false,"isSecret":false,"options":null,"question":"What comment should I post back to the issue?"}],"threadId":"thread-718","turnId":"turn-718"}}'
-            ;;
-          5)
-            printf '%s\\n' '{"method":"turn/completed"}'
-            exit 0
-            ;;
-          *)
-            exit 0
-            ;;
-        esac
-      done
-      """)
-
-      File.chmod!(codex_binary, 0o755)
+      write_fake_codex!(codex_binary, [
+        ~s({"id":1,"result":{}}),
+        %{},
+        ~s({"id":2,"result":{"thread":{"id":"thread-718"}}}),
+        %{
+          stdout: [
+            ~s({"id":3,"result":{"turn":{"id":"turn-718"}}}),
+            ~s({"id":111,"method":"item/tool/requestUserInput","params":{"itemId":"call-718","questions":[{"header":"Provide context","id":"freeform-718","isOther":false,"isSecret":false,"options":null,"question":"What comment should I post back to the issue?"}],"threadId":"thread-718","turnId":"turn-718"}})
+          ]
+        },
+        %{stdout: ~s({"method":"turn/completed"}), exit: 0}
+      ])
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
@@ -662,39 +586,23 @@ defmodule SymphonyElixir.AppServerTest do
       System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
-      File.write!(codex_binary, """
-      #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-tool-user-input-options.trace}"
-      count=0
-      while IFS= read -r line; do
-        count=$((count + 1))
-        printf 'JSON:%s\\n' \"$line\" >> \"$trace_file\"
-
-        case \"$count\" in
-          1)
-            printf '%s\\n' '{\"id\":1,\"result\":{}}'
-            ;;
-          2)
-            ;;
-          3)
-            printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-719\"}}}'
-            ;;
-          4)
-            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-719\"}}}'
-            printf '%s\\n' '{\"id\":112,\"method\":\"item/tool/requestUserInput\",\"params\":{\"itemId\":\"call-719\",\"questions\":[{\"header\":\"Choose an action\",\"id\":\"options-719\",\"isOther\":false,\"isSecret\":false,\"options\":[{\"description\":\"Use the default behavior.\",\"label\":\"Use default\"},{\"description\":\"Skip this step.\",\"label\":\"Skip\"}],\"question\":\"How should I proceed?\"}],\"threadId\":\"thread-719\",\"turnId\":\"turn-719\"}}'
-            ;;
-          5)
-            printf '%s\\n' '{\"method\":\"turn/completed\"}'
-            exit 0
-            ;;
-          *)
-            exit 0
-            ;;
-        esac
-      done
-      """)
-
-      File.chmod!(codex_binary, 0o755)
+      write_fake_codex!(
+        codex_binary,
+        [
+          ~s({"id":1,"result":{}}),
+          %{},
+          ~s({"id":2,"result":{"thread":{"id":"thread-719"}}}),
+          %{
+            stdout: [
+              ~s({"id":3,"result":{"turn":{"id":"turn-719"}}}),
+              ~s({"id":112,"method":"item/tool/requestUserInput","params":{"itemId":"call-719","questions":[{"header":"Choose an action","id":"options-719","isOther":false,"isSecret":false,"options":[{"description":"Use the default behavior.","label":"Use default"},{"description":"Skip this step.","label":"Skip"}],"question":"How should I proceed?"}],"threadId":"thread-719","turnId":"turn-719"}})
+            ]
+          },
+          %{stdout: ~s({"method":"turn/completed"}), exit: 0}
+        ],
+        trace_env: "SYMP_TEST_CODEx_TRACE",
+        default_trace: "/tmp/codex-tool-user-input-options.trace"
+      )
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
@@ -738,19 +646,11 @@ defmodule SymphonyElixir.AppServerTest do
   end
 
   test "app server sends manager steer messages to the active turn with expected turn id" do
-    if SymphonyElixir.LocalShell.windows?() do
-      :ok
-    else
-      do_test_app_server_sends_manager_steer_messages_to_the_active_turn()
-    end
+    do_test_app_server_sends_manager_steer_messages_to_the_active_turn()
   end
 
   test "app server records manager steer rejection responses from codex" do
-    if SymphonyElixir.LocalShell.windows?() do
-      :ok
-    else
-      do_test_app_server_records_manager_steer_rejection_response()
-    end
+    do_test_app_server_records_manager_steer_rejection_response()
   end
 
   defp do_test_app_server_records_manager_steer_rejection_response do
@@ -776,38 +676,17 @@ defmodule SymphonyElixir.AppServerTest do
 
       File.mkdir_p!(workspace)
 
-      File.write!(codex_binary, """
-      #!/bin/sh
-      count=0
-      while IFS= read -r line; do
-        count=$((count + 1))
-
-        case "$count" in
-          1)
-            printf '%s\\n' '{"id":1,"result":{}}'
-            ;;
-          2)
-            ;;
-          3)
-            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-721"}}}'
-            ;;
-          4)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-721"}}}'
-            ;;
-          5)
-            steer_id=$(printf '%s' "$line" | sed -n 's/.*"id":\\([0-9][0-9]*\\).*/\\1/p')
-            printf '{"id":%s,"error":{"code":"turn_not_running","message":"turn stopped"}}\\n' "$steer_id"
-            printf '%s\\n' '{"method":"turn/completed"}'
-            exit 0
-            ;;
-          *)
-            exit 0
-            ;;
-        esac
-      done
-      """)
-
-      File.chmod!(codex_binary, 0o755)
+      write_fake_codex!(codex_binary, [
+        ~s({"id":1,"result":{}}),
+        %{},
+        ~s({"id":2,"result":{"thread":{"id":"thread-721"}}}),
+        ~s({"id":3,"result":{"turn":{"id":"turn-721"}}}),
+        %{
+          reply_error: %{"code" => "turn_not_running", "message" => "turn stopped"},
+          stdout: ~s({"method":"turn/completed"}),
+          exit: 0
+        }
+      ])
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
@@ -884,40 +763,18 @@ defmodule SymphonyElixir.AppServerTest do
       System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
-      File.write!(codex_binary, """
-      #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-steer.trace}"
-      count=0
-      while IFS= read -r line; do
-        count=$((count + 1))
-        printf 'JSON:%s\\n' "$line" >> "$trace_file"
-
-        case "$count" in
-          1)
-            printf '%s\\n' '{"id":1,"result":{}}'
-            ;;
-          2)
-            ;;
-          3)
-            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-720"}}}'
-            ;;
-          4)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-720"}}}'
-            ;;
-          5)
-            steer_id=$(printf '%s' "$line" | sed -n 's/.*"id":\\([0-9][0-9]*\\).*/\\1/p')
-            printf '{"id":%s,"result":{"turnId":"turn-720"}}\\n' "$steer_id"
-            printf '%s\\n' '{"method":"turn/completed"}'
-            exit 0
-            ;;
-          *)
-            exit 0
-            ;;
-        esac
-      done
-      """)
-
-      File.chmod!(codex_binary, 0o755)
+      write_fake_codex!(
+        codex_binary,
+        [
+          ~s({"id":1,"result":{}}),
+          %{},
+          ~s({"id":2,"result":{"thread":{"id":"thread-720"}}}),
+          ~s({"id":3,"result":{"turn":{"id":"turn-720"}}}),
+          %{reply_result: %{"turnId" => "turn-720"}, stdout: ~s({"method":"turn/completed"}), exit: 0}
+        ],
+        trace_env: "SYMP_TEST_CODEx_TRACE",
+        default_trace: "/tmp/codex-steer.trace"
+      )
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
@@ -1017,39 +874,23 @@ defmodule SymphonyElixir.AppServerTest do
       System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
-      File.write!(codex_binary, """
-      #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-tool-call.trace}"
-      count=0
-      while IFS= read -r line; do
-        count=$((count + 1))
-        printf 'JSON:%s\\n' \"$line\" >> \"$trace_file\"
-
-        case \"$count\" in
-          1)
-            printf '%s\\n' '{\"id\":1,\"result\":{}}'
-            ;;
-          2)
-            ;;
-          3)
-            printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-90\"}}}'
-            ;;
-          4)
-            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-90\"}}}'
-            printf '%s\\n' '{\"id\":101,\"method\":\"item/tool/call\",\"params\":{\"tool\":\"some_tool\",\"callId\":\"call-90\",\"threadId\":\"thread-90\",\"turnId\":\"turn-90\",\"arguments\":{}}}'
-            ;;
-          5)
-            printf '%s\\n' '{\"method\":\"turn/completed\"}'
-            exit 0
-            ;;
-          *)
-            exit 0
-            ;;
-        esac
-      done
-      """)
-
-      File.chmod!(codex_binary, 0o755)
+      write_fake_codex!(
+        codex_binary,
+        [
+          ~s({"id":1,"result":{}}),
+          %{},
+          ~s({"id":2,"result":{"thread":{"id":"thread-90"}}}),
+          %{
+            stdout: [
+              ~s({"id":3,"result":{"turn":{"id":"turn-90"}}}),
+              ~s({"id":101,"method":"item/tool/call","params":{"tool":"some_tool","callId":"call-90","threadId":"thread-90","turnId":"turn-90","arguments":{}}})
+            ]
+          },
+          %{stdout: ~s({"method":"turn/completed"}), exit: 0}
+        ],
+        trace_env: "SYMP_TEST_CODEx_TRACE",
+        default_trace: "/tmp/codex-tool-call.trace"
+      )
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
@@ -1118,39 +959,23 @@ defmodule SymphonyElixir.AppServerTest do
       System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
-      File.write!(codex_binary, """
-      #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-supported-tool-call.trace}"
-      count=0
-      while IFS= read -r line; do
-        count=$((count + 1))
-        printf 'JSON:%s\\n' \"$line\" >> \"$trace_file\"
-
-        case \"$count\" in
-          1)
-            printf '%s\\n' '{\"id\":1,\"result\":{}}'
-            ;;
-          2)
-            ;;
-          3)
-            printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-90a\"}}}'
-            ;;
-          4)
-            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-90a\"}}}'
-            printf '%s\\n' '{\"id\":102,\"method\":\"item/tool/call\",\"params\":{\"name\":\"linear_graphql\",\"callId\":\"call-90a\",\"threadId\":\"thread-90a\",\"turnId\":\"turn-90a\",\"arguments\":{\"query\":\"query Viewer { viewer { id } }\",\"variables\":{\"includeTeams\":false}}}}'
-            ;;
-          5)
-            printf '%s\\n' '{\"method\":\"turn/completed\"}'
-            exit 0
-            ;;
-          *)
-            exit 0
-            ;;
-        esac
-      done
-      """)
-
-      File.chmod!(codex_binary, 0o755)
+      write_fake_codex!(
+        codex_binary,
+        [
+          ~s({"id":1,"result":{}}),
+          %{},
+          ~s({"id":2,"result":{"thread":{"id":"thread-90a"}}}),
+          %{
+            stdout: [
+              ~s({"id":3,"result":{"turn":{"id":"turn-90a"}}}),
+              ~s({"id":102,"method":"item/tool/call","params":{"name":"linear_graphql","callId":"call-90a","threadId":"thread-90a","turnId":"turn-90a","arguments":{"query":"query Viewer { viewer { id } }","variables":{"includeTeams":false}}}})
+            ]
+          },
+          %{stdout: ~s({"method":"turn/completed"}), exit: 0}
+        ],
+        trace_env: "SYMP_TEST_CODEx_TRACE",
+        default_trace: "/tmp/codex-supported-tool-call.trace"
+      )
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
@@ -1240,39 +1065,23 @@ defmodule SymphonyElixir.AppServerTest do
       System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
-      File.write!(codex_binary, """
-      #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-tool-call-failed.trace}"
-      count=0
-      while IFS= read -r line; do
-        count=$((count + 1))
-        printf 'JSON:%s\\n' \"$line\" >> \"$trace_file\"
-
-        case \"$count\" in
-          1)
-            printf '%s\\n' '{\"id\":1,\"result\":{}}'
-            ;;
-          2)
-            ;;
-          3)
-            printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-90b\"}}}'
-            ;;
-          4)
-            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-90b\"}}}'
-            printf '%s\\n' '{\"id\":103,\"method\":\"item/tool/call\",\"params\":{\"tool\":\"linear_graphql\",\"callId\":\"call-90b\",\"threadId\":\"thread-90b\",\"turnId\":\"turn-90b\",\"arguments\":{\"query\":\"query Viewer { viewer { id } }\"}}}'
-            ;;
-          5)
-            printf '%s\\n' '{\"method\":\"turn/completed\"}'
-            exit 0
-            ;;
-          *)
-            exit 0
-            ;;
-        esac
-      done
-      """)
-
-      File.chmod!(codex_binary, 0o755)
+      write_fake_codex!(
+        codex_binary,
+        [
+          ~s({"id":1,"result":{}}),
+          %{},
+          ~s({"id":2,"result":{"thread":{"id":"thread-90b"}}}),
+          %{
+            stdout: [
+              ~s({"id":3,"result":{"turn":{"id":"turn-90b"}}}),
+              ~s({"id":103,"method":"item/tool/call","params":{"tool":"linear_graphql","callId":"call-90b","threadId":"thread-90b","turnId":"turn-90b","arguments":{"query":"query Viewer { viewer { id } }"}}})
+            ]
+          },
+          %{stdout: ~s({"method":"turn/completed"}), exit: 0}
+        ],
+        trace_env: "SYMP_TEST_CODEx_TRACE",
+        default_trace: "/tmp/codex-tool-call-failed.trace"
+      )
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
@@ -1334,35 +1143,12 @@ defmodule SymphonyElixir.AppServerTest do
       codex_binary = Path.join(test_root, "fake-codex")
       File.mkdir_p!(workspace)
 
-      File.write!(codex_binary, """
-      #!/bin/sh
-      count=0
-      while IFS= read -r line; do
-        count=$((count + 1))
-
-        case "$count" in
-          1)
-            padding=$(printf '%*s' 1100000 '' | tr ' ' a)
-            printf '{"id":1,"result":{},"padding":"%s"}\\n' "$padding"
-            ;;
-          2)
-            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-91"}}}'
-            ;;
-          3)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-91"}}}'
-            ;;
-          4)
-            printf '%s\\n' '{"method":"turn/completed"}'
-            exit 0
-            ;;
-          *)
-            exit 0
-            ;;
-        esac
-      done
-      """)
-
-      File.chmod!(codex_binary, 0o755)
+      write_fake_codex!(codex_binary, [
+        ~s({"id":1,"result":{},"padding":"#{String.duplicate("a", 1_100_000)}"}),
+        ~s({"id":2,"result":{"thread":{"id":"thread-91"}}}),
+        ~s({"id":3,"result":{"turn":{"id":"turn-91"}}}),
+        %{stdout: ~s({"method":"turn/completed"}), exit: 0}
+      ])
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
@@ -1398,35 +1184,12 @@ defmodule SymphonyElixir.AppServerTest do
       codex_binary = Path.join(test_root, "fake-codex")
       File.mkdir_p!(workspace)
 
-      File.write!(codex_binary, """
-      #!/bin/sh
-      count=0
-      while IFS= read -r line; do
-        count=$((count + 1))
-
-        case "$count" in
-          1)
-            printf '%s\\n' '{"id":1,"result":{}}'
-            ;;
-          2)
-            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-92"}}}'
-            ;;
-          3)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-92"}}}'
-            ;;
-          4)
-            printf '%s\\n' 'warning: this is stderr noise' >&2
-            printf '%s\\n' '{"method":"turn/completed"}'
-            exit 0
-            ;;
-          *)
-            exit 0
-            ;;
-        esac
-      done
-      """)
-
-      File.chmod!(codex_binary, 0o755)
+      write_fake_codex!(codex_binary, [
+        ~s({"id":1,"result":{}}),
+        ~s({"id":2,"result":{"thread":{"id":"thread-92"}}}),
+        ~s({"id":3,"result":{"turn":{"id":"turn-92"}}}),
+        %{stderr: "warning: this is stderr noise", stdout: ~s({"method":"turn/completed"}), exit: 0}
+      ])
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
@@ -1514,35 +1277,12 @@ defmodule SymphonyElixir.AppServerTest do
       codex_binary = Path.join(test_root, "fake-codex")
       File.mkdir_p!(workspace)
 
-      File.write!(codex_binary, """
-      #!/bin/sh
-      count=0
-      while IFS= read -r line; do
-        count=$((count + 1))
-
-        case "$count" in
-          1)
-            printf '%s\\n' '{"id":1,"result":{}}'
-            ;;
-          2)
-            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-93"}}}'
-            ;;
-          3)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-93"}}}'
-            ;;
-          4)
-            printf '%s\\n' '{"method":"turn/completed"'
-            printf '%s\\n' '{"method":"turn/completed"}'
-            exit 0
-            ;;
-          *)
-            exit 0
-            ;;
-        esac
-      done
-      """)
-
-      File.chmod!(codex_binary, 0o755)
+      write_fake_codex!(codex_binary, [
+        ~s({"id":1,"result":{}}),
+        ~s({"id":2,"result":{"thread":{"id":"thread-93"}}}),
+        ~s({"id":3,"result":{"turn":{"id":"turn-93"}}}),
+        %{stdout: [~s({"method":"turn/completed"), ~s({"method":"turn/completed"})], exit: 0}
+      ])
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
@@ -1572,6 +1312,10 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  if SymphonyElixir.TestSupport.windows?() do
+    @tag skip: "Remote SSH app-server startup shells through real ssh.exe; this Unix fake exercises argv construction only."
+  end
+
   test "app server launches over ssh for remote workers" do
     test_root =
       Path.join(
@@ -1594,7 +1338,7 @@ defmodule SymphonyElixir.AppServerTest do
 
       File.mkdir_p!(test_root)
       System.put_env("SYMP_TEST_SSH_TRACE", trace_file)
-      System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+      System.put_env("PATH", test_root <> SymphonyElixir.TestSupport.path_separator() <> (previous_path || ""))
 
       File.write!(fake_ssh, """
       #!/bin/sh
