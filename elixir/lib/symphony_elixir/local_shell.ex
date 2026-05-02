@@ -170,15 +170,23 @@ defmodule SymphonyElixir.LocalShell do
         line = IO.read(file, :line)
         File.close(file)
 
-        case line && String.trim_leading(line) do
-          "#!" <> _ = shebang -> {:ok, String.trim_trailing(shebang)}
-          _ -> :error
+        case line do
+          line when is_binary(line) ->
+            line
+            |> String.trim_leading()
+            |> windows_shebang_from_line()
+
+          _ ->
+            :error
         end
 
       {:error, reason} ->
         {:error, reason}
     end
   end
+
+  defp windows_shebang_from_line("#!" <> _ = shebang), do: {:ok, String.trim_trailing(shebang)}
+  defp windows_shebang_from_line(_line), do: :error
 
   defp windows_shell_args(command) do
     case find_executable(["pwsh", "powershell"]) do
