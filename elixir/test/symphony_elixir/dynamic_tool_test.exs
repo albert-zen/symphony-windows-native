@@ -1690,6 +1690,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
     #### Test Plan
 
+    - [ ] `make -C elixir all` not run locally because this test simulates targeted review-readiness validation.
     - [x] `mix test test/symphony_elixir/dynamic_tool_test.exs` passed locally.
     """
   end

@@ -3,6 +3,18 @@ defmodule SymphonyElixir.Codex.ValidationEvidenceTest do
 
   alias SymphonyElixir.Codex.ValidationEvidence
 
+  test "requires a Test Plan section" do
+    body = """
+    #### Summary
+
+    - [x] `mix test test/symphony_elixir/validation_evidence_test.exs` passed locally.
+    """
+
+    assert ValidationEvidence.lint_pr_body(body) == [
+             "PR body must include a Test Plan section with local validation evidence."
+           ]
+  end
+
   test "reports skipped heavy validation without narrower local evidence" do
     body = """
     #### Test Plan
@@ -16,15 +28,145 @@ defmodule SymphonyElixir.Codex.ValidationEvidenceTest do
            ]
   end
 
+  test "reports skipped heavy validation without a reason" do
+    body = """
+    #### Test Plan
+
+    - [ ] `make -C elixir all`
+    - [x] `mix test test/symphony_elixir/validation_evidence_test.exs` passed locally.
+    """
+
+    assert ValidationEvidence.lint_pr_body(body) == [
+             "Test Plan must explain why the heavy local validation check was not run."
+           ]
+  end
+
+  test "accepts justified skipped heavy validation with narrower local evidence" do
+    body = """
+    #### Test Plan
+
+    - [ ] `make -C elixir all` not run locally because the full gate is unavailable.
+    - [x] `mix test test/symphony_elixir/validation_evidence_test.exs` passed locally.
+    """
+
+    assert ValidationEvidence.lint_pr_body(body) == []
+  end
+
   test "rejects checked commands that only delegate validation to CI" do
     body = """
     #### Test Plan
 
+    - [ ] `make -C elixir all` not run locally because this test checks CI-only evidence rejection.
     - [x] `ruff` in CI.
     """
 
     assert ValidationEvidence.lint_pr_body(body) == [
-             "Test Plan must include at least one checked local validation command or targeted check."
+             "Test Plan must include at least one checked local validation command or targeted check.",
+             "Test Plan must name narrower local validation when the heavy check is skipped."
+           ]
+  end
+
+  test "accepts recognized CI inspection commands when run locally" do
+    body = """
+    #### Test Plan
+
+    - [ ] `make -C elixir all` not run locally because only CI failure inspection was needed.
+    - [x] `gh run view 25243442043 --log-failed` used locally to inspect CI failure evidence.
+    """
+
+    assert ValidationEvidence.lint_pr_body(body) == []
+  end
+
+  test "rejects checked backticked prose that is not a validation command" do
+    body = """
+    #### Test Plan
+
+    - [ ] `make -C elixir all` not run locally because this test checks non-command evidence rejection.
+    - [x] `README.md passed locally`
+    """
+
+    assert ValidationEvidence.lint_pr_body(body) == [
+             "Test Plan must include at least one checked local validation command or targeted check.",
+             "Test Plan must name narrower local validation when the heavy check is skipped."
+           ]
+  end
+
+  test "accepts unbackticked targeted validation commands" do
+    body = """
+    #### Test Plan
+
+    - [ ] `make -C elixir all` not run locally because this change only touched validation evidence parsing.
+    - [x] mix test test/symphony_elixir/validation_evidence_test.exs passed locally.
+    """
+
+    assert ValidationEvidence.lint_pr_body(body) == []
+  end
+
+  test "rejects targeted local evidence without heavy validation or skip justification" do
+    body = """
+    #### Test Plan
+
+    - [x] `mix test test/symphony_elixir/validation_evidence_test.exs` passed locally.
+    """
+
+    assert ValidationEvidence.lint_pr_body(body) == [
+             "Test Plan must explain why the heavy local validation check was not run."
+           ]
+  end
+
+  test "rejects validation commands reported only from CI" do
+    body = """
+    #### Test Plan
+
+    - [ ] `make -C elixir all` not run locally because CI reported the broader gate.
+    - [x] `mix test test/symphony_elixir/validation_evidence_test.exs` passed in CI.
+    """
+
+    assert ValidationEvidence.lint_pr_body(body) == [
+             "Test Plan must include at least one checked local validation command or targeted check.",
+             "Test Plan must name narrower local validation when the heavy check is skipped."
+           ]
+  end
+
+  test "rejects validation commands where CI is the actor" do
+    body = """
+    #### Test Plan
+
+    - [ ] `make -C elixir all` not run locally because GitHub Actions reported the broader gate.
+    - [x] CI ran `mix test test/symphony_elixir/validation_evidence_test.exs`.
+    """
+
+    assert ValidationEvidence.lint_pr_body(body) == [
+             "Test Plan must include at least one checked local validation command or targeted check.",
+             "Test Plan must name narrower local validation when the heavy check is skipped."
+           ]
+  end
+
+  test "rejects validation commands under CI status labels" do
+    body = """
+    #### Test Plan
+
+    - [ ] `make -C elixir all` not run locally because CI reported the broader gate.
+    - [x] CI: `mix test test/symphony_elixir/validation_evidence_test.exs` passed.
+    """
+
+    assert ValidationEvidence.lint_pr_body(body) == [
+             "Test Plan must include at least one checked local validation command or targeted check.",
+             "Test Plan must name narrower local validation when the heavy check is skipped."
+           ]
+  end
+
+  test "rejects validation commands where CI uses another actor verb" do
+    body = """
+    #### Test Plan
+
+    - [ ] `make -C elixir all` not run locally because CI reported the broader gate.
+    - [x] CI executed `mix test test/symphony_elixir/validation_evidence_test.exs` successfully.
+    """
+
+    assert ValidationEvidence.lint_pr_body(body) == [
+             "Test Plan must include at least one checked local validation command or targeted check.",
+             "Test Plan must name narrower local validation when the heavy check is skipped."
            ]
   end
 
@@ -32,6 +174,7 @@ defmodule SymphonyElixir.Codex.ValidationEvidenceTest do
     body = """
     #### Test Plan
 
+    - [x] `make -C elixir all` passed locally.
     - [x] `mix test test/symphony_elixir/validation_evidence_test.exs` passed locally.
 
     #### Notes

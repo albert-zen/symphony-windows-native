@@ -6,9 +6,11 @@ defmodule SymphonyElixir.Codex.ValidationEvidence do
   @checked_checkbox_regex ~r/^\s*[-*]\s+\[[xX]\]\s+(.+)$/m
   @unchecked_checkbox_regex ~r/^\s*[-*]\s+\[ \]\s+(.+)$/m
   @heavy_check_regex ~r/(^|[^a-z0-9_-])(make\s+(-C\s+elixir\s+)?all|make-all)([^a-z0-9_-]|$)/i
+  @ci_only_regex ~r/(?:(?:^\s*(?:ci|github actions?)\b\s*(?::|-|[a-z]+\b))|\b(?:in|by|via|on)\s+(?:ci|github actions?)\b)/i
   @skip_words ~w(skip skipped not cannot can't unable unavailable pending later)
   @why_regex ~r/\b(because|due to|cannot|can't|unable|unavailable|not run|skipped|skip)\b/i
-  @command_regex ~r/(`[^`]+`|\bmix\s+\S+|\bmake(\.cmd)?\s+\S+|\bmake\s+(-C\s+\S+\s+)?\S+|\bgh\s+\S+|\bnpm\s+\S+|\bpnpm\s+\S+|\byarn\s+\S+)/i
+  @inline_code_regex ~r/`([^`]+)`/
+  @validation_command_regex ~r/^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*(?:(?:mix\s+(?:test|format|pr_body\.check|specs\.check|symphony\.preflight\.windows)\b)|(?:make(?:\.cmd)?(?:\s+-C\s+\S+)?\s+(?:all|test|windows-native-test|diff-check|validate-pr-description|[\w.-]*test[\w.-]*|[\w.-]*check[\w.-]*))|(?:git\s+diff\s+--check\b)|(?:(?:npm|pnpm|yarn)\s+(?:test|lint|format|check|typecheck|type-check)\b)|(?:gh\s+(?:pr\s+checks|run\s+view)\b))/i
 
   @spec lint_pr_body(String.t()) :: [String.t()]
   def lint_pr_body(body) when is_binary(body) do
@@ -36,10 +38,9 @@ defmodule SymphonyElixir.Codex.ValidationEvidence do
   defp require_heavy_skip_justification(errors, section, checked_items, unchecked_items, local_evidence_items) do
     heavy_checked? = Enum.any?(checked_items, &heavy_check?/1)
     heavy_skip_items = heavy_skip_items(section, unchecked_items)
-    heavy_skipped? = heavy_skip_items != []
 
     cond do
-      heavy_checked? or not heavy_skipped? ->
+      heavy_checked? ->
         errors
 
       not Enum.any?(heavy_skip_items, &Regex.match?(@why_regex, &1)) ->
@@ -58,9 +59,25 @@ defmodule SymphonyElixir.Codex.ValidationEvidence do
   defp local_validation_evidence?(item) do
     normalized = normalize(item)
 
-    Regex.match?(@command_regex, item) and
+    has_validation_command?(item) and
       not only_delegates_to_ci?(normalized) and
+      not ci_only_evidence?(item) and
       not skip_item?(normalized)
+  end
+
+  defp has_validation_command?(item) do
+    item
+    |> validation_command_candidates()
+    |> Enum.any?(&Regex.match?(@validation_command_regex, &1))
+  end
+
+  defp validation_command_candidates(item) do
+    inline_commands =
+      @inline_code_regex
+      |> Regex.scan(item)
+      |> Enum.map(fn [_, command] -> command end)
+
+    [item | inline_commands]
   end
 
   defp heavy_skip_items(section, unchecked_items) do
@@ -74,6 +91,8 @@ defmodule SymphonyElixir.Codex.ValidationEvidence do
 
     Enum.uniq(unchecked_heavy_items ++ prose_skip_items)
   end
+
+  defp ci_only_evidence?(item), do: Regex.match?(@ci_only_regex, item)
 
   defp heavy_check?(text), do: Regex.match?(@heavy_check_regex, text)
 
