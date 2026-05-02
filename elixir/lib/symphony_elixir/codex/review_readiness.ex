@@ -474,27 +474,21 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
   end
 
   defp pull_request_closes_origin_issue?(issue, owner, repo, pr) do
-    case origin_github_issue(issue, owner, repo) do
-      nil ->
-        :ok
+    body = Map.get(pr, "body")
 
-      %{owner: issue_owner, repo: issue_repo, number: issue_number} ->
-        body = Map.get(pr, "body")
+    case origin_github_issues(issue, owner, repo) do
+      [] ->
+        reject_unmapped_closing_keyword(body, owner, repo)
 
+      [%{owner: issue_owner, repo: issue_repo, number: issue_number}] ->
         if closing_keyword_for_issue?(body, issue_owner, issue_repo, issue_number) do
           :ok
         else
           {:error, {:review_readiness_missing_closing_keyword, issue_owner, issue_repo, issue_number}}
         end
-    end
-  end
 
-  defp origin_github_issue(issue, owner, repo) do
-    issue
-    |> origin_github_issues(owner, repo)
-    |> case do
-      [origin_issue] -> origin_issue
-      _ambiguous_or_absent -> nil
+      _ambiguous ->
+        reject_unmapped_closing_keyword(body, owner, repo)
     end
   end
 
@@ -565,6 +559,33 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
   end
 
   defp closing_keyword_for_issue?(_body, _owner, _repo, _number), do: false
+
+  defp reject_unmapped_closing_keyword(body, owner, repo) do
+    if closing_keyword_for_trusted_repo?(body, owner, repo) do
+      {:error, {:review_readiness_unmapped_closing_keyword, owner, repo}}
+    else
+      :ok
+    end
+  end
+
+  defp closing_keyword_for_trusted_repo?(body, owner, repo) when is_binary(body) do
+    trusted_repository = normalize_repo_name("#{owner}/#{repo}")
+
+    ~r/\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+(?:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+))?#(\d+)\b/i
+    |> Regex.scan(body)
+    |> Enum.any?(fn
+      [_match, "", _number] ->
+        true
+
+      [_match, repository, _number] ->
+        normalize_repo_name(repository) == trusted_repository
+
+      _ ->
+        false
+    end)
+  end
+
+  defp closing_keyword_for_trusted_repo?(_body, _owner, _repo), do: false
 
   defp normalize_repo_name(nil), do: nil
 
@@ -1293,6 +1314,10 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
 
   defp rejection_message({:review_readiness_missing_closing_keyword, owner, repo, number}),
     do: "linked PR body is missing a closing keyword for GitHub issue #{owner}/#{repo}##{number}. Add `Fixes ##{number}` or another GitHub-supported closing keyword before review handoff."
+
+  defp rejection_message({:review_readiness_unmapped_closing_keyword, owner, repo}),
+    do:
+      "linked PR body contains a GitHub closing keyword for #{owner}/#{repo}, but the Linear issue does not have exactly one unambiguous origin GitHub issue. Remove the closing keyword or add explicit origin metadata before review handoff."
 
   defp rejection_message({:review_readiness_required_checks_not_passing, failures}),
     do: "required GitHub checks are not passing: #{format_failures(failures)}."
