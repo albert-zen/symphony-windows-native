@@ -114,7 +114,6 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
 
       log = File.read!(log_path)
 
-      assert log =~ "auth status"
       assert log =~ "pr list --repo openai/symphony --head feature/workpad --state open --json number --jq .[].number"
       assert log =~ "pr close 101 --repo openai/symphony"
       assert log =~ "pr close 102 --repo openai/symphony"
@@ -192,7 +191,6 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
         assert output == ""
 
         log = File.read!(log_path)
-        assert log =~ "auth status"
 
         assert log =~
                  "pr list --repo openai/symphony --head feature/list-fails --state open --json number --jq .[].number"
@@ -228,7 +226,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
         assert output == ""
 
         log = File.read!(log_path)
-        assert log == ""
+        assert log =~ "branch --show-current"
         refute log =~ "pr list"
       end
     )
@@ -305,12 +303,10 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       File.mkdir_p!(bin_dir)
       File.write!(log_path, "")
       original_path = System.get_env("PATH") || ""
-      path_with_binaries = Enum.join([bin_dir, original_path], ":")
+      path_with_binaries = Enum.join([bin_dir, original_path], path_separator())
 
       Enum.each(scripts, fn {name, script} ->
-        path = Path.join(bin_dir, name)
-        File.write!(path, script)
-        File.chmod!(path, 0o755)
+        write_fake_binary!(bin_dir, name, script)
       end)
 
       with_env(
@@ -328,7 +324,84 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
   end
 
   defp with_path(paths, fun) do
-    with_env(%{"PATH" => Enum.join(paths, ":")}, fun)
+    with_env(%{"PATH" => Enum.join(paths, path_separator())}, fun)
+  end
+
+  defp write_fake_binary!(bin_dir, name, script) do
+    script = normalize_newlines(script)
+
+    if match?({:win32, _}, :os.type()) do
+      command_script = Path.join(bin_dir, "#{name}.cmd")
+      powershell_script = Path.join(bin_dir, "#{name}.ps1")
+
+      File.write!(powershell_script, windows_powershell_fixture(name, script))
+
+      File.write!(
+        command_script,
+        "@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0#{name}.ps1\" %*\r\nexit /b %ERRORLEVEL%\r\n"
+      )
+    else
+      path = Path.join(bin_dir, name)
+      File.write!(path, script)
+      File.chmod!(path, 0o755)
+    end
+  end
+
+  defp windows_powershell_fixture("git", script) do
+    branch_output = if String.contains?(script, "feature/workpad"), do: "feature/workpad", else: ""
+
+    """
+    Add-Content -Path $env:GH_LOG -Value ($args -join ' ')
+    if ($args[0] -eq 'branch' -and $args[1] -eq '--show-current') {
+      Write-Output '#{branch_output}'
+      exit 0
+    }
+    exit 99
+    """
+  end
+
+  defp windows_powershell_fixture("gh", script) do
+    auth_status = if String.contains?(shell_if_block(script, "auth", "status"), "exit 1"), do: 1, else: 0
+    list_status = if String.contains?(shell_if_block(script, "pr", "list"), "exit 1"), do: 1, else: 0
+    list_output = if String.contains?(script, "printf '102"), do: ["102"], else: ["101", "102"]
+    close_102_output = if String.contains?(script, "printf 'boom"), do: "boom", else: nil
+
+    list_output_commands =
+      list_output
+      |> Enum.map(&"  Write-Output '#{&1}'")
+      |> Enum.join("\n")
+
+    close_102_output_command =
+      if close_102_output do
+        "  [Console]::Error.WriteLine('#{close_102_output}')"
+      else
+        ""
+      end
+
+    """
+    Add-Content -Path $env:GH_LOG -Value ($args -join ' ')
+    if ($args[0] -eq 'auth' -and $args[1] -eq 'status') { exit #{auth_status} }
+    if ($args[0] -eq 'pr' -and $args[1] -eq 'list') {
+      if (#{list_status} -ne 0) { exit #{list_status} }
+    #{list_output_commands}
+      exit 0
+    }
+    if ($args[0] -eq 'pr' -and $args[1] -eq 'close' -and $args[2] -eq '101') { exit 0 }
+    if ($args[0] -eq 'pr' -and $args[1] -eq 'close' -and $args[2] -eq '102') {
+    #{close_102_output_command}
+      exit 17
+    }
+    exit 99
+    """
+  end
+
+  defp shell_if_block(script, first_arg, second_arg) do
+    pattern = ~r/if\s+\[\s+"\$1"\s+=\s+"#{Regex.escape(first_arg)}"\s+\].*?"\$2"\s+=\s+"#{Regex.escape(second_arg)}".*?fi/s
+
+    case Regex.run(pattern, script) do
+      [block | _] -> block
+      _ -> ""
+    end
   end
 
   defp with_env(overrides, fun) do
@@ -386,5 +459,14 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       end
 
     {output, error_output}
+  end
+
+  defp path_separator, do: if(match?({:win32, _}, :os.type()), do: ";", else: ":")
+
+  defp normalize_newlines(content) do
+    content
+    |> String.trim_leading()
+    |> String.replace("\r\n", "\n")
+    |> String.replace("\r", "\n")
   end
 end

@@ -170,16 +170,26 @@ defmodule SymphonyElixir.SSHTest do
 
     File.write!(
       fake_ssh,
-      script ||
-        """
-        #!/bin/sh
-        printf 'ARGV:%s\\n' "$*" >> "#{trace_file}"
-        exit 0
-        """
+      normalize_newlines(
+        script ||
+          """
+          #!/bin/sh
+          printf 'ARGV:%s\\n' "$*" >> "#{trace_file}"
+          exit 0
+          """
+      )
     )
 
     File.chmod!(fake_ssh, 0o755)
-    System.put_env("PATH", fake_bin_dir <> ":" <> (System.get_env("PATH") || ""))
+    System.put_env("PATH", Enum.join([fake_bin_dir, System.get_env("PATH") || ""], path_separator()))
+  end
+
+  defp path_separator, do: if(match?({:win32, _}, :os.type()), do: ";", else: ":")
+
+  defp normalize_newlines(content) do
+    content
+    |> String.replace("\r\n", "\n")
+    |> String.replace("\r", "\n")
   end
 
   defp wait_for_trace!(trace_file, attempts \\ 20)

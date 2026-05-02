@@ -33,7 +33,11 @@ defmodule SymphonyElixir.SpecsCheck do
         [path]
 
       File.dir?(path) ->
-        Path.wildcard(Path.join(path, "**/*.ex"))
+        path
+        |> Path.join("**/*.ex")
+        |> Path.expand()
+        |> String.replace("\\", "/")
+        |> Path.wildcard()
 
       true ->
         []

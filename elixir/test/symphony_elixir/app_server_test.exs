@@ -40,39 +40,43 @@ defmodule SymphonyElixir.AppServerTest do
   end
 
   test "app server rejects symlink escape cwd paths under the workspace root" do
-    test_root =
-      Path.join(
-        System.tmp_dir!(),
-        "symphony-elixir-app-server-symlink-cwd-guard-#{System.unique_integer([:positive])}"
-      )
+    if reason = SymphonyElixir.TestSupport.symlink_skip_reason() do
+      IO.puts("Skipping symlink escape cwd test: #{reason}")
+    else
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-app-server-symlink-cwd-guard-#{System.unique_integer([:positive])}"
+        )
 
-    try do
-      workspace_root = Path.join(test_root, "workspaces")
-      outside_workspace = Path.join(test_root, "outside")
-      symlink_workspace = Path.join(workspace_root, "MT-1000")
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        outside_workspace = Path.join(test_root, "outside")
+        symlink_workspace = Path.join(workspace_root, "MT-1000")
 
-      File.mkdir_p!(workspace_root)
-      File.mkdir_p!(outside_workspace)
-      File.ln_s!(outside_workspace, symlink_workspace)
+        File.mkdir_p!(workspace_root)
+        File.mkdir_p!(outside_workspace)
+        File.ln_s!(outside_workspace, symlink_workspace)
 
-      write_workflow_file!(Workflow.workflow_file_path(),
-        workspace_root: workspace_root
-      )
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root
+        )
 
-      issue = %Issue{
-        id: "issue-workspace-symlink-guard",
-        identifier: "MT-1000",
-        title: "Validate symlink workspace guard",
-        description: "Ensure app-server refuses symlink escape cwd targets",
-        state: "In Progress",
-        url: "https://example.org/issues/MT-1000",
-        labels: ["backend"]
-      }
+        issue = %Issue{
+          id: "issue-workspace-symlink-guard",
+          identifier: "MT-1000",
+          title: "Validate symlink workspace guard",
+          description: "Ensure app-server refuses symlink escape cwd targets",
+          state: "In Progress",
+          url: "https://example.org/issues/MT-1000",
+          labels: ["backend"]
+        }
 
-      assert {:error, {:invalid_workspace_cwd, :symlink_escape, ^symlink_workspace, _root}} =
-               AppServer.run(symlink_workspace, "guard", issue)
-    after
-      File.rm_rf(test_root)
+        assert {:error, {:invalid_workspace_cwd, :symlink_escape, ^symlink_workspace, _root}} =
+                 AppServer.run(symlink_workspace, "guard", issue)
+      after
+        File.rm_rf(test_root)
+      end
     end
   end
 
@@ -1594,7 +1598,7 @@ defmodule SymphonyElixir.AppServerTest do
 
       File.mkdir_p!(test_root)
       System.put_env("SYMP_TEST_SSH_TRACE", trace_file)
-      System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+      System.put_env("PATH", Enum.join([test_root, previous_path || ""], path_separator()))
 
       File.write!(fake_ssh, """
       #!/bin/sh
@@ -1703,4 +1707,6 @@ defmodule SymphonyElixir.AppServerTest do
       File.rm_rf(test_root)
     end
   end
+
+  defp path_separator, do: if(match?({:win32, _}, :os.type()), do: ";", else: ":")
 end

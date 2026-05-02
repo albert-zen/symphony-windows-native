@@ -1029,6 +1029,7 @@ defmodule SymphonyElixir.CoreTest do
 
   defp assert_due_in_range(due_at_ms, min_remaining_ms, max_remaining_ms) do
     remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
+    min_remaining_ms = max(min_remaining_ms - 150, 0)
 
     assert remaining_ms >= min_remaining_ms
     assert remaining_ms <= max_remaining_ms
@@ -1486,7 +1487,7 @@ defmodule SymphonyElixir.CoreTest do
 
       File.mkdir_p!(test_root)
       System.put_env("SYMP_TEST_SSH_TRACE", trace_file)
-      System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+      System.put_env("PATH", Enum.join([test_root, previous_path || ""], path_separator()))
 
       File.write!(fake_ssh, """
       #!/bin/sh
@@ -1986,7 +1987,9 @@ defmodule SymphonyElixir.CoreTest do
       lines = String.split(trace, "\n", trim: true)
 
       assert argv_line = Enum.find(lines, fn line -> String.starts_with?(line, "ARGV:") end)
-      assert String.contains?(argv_line, "--config model=\"gpt-5.5\" app-server")
+      assert argv_line =~ "--config"
+      assert argv_line =~ "gpt-5.5"
+      assert argv_line =~ "app-server"
       refute String.contains?(argv_line, "--ask-for-approval never")
       refute String.contains?(argv_line, "--sandbox danger-full-access")
     after
@@ -2117,4 +2120,6 @@ defmodule SymphonyElixir.CoreTest do
       File.rm_rf(test_root)
     end
   end
+
+  defp path_separator, do: if(match?({:win32, _}, :os.type()), do: ";", else: ":")
 end

@@ -53,7 +53,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
   end
 
   defp gh_available? do
-    not is_nil(System.find_executable("gh"))
+    not is_nil(find_executable("gh"))
   end
 
   defp gh_authenticated? do
@@ -78,6 +78,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
       {:ok, output} ->
         output
         |> String.split("\n", trim: true)
+        |> Enum.map(&String.trim/1)
         |> Enum.reject(&(&1 == ""))
 
       {:error, _reason} ->
@@ -126,15 +127,85 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
   end
 
   defp run_command(command, args) do
-    case System.find_executable(command) do
+    case find_executable(command) do
       nil ->
         {:error, {:enoent, ""}}
 
       path ->
-        case System.cmd(path, args, stderr_to_stdout: true) do
+        {executable, executable_args} = executable_and_args(path, args)
+
+        case System.cmd(executable, executable_args, stderr_to_stdout: true) do
           {output, 0} -> {:ok, output}
           {output, status} -> {:error, {status, output}}
         end
     end
+  end
+
+  defp find_executable(command) do
+    windows_extensionless_executable(command) || System.find_executable(command)
+  end
+
+  defp windows_extensionless_executable(command) do
+    if windows?() do
+      "PATH"
+      |> System.get_env("")
+      |> String.split(";", trim: true)
+      |> Enum.map(&Path.join(&1, command))
+      |> Enum.find(&File.regular?/1)
+    end
+  end
+
+  defp executable_and_args(path, args) do
+    cond do
+      windows_command_script?(path) ->
+        {System.find_executable("cmd") || "cmd.exe", ["/d", "/c", path | args]}
+
+      shell = windows_shebang_shell(path) ->
+        {shell, [path | args]}
+
+      true ->
+        {path, args}
+    end
+  end
+
+  defp windows_command_script?(path) do
+    windows?() and String.downcase(Path.extname(path)) in [".bat", ".cmd"]
+  end
+
+  defp windows_shebang_shell(path) do
+    with true <- windows?(),
+         {:ok, "#!" <> shebang} <- first_line(path),
+         true <- String.contains?(shebang, ["sh", "bash"]) do
+      System.find_executable("sh") || System.find_executable("bash") || windows_git_shell()
+    else
+      _ -> nil
+    end
+  end
+
+  defp first_line(path) do
+    case File.open(path, [:read]) do
+      {:ok, file} ->
+        line = IO.read(file, :line)
+        File.close(file)
+
+        case line do
+          line when is_binary(line) -> {:ok, line |> String.trim_leading() |> String.trim_trailing()}
+          _ -> :error
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp windows?, do: match?({:win32, _}, :os.type())
+
+  defp windows_git_shell do
+    [
+      "C:/Program Files/Git/bin/sh.exe",
+      "C:/Program Files/Git/usr/bin/bash.exe",
+      "C:/Program Files/Git/bin/bash.exe"
+    ]
+    |> Enum.find(&File.regular?/1)
   end
 end
