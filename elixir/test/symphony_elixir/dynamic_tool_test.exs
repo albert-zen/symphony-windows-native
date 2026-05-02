@@ -354,6 +354,513 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     refute_received {:workpad_recorded, _}
   end
 
+  test "linear_graphql rejects coverage ignore additions for modules changed in the PR" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{"head" => %{"sha" => "abc123"}, "base" => %{"ref" => "main", "sha" => "base123"}},
+            "pulls/42/files?per_page=100" => [
+              %{
+                "filename" => "elixir/lib/symphony_elixir/codex/review_readiness.ex",
+                "status" => "modified",
+                "patch" => "@@ -550,6 +550,7 @@\n+  def changed, do: :ok"
+              },
+              %{
+                "filename" => "elixir/mix.exs",
+                "status" => "modified",
+                "patch" => """
+                @@ -14,6 +14,7 @@
+                 test_coverage: [
+                   ignore_modules: [
+                     SymphonyElixir.Codex.AppServer,
+                +    SymphonyElixir.Codex.ReviewReadiness,
+                     SymphonyElixir.Codex.DynamicTool
+                   ]
+                """
+              }
+            ],
+            "compare/base123...main" => %{"ahead_by" => 0, "files" => []},
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{
+              "check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]
+            }
+          })
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "coverage ignore additions include modules changed in this PR"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "SymphonyElixir.Codex.ReviewReadiness"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql matches coverage ignore additions for acronym modules without defmodule patch context" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{"head" => %{"sha" => "abc123"}, "base" => %{"ref" => "main"}},
+            "pulls/42/files?per_page=100" => [
+              %{
+                "filename" => "elixir/lib/symphony_elixir/cli.ex",
+                "status" => "modified",
+                "patch" => "@@ -90,6 +90,7 @@\n+  def changed, do: :ok"
+              },
+              %{
+                "filename" => "elixir/mix.exs",
+                "status" => "modified",
+                "patch" => """
+                @@ -14,6 +14,7 @@
+                 test_coverage: [
+                   ignore_modules: [
+                     SymphonyElixir.Codex.AppServer,
+                +    SymphonyElixir.CLI,
+                     SymphonyElixir.Codex.DynamicTool
+                   ]
+                """
+              }
+            ],
+            "compare/base123...main" => %{"ahead_by" => 0, "files" => []},
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{
+              "check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]
+            }
+          })
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "SymphonyElixir.CLI"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "SymphonyElixir.CLI"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql rejects coverage ignore additions for nested modules changed in the same source file" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{"head" => %{"sha" => "abc123"}, "base" => %{"ref" => "main"}},
+            "pulls/42/files?per_page=100" => [
+              %{
+                "filename" => "elixir/lib/symphony_elixir/codex/review_readiness.ex",
+                "status" => "modified",
+                "patch" => "@@ -22,6 +22,7 @@\n+  def hardened?, do: true"
+              },
+              %{
+                "filename" => "elixir/mix.exs",
+                "status" => "modified",
+                "patch" => """
+                @@ -14,6 +14,7 @@
+                 test_coverage: [
+                   ignore_modules: [
+                     SymphonyElixir.Codex.AppServer,
+                +    SymphonyElixir.Codex.ReviewReadiness.Nested,
+                     SymphonyElixir.Codex.DynamicTool
+                   ]
+                """
+              }
+            ],
+            "compare/base123...main" => %{"ahead_by" => 0, "files" => []},
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{
+              "check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]
+            }
+          })
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "SymphonyElixir.Codex.ReviewReadiness.Nested"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "SymphonyElixir.Codex.ReviewReadiness.Nested"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql rejects coverage ignore additions when hunk omits test coverage context" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{"head" => %{"sha" => "abc123"}, "base" => %{"ref" => "main"}},
+            "pulls/42/files?per_page=100" => [
+              %{
+                "filename" => "elixir/lib/symphony_elixir/codex/review_readiness.ex",
+                "status" => "modified",
+                "patch" => "@@ -22,6 +22,7 @@\n+  def hardened?, do: true"
+              },
+              %{
+                "filename" => "elixir/mix.exs",
+                "status" => "modified",
+                "patch" => """
+                @@ -16,2 +16,3 @@
+                     SymphonyElixir.Codex.AppServer,
+                +    SymphonyElixir.Codex.ReviewReadiness,
+                     SymphonyElixir.Codex.DynamicTool
+                """
+              }
+            ],
+            "compare/base123...main" => %{"ahead_by" => 0, "files" => []},
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{
+              "check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]
+            }
+          })
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "SymphonyElixir.Codex.ReviewReadiness"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "SymphonyElixir.Codex.ReviewReadiness"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql rejects coverage ignore additions with trailing inline comments" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{"head" => %{"sha" => "abc123"}, "base" => %{"ref" => "main"}},
+            "pulls/42/files?per_page=100" => [
+              %{
+                "filename" => "elixir/lib/symphony_elixir/codex/review_readiness.ex",
+                "status" => "modified",
+                "patch" => "@@ -22,6 +22,7 @@\n+  def hardened?, do: true"
+              },
+              %{
+                "filename" => "elixir/mix.exs",
+                "status" => "modified",
+                "patch" => """
+                @@ -14,6 +14,7 @@
+                 test_coverage: [
+                   ignore_modules: [
+                     SymphonyElixir.Codex.AppServer,
+                +    SymphonyElixir.Codex.ReviewReadiness, # audited later
+                     SymphonyElixir.Codex.DynamicTool
+                   ]
+                """
+              }
+            ],
+            "compare/base123...main" => %{"ahead_by" => 0, "files" => []},
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{
+              "check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]
+            }
+          })
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "SymphonyElixir.Codex.ReviewReadiness"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "SymphonyElixir.Codex.ReviewReadiness"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql rejects quoted Elixir module atoms in coverage ignore additions" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{"head" => %{"sha" => "abc123"}, "base" => %{"ref" => "main"}},
+            "pulls/42/files?per_page=100" => [
+              %{
+                "filename" => "elixir/lib/symphony_elixir/codex/review_readiness.ex",
+                "status" => "modified",
+                "patch" => "@@ -22,6 +22,7 @@\n+  def hardened?, do: true"
+              },
+              %{
+                "filename" => "elixir/mix.exs",
+                "status" => "modified",
+                "patch" => """
+                @@ -14,6 +14,7 @@
+                 test_coverage: [
+                   ignore_modules: [
+                     SymphonyElixir.Codex.AppServer,
+                +    :"Elixir.SymphonyElixir.Codex.ReviewReadiness",
+                     SymphonyElixir.Codex.DynamicTool
+                   ]
+                """
+              }
+            ],
+            "compare/base123...main" => %{"ahead_by" => 0, "files" => []},
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{
+              "check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]
+            }
+          })
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "Elixir.SymphonyElixir.Codex.ReviewReadiness"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "Elixir.SymphonyElixir.Codex.ReviewReadiness"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql rejects inline coverage ignore additions" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{"head" => %{"sha" => "abc123"}, "base" => %{"ref" => "main"}},
+            "pulls/42/files?per_page=100" => [
+              %{
+                "filename" => "elixir/lib/symphony_elixir/codex/review_readiness.ex",
+                "status" => "modified",
+                "patch" => "@@ -22,6 +22,7 @@\n+  def hardened?, do: true"
+              },
+              %{
+                "filename" => "elixir/mix.exs",
+                "status" => "modified",
+                "patch" => """
+                @@ -1,1 +1,1 @@
+                +test_coverage: [
+                +  ignore_modules: [SymphonyElixir.Codex.ReviewReadiness]
+                +]
+                """
+              }
+            ],
+            "contents/elixir/mix.exs?ref=abc123" =>
+              github_content("""
+              test_coverage: [
+                ignore_modules: [SymphonyElixir.Codex.ReviewReadiness]
+              ]
+              """),
+            "compare/base123...main" => %{"ahead_by" => 0, "files" => []},
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{
+              "check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]
+            }
+          })
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "SymphonyElixir.Codex.ReviewReadiness"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "SymphonyElixir.Codex.ReviewReadiness"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql rejects one-line test coverage ignore additions" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{"head" => %{"sha" => "abc123"}, "base" => %{"ref" => "main"}},
+            "pulls/42/files?per_page=100" => [
+              %{
+                "filename" => "elixir/lib/symphony_elixir/codex/review_readiness.ex",
+                "status" => "modified",
+                "patch" => "@@ -22,6 +22,7 @@\n+  def hardened?, do: true"
+              },
+              %{
+                "filename" => "elixir/mix.exs",
+                "status" => "modified",
+                "patch" => "@@ -1,1 +1,1 @@\n+test_coverage: [ignore_modules: [SymphonyElixir.Codex.ReviewReadiness]]"
+              }
+            ],
+            "contents/elixir/mix.exs?ref=abc123" => github_content("test_coverage: [ignore_modules: [SymphonyElixir.Codex.ReviewReadiness]]"),
+            "compare/base123...main" => %{"ahead_by" => 0, "files" => []},
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{
+              "check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]
+            }
+          })
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "SymphonyElixir.Codex.ReviewReadiness"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "SymphonyElixir.Codex.ReviewReadiness"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql ignores unrelated mix ignore_modules additions outside test coverage" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{"head" => %{"sha" => "abc123"}, "base" => %{"ref" => "main"}},
+            "pulls/42/files?per_page=100" => [
+              %{
+                "filename" => "elixir/lib/symphony_elixir/codex/review_readiness.ex",
+                "status" => "modified",
+                "patch" => "@@ -22,6 +22,7 @@\n+  def hardened?, do: true"
+              },
+              %{
+                "filename" => "elixir/mix.exs",
+                "status" => "modified",
+                "patch" => """
+                @@ -80,6 +80,7 @@
+                 custom_lint: [
+                   ignore_modules: [
+                +    SymphonyElixir.Codex.ReviewReadiness,
+                     Some.Other.Module
+                   ]
+                """
+              }
+            ],
+            "compare/base123...main" => %{"ahead_by" => 0, "files" => []},
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{
+              "check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]
+            }
+          })
+      )
+
+    assert response["success"] == true
+    assert_received {:linear_mutation_allowed, "issue-1", "state-review"}
+    refute_received {:workpad_recorded, _}
+  end
+
+  test "linear_graphql rejects stale PR bases when current base changes overlap PR files" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{"head" => %{"sha" => "abc123"}, "base" => %{"ref" => "main", "sha" => "base123"}},
+            "pulls/42/files?per_page=100" => [
+              %{"filename" => "lib/symphony_elixir/codex/app_server.ex", "status" => "modified", "patch" => ""}
+            ],
+            "compare/base123...main" => %{
+              "ahead_by" => 1,
+              "files" => [%{"filename" => "lib/symphony_elixir/codex/app_server.ex", "status" => "modified"}]
+            },
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{
+              "check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]
+            }
+          })
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "PR base is stale"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "lib/symphony_elixir/codex/app_server.ex"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql rejects stale PR bases when base compare file list may be capped" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{"head" => %{"sha" => "abc123"}, "base" => %{"ref" => "main", "sha" => "base123"}},
+            "pulls/42/files?per_page=100" => [
+              %{"filename" => "lib/symphony_elixir/codex/app_server.ex", "status" => "modified", "patch" => ""}
+            ],
+            "compare/base123...main" => %{
+              "ahead_by" => 12,
+              "files" =>
+                Enum.map(1..300, fn index ->
+                  %{"filename" => "lib/current_main/file_#{index}.ex", "status" => "modified"}
+                end)
+            },
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{
+              "check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]
+            }
+          })
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "capped GitHub compare file list"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "current base branch compare returns 300 files"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql rejects oversized PR file lists instead of partially checking guardrails" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{
+              "changed_files" => 101,
+              "head" => %{"sha" => "abc123"},
+              "base" => %{"ref" => "main", "sha" => "base123"}
+            }
+          })
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "only verifies the first 100 GitHub PR files"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "changes 101 files"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
   test "linear_graphql uses configured required checks when branch protection is unavailable" do
     test_pid = self()
     write_workflow_file!(Workflow.workflow_file_path(), codex_review_readiness_required_checks: ["make-all"])
@@ -1033,7 +1540,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     fn url, _opts ->
       case github_response(responses, url) do
         {_suffix, payload} -> {:ok, %{status: 200, body: default_pr_payload(url, payload)}}
-        nil -> {:ok, %{status: 404, body: %{"message" => "not found"}}}
+        nil -> default_github_response(url)
       end
     end
   end
@@ -1045,13 +1552,78 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         |> Map.put_new("ref", "codex/ALB-19-review-readiness")
         |> Map.put_new("repo", %{"full_name" => "albert-zen/symphony-windows-native"})
 
-      put_in(payload, ["head"], default_head)
+      default_base =
+        payload
+        |> Map.get("base", %{})
+        |> Map.put_new("ref", "main")
+        |> Map.put_new("sha", "base123")
+
+      payload
+      |> put_in(["head"], default_head)
+      |> put_in(["base"], default_base)
     else
       payload
     end
   end
 
   defp default_pr_payload(_url, payload), do: payload
+
+  defp default_github_response(url) do
+    cond do
+      String.ends_with?(url, "/files?per_page=100") ->
+        {:ok, %{status: 200, body: []}}
+
+      String.contains?(url, "/contents/elixir/mix.exs?") or String.contains?(url, "/contents/mix.exs?") ->
+        {:ok, %{status: 200, body: github_content(mix_exs_head_content())}}
+
+      Regex.match?(~r/\/compare\/[^\/]+\.{3}abc123$/, url) ->
+        {:ok, %{status: 200, body: %{"merge_base_commit" => %{"sha" => "base123"}, "files" => []}}}
+
+      String.contains?(url, "/compare/") ->
+        {:ok, %{status: 200, body: %{"ahead_by" => 0, "files" => []}}}
+
+      true ->
+        {:ok, %{status: 404, body: %{"message" => "not found"}}}
+    end
+  end
+
+  defp github_content(content) do
+    %{"encoding" => "base64", "content" => Base.encode64(content)}
+  end
+
+  defp mix_exs_head_content do
+    """
+    defmodule SymphonyElixir.MixProject do
+      use Mix.Project
+
+      def project do
+        [
+          app: :symphony_elixir,
+          version: "0.1.0",
+          elixir: "~> 1.19",
+          test_coverage: [
+            summary: [
+              threshold: 100
+            ],
+            ignore_modules: [
+              SymphonyElixir.Codex.AppServer,
+              SymphonyElixir.Codex.ReviewReadiness,
+              SymphonyElixir.Codex.ReviewReadiness.Nested,
+              SymphonyElixir.Codex.DynamicTool,
+              SymphonyElixir.CLI
+            ]
+          ],
+          custom_lint: [
+            ignore_modules: [
+              SymphonyElixir.Codex.ReviewReadiness,
+              Some.Other.Module
+            ]
+          ]
+        ]
+      end
+    end
+    """
+  end
 
   defp github_response(responses, url) do
     Enum.find(responses, fn {suffix, _payload} -> String.ends_with?(url, suffix) end)

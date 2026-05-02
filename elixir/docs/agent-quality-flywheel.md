@@ -25,6 +25,16 @@ Agents must not weaken, skip, disable, or relax CI, lint, formatter, or test gat
 work. If a gate is wrong or flaky, file or link a follow-up defect and keep the current issue out of
 `In Review` until the required checks pass or a manager explicitly overrides the state transition.
 
+Coverage ignore changes are gate changes. A PR must not add a production module to
+`test_coverage.ignore_modules` when that same module is changed in the PR. The review-readiness
+gate rejects that overlap before an agent can move the Linear issue to review. If a manager believes
+an exception is justified, the manager must audit it outside the agent session and leave an explicit
+approval note; the agent cannot self-approve the transition.
+
+Stale-base overlap is also not review-ready. When the PR's recorded base SHA is behind the current
+base branch and files changed on current base overlap files changed in the PR, the agent must merge
+current base, resolve the overlap, and rerun validation before handoff.
+
 ## Review loop
 
 Request an independent SubAgent review pass for meaningful changes before handoff. A change is
@@ -37,6 +47,11 @@ The review pass should check:
 
 - The implementation is scoped to the linked Linear/GitHub issue.
 - The validation evidence matches the touched risk.
+- The PR does not weaken coverage, CI, lint, formatter, review, or readiness gates.
+- The PR branch is current enough for the touched files, with no stale-base overlap against newer
+  merged work.
+- Deleted tests or removed public message handlers are in scope for the issue and backed by clear
+  replacement coverage or explicit manager approval.
 - CI failures and runtime defects are written back to GitHub or Linear before state changes.
 - Follow-up work is filed instead of being left only in logs.
 
