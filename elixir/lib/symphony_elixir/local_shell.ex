@@ -113,11 +113,7 @@ defmodule SymphonyElixir.LocalShell do
         windows_node_shim_args(executable, args)
 
       "" ->
-        if windows_node_shim?(executable) do
-          windows_node_shim_args(executable, args)
-        else
-          {:ok, executable, args}
-        end
+        windows_shebang_args(executable, args)
 
       _extension ->
         {:ok, executable, args}
@@ -132,6 +128,65 @@ defmodule SymphonyElixir.LocalShell do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp windows_shebang_args(executable, args) do
+    case windows_shebang_line(executable) do
+      {:ok, "#!" <> shebang} ->
+        windows_shebang_interpreter_args(shebang, executable, args)
+
+      _ ->
+        {:ok, executable, args}
+    end
+  end
+
+  defp windows_shebang_interpreter_args(shebang, executable, args) do
+    cond do
+      String.contains?(shebang, "node") ->
+        windows_shebang_node_args(executable, args)
+
+      String.contains?(shebang, "sh") or String.contains?(shebang, "bash") ->
+        windows_shebang_shell_args(executable, args)
+
+      true ->
+        {:error, {:unsupported_windows_port_command, executable}}
+    end
+  end
+
+  defp windows_shebang_node_args(executable, args) do
+    with {:ok, node} <- windows_node_executable(Path.dirname(executable)) do
+      {:ok, node, [executable | args]}
+    end
+  end
+
+  defp windows_shebang_shell_args(executable, args) do
+    with {:ok, shell} <- windows_unix_shell_executable() do
+      {:ok, shell, [executable | args]}
+    end
+  end
+
+  defp windows_shebang_line(executable) do
+    case File.open(executable, [:read]) do
+      {:ok, file} ->
+        line = IO.read(file, :line)
+        File.close(file)
+
+        case line do
+          line when is_binary(line) ->
+            line
+            |> String.trim_leading()
+            |> windows_shebang_from_line()
+
+          _ ->
+            :error
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp windows_shebang_from_line("#!" <> _ = shebang), do: {:ok, String.trim_trailing(shebang)}
+  defp windows_shebang_from_line(_line), do: :error
 
   defp windows_shell_args(command) do
     case find_executable(["pwsh", "powershell"]) do
@@ -157,6 +212,22 @@ defmodule SymphonyElixir.LocalShell do
       nil -> {:error, :unix_shell_not_found}
       executable -> {:ok, executable, ["-lc", command]}
     end
+  end
+
+  defp windows_unix_shell_executable do
+    case find_executable(["sh", "bash"]) || windows_git_shell() do
+      nil -> {:error, :windows_unix_shell_not_found}
+      executable -> {:ok, executable}
+    end
+  end
+
+  defp windows_git_shell do
+    [
+      "C:/Program Files/Git/bin/sh.exe",
+      "C:/Program Files/Git/usr/bin/bash.exe",
+      "C:/Program Files/Git/bin/bash.exe"
+    ]
+    |> Enum.find(&File.regular?/1)
   end
 
   defp find_executable(names) when is_list(names) do
@@ -204,18 +275,6 @@ defmodule SymphonyElixir.LocalShell do
     "PATHEXT"
     |> System.get_env(".COM;.EXE;.BAT;.CMD")
     |> String.split(";", trim: true)
-  end
-
-  defp windows_node_shim?(executable) do
-    case File.open(executable, [:read]) do
-      {:ok, file} ->
-        line = IO.read(file, :line)
-        File.close(file)
-        is_binary(line) and String.starts_with?(line, "#!")
-
-      {:error, _reason} ->
-        false
-    end
   end
 
   defp windows_node_shim_script(executable) do
