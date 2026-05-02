@@ -67,6 +67,32 @@ defmodule SymphonyElixir.Codex.ValidationEvidenceTest do
            ]
   end
 
+  test "rejects bare inability words as skipped heavy validation reasons" do
+    for word <- ["cannot", "can't", "unable", "unavailable"] do
+      body = """
+      #### Test Plan
+
+      - [ ] `make -C elixir all` #{word}.
+      - [x] `mix test test/symphony_elixir/validation_evidence_test.exs` passed locally.
+      """
+
+      assert ValidationEvidence.lint_pr_body(body) == [
+               "Test Plan must explain why the heavy local validation check was not run."
+             ]
+    end
+  end
+
+  test "accepts concrete inability reason for skipped heavy validation" do
+    body = """
+    #### Test Plan
+
+    - [ ] `make -C elixir all` unavailable while the Windows-only shell profile is isolated in CI.
+    - [x] `mix test test/symphony_elixir/validation_evidence_test.exs` passed locally.
+    """
+
+    assert ValidationEvidence.lint_pr_body(body) == []
+  end
+
   test "accepts justified skipped heavy validation with narrower local evidence" do
     body = """
     #### Test Plan

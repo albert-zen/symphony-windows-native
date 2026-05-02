@@ -99,11 +99,18 @@ defmodule SymphonyElixir.Codex.ValidationEvidence do
   defp heavy_skip_justified?(item) do
     normalized = normalize(item)
 
-    concrete_due_to_reason?(normalized) or Regex.match?(~r/\b(cannot|can't|unable|unavailable)\b/, normalized)
+    concrete_due_to_reason?(normalized) or concrete_inability_reason?(normalized)
   end
 
   defp concrete_due_to_reason?(normalized) do
     case Regex.run(~r/\b(?:because|due to)\b\s+(.+)$/, normalized) do
+      [_, reason] -> concrete_reason?(reason)
+      _ -> false
+    end
+  end
+
+  defp concrete_inability_reason?(normalized) do
+    case Regex.run(~r/\b(?:cannot|can't|unable|unavailable)\b\s+(.+)$/, normalized) do
       [_, reason] -> concrete_reason?(reason)
       _ -> false
     end
