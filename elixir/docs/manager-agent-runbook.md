@@ -28,6 +28,30 @@ system defects into durable issues.
 - Keep the system saturated, not chaotic. Raise concurrency only after claim
   behavior, review readiness, and CI signal are trustworthy.
 
+## Manager-owned work
+
+Some issues should stay with the manager instead of being released to an
+ordinary worker. Keep work manager-owned when success depends on global context
+across the live dashboard, GitHub, Linear, previous operator intent, or recent
+flywheel incidents.
+
+Examples:
+
+- Choosing the canonical issue for a repeated system defect, marking duplicates,
+  or defining defect intake policy.
+- Deciding whether a dependency chain is resolved enough to release downstream
+  work to `Todo`.
+- Applying privacy-sensitive history cleanup or deployment/restart changes.
+- Root-causing why active work is `Blocked`, stale, duplicated, or running on
+  old code.
+- Changing manager automation, concurrency policy, release criteria, or review
+  policy.
+
+Workers are a good fit for bounded implementation tasks with a complete public
+spec, test intent, acceptance criteria, and no need to decide cross-system
+policy. If a manager-owned issue can be decomposed, create narrower worker-safe
+subtasks and keep the policy decision in the manager Workpad.
+
 ## Main loop
 
 Run this loop until the operator deliberately pauses the flywheel.
@@ -57,6 +81,8 @@ Run this loop until the operator deliberately pauses the flywheel.
 4. Feed the next work.
    - Choose the next Backlog issue after completed work is reviewed and blockers
      are root-caused, owned, or confirmed not to affect available capacity.
+   - Classify whether the issue is worker-safe or manager-owned before moving
+     it. Do not release manager-owned work merely to fill a concurrency slot.
    - Complete the GitHub issue spec, testing intent, and acceptance criteria.
    - Add links between GitHub and Linear.
    - Move it to `Todo` only when there is available capacity and the task is
