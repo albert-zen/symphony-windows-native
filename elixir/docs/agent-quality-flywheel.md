@@ -94,6 +94,13 @@ the issue to `Blocked` when that state exists. If Linear returns `:state_not_fou
 has no `Blocked` state, the agent must record `Blocked state missing` and keep the issue active for
 manager triage.
 
+Environment and pipeline blockers need capability evidence, not repeated blind retries. Before
+handoff, run or cite `mix symphony.preflight.windows --capabilities-only --json <WORKFLOW>` when the
+failure may involve OS, shell, PowerShell, `tasklist`, GitHub CLI, Linear auth, coverage policy, or
+line endings. The Workpad entry must state the failed command, capability result, local recovery
+attempted, and manager action needed. If the blocker matches an existing canonical system issue,
+comment there with the new evidence instead of creating a duplicate.
+
 Human triage for agent-written blocker comments:
 
 - Read the latest `## Codex Workpad` first, then any separate problem comment.

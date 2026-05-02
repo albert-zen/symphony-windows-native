@@ -65,6 +65,11 @@ handoff is:
 1. Update the single `## Codex Workpad` with the exact failure, command or
    subsystem, affected PR/check/log, local recovery attempted, and the next
    operator action needed.
+   For environment or pipeline blockers, the Workpad should also include
+   capability/preflight evidence from
+   `mix symphony.preflight.windows --capabilities-only --json <WORKFLOW>` or a
+   manager-approved equivalent. The minimum fields are failed command,
+   capability result, local recovery attempted, and manager action needed.
 2. Add a short Linear comment only when the Workpad is not enough to make the
    blocker visible to a manager scanning the board.
 3. Move the issue to `Blocked` when that state exists, then release any durable
@@ -81,6 +86,10 @@ Good blocker reports are small and concrete. They name the failed command or
 API, include the PR/check URL when available, distinguish local pass from CI
 failure, and say whether the current worker can continue after an operator
 action. Vague reports such as "GitHub failed" or "CI flaky" are not enough.
+Reports for shared environment friction should cite the relevant capability
+result, such as missing `tasklist`, unauthenticated `gh`, unavailable Linear
+viewer probe, risky `core.autocrlf`, CRLF formatter inputs, or coverage policy
+evidence.
 
 ## Main loop
 

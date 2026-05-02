@@ -1473,6 +1473,26 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "optimization Windows workflow prompt requires capability evidence for blockers" do
+    path = Path.expand(Path.join([__DIR__, "..", "..", "WORKFLOW.optimization.windows.example.md"]))
+
+    assert {:ok, workflow} = Workflow.load(path)
+    assert {:ok, settings} = Schema.parse(workflow.config)
+    assert settings.tracker.dispatch_states == ["Todo"]
+    assert settings.codex.review_readiness_required_checks == ["make-all", "validate-pr-description", "windows-native-test"]
+
+    assert workflow.prompt =~ "## Codex Workpad"
+    assert workflow.prompt =~ "capability/preflight evidence"
+    assert workflow.prompt =~ "Run or cite"
+    assert workflow.prompt =~ "mix symphony.preflight.windows --capabilities-only --json"
+    assert workflow.prompt =~ "failed command"
+    assert workflow.prompt =~ "capability result"
+    assert workflow.prompt =~ "local recovery attempted"
+    assert workflow.prompt =~ "manager action needed"
+    assert workflow.prompt =~ "canonical issue exists"
+    assert workflow.prompt =~ "If a true blocker prevents completion"
+  end
+
   test "workflow prompt is used when building base prompt" do
     workflow_prompt = "Workflow prompt body used as codex instruction."
 
