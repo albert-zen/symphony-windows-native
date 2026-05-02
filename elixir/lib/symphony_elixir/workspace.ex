@@ -163,6 +163,55 @@ defmodule SymphonyElixir.Workspace do
     :ok
   end
 
+  @spec remove_issue_workspaces_with_result(term()) :: {:ok, non_neg_integer()} | {:error, term()}
+  def remove_issue_workspaces_with_result(identifier), do: remove_issue_workspaces_with_result(identifier, nil)
+
+  @spec remove_issue_workspaces_with_result(term(), worker_host()) :: {:ok, non_neg_integer()} | {:error, term()}
+  def remove_issue_workspaces_with_result(identifier, worker_host) when is_binary(identifier) and is_binary(worker_host) do
+    safe_id = safe_identifier(identifier)
+
+    with {:ok, workspace} <- workspace_path_for_issue(safe_id, worker_host),
+         {:ok, _removed_paths} <- remove(workspace, worker_host) do
+      {:ok, 1}
+    end
+  end
+
+  def remove_issue_workspaces_with_result(identifier, nil) when is_binary(identifier) do
+    case Config.settings!().worker.ssh_hosts do
+      [] ->
+        remove_local_issue_workspace_with_result(identifier)
+
+      worker_hosts ->
+        worker_hosts
+        |> Enum.map(&remove_issue_workspaces_with_result(identifier, &1))
+        |> summarize_remove_results()
+    end
+  end
+
+  def remove_issue_workspaces_with_result(_identifier, _worker_host), do: {:ok, 0}
+
+  defp remove_local_issue_workspace_with_result(identifier) do
+    safe_id = safe_identifier(identifier)
+
+    with {:ok, workspace} <- workspace_path_for_issue(safe_id, nil),
+         existed_before? <- File.exists?(workspace),
+         {:ok, _removed_paths} <- remove(workspace, nil),
+         false <- File.exists?(workspace) do
+      {:ok, if(existed_before?, do: 1, else: 0)}
+    else
+      true -> {:error, :workspace_still_exists}
+      {:error, reason} -> {:error, reason}
+      {:error, reason, _output} -> {:error, reason}
+    end
+  end
+
+  defp summarize_remove_results(results) do
+    Enum.reduce_while(results, {:ok, 0}, fn
+      {:ok, count}, {:ok, total} -> {:cont, {:ok, total + count}}
+      {:error, reason}, _acc -> {:halt, {:error, reason}}
+    end)
+  end
+
   @spec run_before_run_hook(Path.t(), map() | String.t() | nil, worker_host()) ::
           :ok | {:error, term()}
   def run_before_run_hook(workspace, issue_or_identifier, worker_host \\ nil) when is_binary(workspace) do

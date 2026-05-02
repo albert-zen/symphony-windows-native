@@ -5,6 +5,7 @@
 │ Runtime: 1m 15s
 │ Tokens: in 90 | out 12 | total 102
 │ Rate Limits: unavailable (no worker rate-limit data)
+│ Workspace cleanup: pending
 │ Project: https://linear.app/project/project/issues
 │ Next refresh: n/a
 ├─ Running

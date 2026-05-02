@@ -17,6 +17,8 @@ defmodule SymphonyElixir.Orchestrator do
   @poll_transition_render_delay_ms 20
   @max_recent_codex_events 80
   @steer_request_timeout_ms 3_000
+  @startup_cleanup_preserved_states ["In Review", "Blocked"]
+  @workspace_cleanup_progress_notify_every 10
   @empty_codex_totals %{
     input_tokens: 0,
     output_tokens: 0,
@@ -49,7 +51,9 @@ defmodule SymphonyElixir.Orchestrator do
       retry_attempts: %{},
       pending_steer_calls: %{},
       codex_totals: nil,
-      codex_rate_limits: nil
+      codex_rate_limits: nil,
+      workspace_cleanup: nil,
+      workspace_cleanup_ref: nil
     ]
   end
 
@@ -75,7 +79,7 @@ defmodule SymphonyElixir.Orchestrator do
       codex_rate_limits: nil
     }
 
-    run_terminal_workspace_cleanup()
+    send(self(), :run_terminal_workspace_cleanup)
     state = schedule_tick(state, 0)
 
     {:ok, state}
@@ -126,6 +130,28 @@ defmodule SymphonyElixir.Orchestrator do
     notify_dashboard()
     {:noreply, state}
   end
+
+  def handle_info(:run_terminal_workspace_cleanup, state) do
+    state = start_terminal_workspace_cleanup(state)
+    notify_dashboard()
+    {:noreply, state}
+  end
+
+  def handle_info({:terminal_workspace_cleanup_progress, cleanup_ref, cleanup}, %{workspace_cleanup_ref: cleanup_ref} = state)
+      when is_reference(cleanup_ref) and is_map(cleanup) do
+    notify_dashboard()
+    {:noreply, %{state | workspace_cleanup: cleanup}}
+  end
+
+  def handle_info({:terminal_workspace_cleanup_progress, _cleanup_ref, _cleanup}, state), do: {:noreply, state}
+
+  def handle_info({:terminal_workspace_cleanup_complete, cleanup_ref, cleanup}, %{workspace_cleanup_ref: cleanup_ref} = state)
+      when is_reference(cleanup_ref) and is_map(cleanup) do
+    notify_dashboard()
+    {:noreply, %{state | workspace_cleanup: cleanup, workspace_cleanup_ref: nil}}
+  end
+
+  def handle_info({:terminal_workspace_cleanup_complete, _cleanup_ref, _cleanup}, state), do: {:noreply, state}
 
   def handle_info(
         {:DOWN, ref, :process, _pid, reason},
@@ -1003,29 +1029,144 @@ defmodule SymphonyElixir.Orchestrator do
     {:noreply, release_issue_claim(state, issue_id)}
   end
 
-  defp cleanup_issue_workspace(identifier, worker_host \\ nil)
-
   defp cleanup_issue_workspace(identifier, worker_host) when is_binary(identifier) do
     Workspace.remove_issue_workspaces(identifier, worker_host)
   end
 
   defp cleanup_issue_workspace(_identifier, _worker_host), do: :ok
 
-  defp run_terminal_workspace_cleanup do
-    case Tracker.fetch_issues_by_states(Config.settings!().tracker.terminal_states) do
-      {:ok, issues} ->
-        issues
-        |> Enum.each(fn
-          %Issue{identifier: identifier} when is_binary(identifier) ->
-            cleanup_issue_workspace(identifier)
+  defp start_terminal_workspace_cleanup(%State{} = state) do
+    settings = Config.settings!()
+    ttl_ms = settings.workspace.startup_cleanup_ttl_ms
+    started_at = DateTime.utc_now()
+    cleanup = cleanup_result(started_at, ttl_ms)
+    cleanup_ref = make_ref()
+    owner = self()
 
-          _ ->
-            :ok
-        end)
+    Logger.info("Starting retention-aware terminal workspace cleanup ttl_ms=#{ttl_ms}")
+
+    start_workspace_cleanup_task(fn ->
+      run_terminal_workspace_cleanup(owner, cleanup_ref, settings, cleanup)
+    end)
+
+    %{state | workspace_cleanup: cleanup, workspace_cleanup_ref: cleanup_ref}
+  end
+
+  defp start_workspace_cleanup_task(fun) when is_function(fun, 0) do
+    if Process.whereis(SymphonyElixir.TaskSupervisor) do
+      start_agent_task(fun)
+    else
+      Task.start(fun)
+    end
+  end
+
+  defp run_terminal_workspace_cleanup(owner, cleanup_ref, settings, cleanup) do
+    case Tracker.fetch_issues_by_states(cleanup_candidate_states(settings)) do
+      {:ok, issues} ->
+        result =
+          issues
+          |> Enum.with_index(1)
+          |> Enum.reduce(cleanup, fn {issue, index}, result ->
+            result = maybe_cleanup_terminal_workspace(issue, result)
+            maybe_send_cleanup_progress(owner, cleanup_ref, result, index)
+            result
+          end)
+          |> Map.put(:status, :completed)
+          |> Map.put(:completed_at, DateTime.utc_now())
+
+        Logger.info("Completed terminal workspace cleanup checked=#{result.checked} cleaned=#{result.cleaned} preserved=#{result.preserved} skipped=#{result.skipped}")
+        send(owner, {:terminal_workspace_cleanup_complete, cleanup_ref, result})
 
       {:error, reason} ->
         Logger.warning("Skipping startup terminal workspace cleanup; failed to fetch terminal issues: #{inspect(reason)}")
+
+        result =
+          cleanup
+          |> Map.put(:status, :failed)
+          |> Map.put(:completed_at, DateTime.utc_now())
+          |> Map.put(:error, inspect(reason))
+
+        send(owner, {:terminal_workspace_cleanup_complete, cleanup_ref, result})
     end
+  end
+
+  defp maybe_send_cleanup_progress(owner, cleanup_ref, result, index) do
+    if rem(index, @workspace_cleanup_progress_notify_every) == 0 do
+      send(owner, {:terminal_workspace_cleanup_progress, cleanup_ref, result})
+    end
+  end
+
+  defp cleanup_candidate_states(settings) do
+    (settings.tracker.terminal_states ++ settings.tracker.active_states ++ @startup_cleanup_preserved_states)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
+
+  defp cleanup_result(started_at, ttl_ms) do
+    %{
+      status: :running,
+      started_at: started_at,
+      completed_at: nil,
+      ttl_ms: ttl_ms,
+      checked: 0,
+      cleaned: 0,
+      preserved: 0,
+      skipped: 0,
+      error: nil
+    }
+  end
+
+  defp maybe_cleanup_terminal_workspace(%Issue{} = issue, result) do
+    result = Map.update!(result, :checked, &(&1 + 1))
+
+    cond do
+      !terminal_issue_state?(issue.state, terminal_state_set()) ->
+        Map.update!(result, :preserved, &(&1 + 1))
+
+      !cleanup_ttl_expired?(issue, result) ->
+        Map.update!(result, :preserved, &(&1 + 1))
+
+      is_binary(issue.identifier) ->
+        case cleanup_issue_workspace_with_result(issue.identifier) do
+          {:ok, removed_count} ->
+            Map.update!(result, :cleaned, &(&1 + removed_count))
+
+          {:error, reason} ->
+            result
+            |> Map.update!(:skipped, &(&1 + 1))
+            |> Map.put(:error, inspect(reason))
+        end
+
+      true ->
+        Map.update!(result, :skipped, &(&1 + 1))
+    end
+  end
+
+  defp maybe_cleanup_terminal_workspace(_issue, result) do
+    result
+    |> Map.update!(:checked, &(&1 + 1))
+    |> Map.update!(:skipped, &(&1 + 1))
+  end
+
+  defp cleanup_ttl_expired?(_issue, %{ttl_ms: 0}), do: true
+
+  defp cleanup_ttl_expired?(%Issue{updated_at: %DateTime{} = updated_at}, %{started_at: %DateTime{}, ttl_ms: ttl_ms} = result)
+       when is_integer(ttl_ms) and ttl_ms > 0 do
+    DateTime.diff(result.started_at, updated_at, :millisecond) >= ttl_ms
+  end
+
+  defp cleanup_ttl_expired?(_issue, _result), do: false
+
+  defp cleanup_issue_workspace_with_result(identifier) when is_binary(identifier) do
+    remove_fun =
+      Application.get_env(
+        :symphony_elixir,
+        :workspace_remove_issue_workspaces,
+        &Workspace.remove_issue_workspaces_with_result/1
+      )
+
+    remove_fun.(identifier)
   end
 
   defp notify_dashboard do
@@ -1322,6 +1463,17 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  defp workspace_cleanup_snapshot(nil), do: nil
+
+  defp workspace_cleanup_snapshot(%{} = cleanup) do
+    cleanup
+    |> Map.update(:started_at, nil, &iso8601/1)
+    |> Map.update(:completed_at, nil, &iso8601/1)
+  end
+
+  defp iso8601(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
+  defp iso8601(value), do: value
+
   @impl true
   def handle_call(:snapshot, _from, state) do
     state = refresh_runtime_config(state)
@@ -1392,6 +1544,7 @@ defmodule SymphonyElixir.Orchestrator do
        retrying: retrying,
        codex_totals: codex_totals,
        rate_limits: Map.get(state, :codex_rate_limits),
+       workspace_cleanup: workspace_cleanup_snapshot(state.workspace_cleanup),
        polling: %{
          checking?: state.poll_check_in_progress == true,
          next_poll_in_ms: next_poll_in_ms(state.next_poll_due_at_ms, now_ms),

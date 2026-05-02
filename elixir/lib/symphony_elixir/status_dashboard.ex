@@ -326,7 +326,8 @@ defmodule SymphonyElixir.StatusDashboard do
              retrying: retrying,
              codex_totals: codex_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
-             polling: Map.get(snapshot, :polling)
+             polling: Map.get(snapshot, :polling),
+             workspace_cleanup: Map.get(snapshot, :workspace_cleanup)
            }},
           update_token_samples(token_samples, now_ms, total_tokens)
         }
@@ -345,6 +346,7 @@ defmodule SymphonyElixir.StatusDashboard do
         rate_limits = Map.get(snapshot, :rate_limits)
         project_link_lines = format_project_link_lines()
         project_refresh_line = format_project_refresh_line(Map.get(snapshot, :polling))
+        workspace_cleanup_line = format_workspace_cleanup_line(Map.get(snapshot, :workspace_cleanup))
         codex_input_tokens = Map.get(codex_totals, :input_tokens, 0)
         codex_output_tokens = Map.get(codex_totals, :output_tokens, 0)
         codex_total_tokens = Map.get(codex_totals, :total_tokens, 0)
@@ -372,6 +374,7 @@ defmodule SymphonyElixir.StatusDashboard do
              colorize(" | ", @ansi_gray) <>
              colorize("total #{format_count(codex_total_tokens)}", @ansi_yellow),
            colorize("│ Rate Limits: ", @ansi_bold) <> format_rate_limits(rate_limits, running),
+           workspace_cleanup_line,
            project_link_lines,
            project_refresh_line,
            colorize("├─ Running", @ansi_bold),
@@ -435,6 +438,39 @@ defmodule SymphonyElixir.StatusDashboard do
   defp format_project_refresh_line(_) do
     colorize("│ Next refresh: ", @ansi_bold) <> colorize("n/a", @ansi_gray)
   end
+
+  defp format_workspace_cleanup_line(%{} = cleanup) do
+    status = cleanup_value(cleanup, :status, "unknown")
+    cleaned = cleanup_value(cleanup, :cleaned, 0)
+    preserved = cleanup_value(cleanup, :preserved, 0)
+    skipped = cleanup_value(cleanup, :skipped, 0)
+    ttl_ms = cleanup_value(cleanup, :ttl_ms, nil)
+
+    colorize("│ Workspace cleanup: ", @ansi_bold) <>
+      colorize("#{status}", cleanup_status_color(status)) <>
+      colorize(" cleaned #{cleaned}", @ansi_green) <>
+      colorize(" preserved #{preserved}", @ansi_yellow) <>
+      colorize(" skipped #{skipped}", @ansi_gray) <>
+      colorize(" ttl #{format_duration_ms(ttl_ms)}", @ansi_gray)
+  end
+
+  defp format_workspace_cleanup_line(_) do
+    colorize("│ Workspace cleanup: ", @ansi_bold) <> colorize("pending", @ansi_gray)
+  end
+
+  defp cleanup_value(cleanup, key, default) do
+    Map.get(cleanup, key) || Map.get(cleanup, Atom.to_string(key)) || default
+  end
+
+  defp cleanup_status_color(status) when status in [:failed, "failed"], do: @ansi_red
+  defp cleanup_status_color(status) when status in [:running, "running"], do: @ansi_cyan
+  defp cleanup_status_color(_status), do: @ansi_green
+
+  defp format_duration_ms(ms) when is_integer(ms) and ms >= 86_400_000, do: "#{div(ms, 86_400_000)}d"
+  defp format_duration_ms(ms) when is_integer(ms) and ms >= 3_600_000, do: "#{div(ms, 3_600_000)}h"
+  defp format_duration_ms(ms) when is_integer(ms) and ms >= 60_000, do: "#{div(ms, 60_000)}m"
+  defp format_duration_ms(ms) when is_integer(ms), do: "#{ms}ms"
+  defp format_duration_ms(_ms), do: "n/a"
 
   defp linear_project_url(project_slug), do: "https://linear.app/project/#{project_slug}/issues"
 
@@ -571,7 +607,8 @@ defmodule SymphonyElixir.StatusDashboard do
              retrying: retrying,
              codex_totals: codex_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
-             polling: Map.get(snapshot, :polling)
+             polling: Map.get(snapshot, :polling),
+             workspace_cleanup: Map.get(snapshot, :workspace_cleanup)
            }}
 
         _ ->

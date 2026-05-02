@@ -482,9 +482,21 @@ issue in `In Progress` unless a manager explicitly chooses another state.
 
 When the issue moves to a terminal state such as `Done`, Symphony stops the
 active agent and runs `hooks.before_remove` before removing the workspace.
-At startup, Symphony also queries terminal states and removes matching issue workspaces under the
-configured `workspace.root`. The cleanup script above is for manual retention cleanup, log cleanup,
-and operator-initiated workspace cleanup.
+At startup, Symphony schedules terminal workspace cleanup after the orchestrator
+returns from init, so dashboard and app readiness are not blocked by old
+workspace removal or `hooks.before_remove`.
+
+Startup cleanup is retention-aware. It queries terminal states plus configured
+active states and the protected `In Review` and `Blocked` states, preserves any
+non-terminal issue workspace, and removes only terminal issue workspaces whose
+`updated_at` timestamp is older than `workspace.startup_cleanup_ttl_ms`. The
+default TTL is seven days. Set the TTL to `0` only when an operator needs
+immediate terminal cleanup.
+
+Cleanup progress is exposed in orchestrator snapshots and the dashboard as
+`workspace_cleanup` with status, TTL, checked, cleaned, preserved, skipped, and
+error fields. The cleanup script above remains for manual retention cleanup, log
+cleanup, and operator-initiated workspace cleanup.
 
 ## Known Windows limitations
 
