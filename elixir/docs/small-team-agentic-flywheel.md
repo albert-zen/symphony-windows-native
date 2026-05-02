@@ -136,6 +136,11 @@ base for later agents. These guardrails are the minimum bar:
 See [agent-quality-flywheel.md](agent-quality-flywheel.md) for the detailed PR
 quality policy used by this repository.
 
+See [manager-agent-runbook.md](manager-agent-runbook.md) for the manager
+orchestration loop used to review completed work, investigate blockers, release
+ready issues into `Todo`, keep workers saturated, and verify deployed system
+changes.
+
 ## Workpad discipline
 
 Use exactly one Linear comment whose first line is:

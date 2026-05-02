@@ -13,6 +13,8 @@ policy or recurring pitfalls change.
 - `elixir/docs/windows-native.md`: Windows runtime setup, paths, preflight, and pitfalls.
 - `elixir/docs/small-team-agentic-flywheel.md`: Linear/GitHub flywheel operating model.
 - `elixir/docs/agent-quality-flywheel.md`: PR quality gates and review readiness policy.
+- `elixir/docs/manager-agent-runbook.md`: manager/orchestrator loop for review,
+  blocker triage, issue release, waiting, and deployment verification.
 - `.github/pull_request_template.md`: required PR body headings.
 
 ## Windows Paths And Commands

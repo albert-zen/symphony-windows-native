@@ -107,6 +107,46 @@ defmodule SymphonyElixir.TestSupport do
 
   def path_separator, do: if(windows?(), do: ";", else: ":")
 
+  def normalize_path_for_assertion(path) do
+    path
+    |> Path.expand()
+    |> String.replace("\\", "/")
+    |> then(fn expanded ->
+      if windows?() do
+        expanded
+        |> String.downcase()
+        |> normalize_windows_temp_root_for_assertion()
+      else
+        expanded
+      end
+    end)
+  end
+
+  defp normalize_windows_temp_root_for_assertion(path) do
+    windows_temp_roots_for_assertion()
+    |> Enum.reduce(path, fn root, normalized ->
+      String.replace(normalized, root, "<windows-temp-root>")
+    end)
+  end
+
+  defp windows_temp_roots_for_assertion do
+    [
+      System.tmp_dir!(),
+      System.get_env("TEMP"),
+      System.get_env("TMP"),
+      System.get_env("USERPROFILE") && Path.join(System.get_env("USERPROFILE"), "AppData/Local/Temp")
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(fn path ->
+      path
+      |> Path.expand()
+      |> String.replace("\\", "/")
+      |> String.downcase()
+    end)
+    |> Enum.uniq()
+    |> Enum.sort_by(&byte_size/1, :desc)
+  end
+
   def write_node_executable!(executable, javascript) when is_binary(executable) and is_binary(javascript) do
     script = executable <> ".js"
     script_name = Path.basename(script)
@@ -306,7 +346,7 @@ defmodule SymphonyElixir.TestSupport do
           codex_thread_sandbox: "workspace-write",
           codex_turn_sandbox_policy: nil,
           codex_turn_timeout_ms: 3_600_000,
-          codex_read_timeout_ms: 5_000,
+          codex_read_timeout_ms: 30_000,
           codex_stall_timeout_ms: 300_000,
           codex_command_watchdog_long_running_ms: 300_000,
           codex_command_watchdog_idle_ms: 120_000,

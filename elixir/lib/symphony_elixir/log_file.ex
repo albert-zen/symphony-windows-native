@@ -97,7 +97,7 @@ defmodule SymphonyElixir.LogFile.Formatter do
     log_event
     |> put_in([:meta, :event_id], Map.get_lazy(metadata, :event_id, &event_id/0))
     |> :logger_formatter.format(config)
-    |> IO.iodata_to_binary()
+    |> unicode_chardata_to_string()
     |> sanitize()
   end
 
@@ -109,6 +109,10 @@ defmodule SymphonyElixir.LogFile.Formatter do
     |> String.replace(@carriage_return_pattern, "")
     |> String.replace("\r\n", "\n")
     |> String.replace(@control_pattern, "")
+  end
+
+  defp unicode_chardata_to_string(chardata) do
+    :unicode.characters_to_binary(chardata)
   end
 
   defp event_id do
