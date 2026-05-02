@@ -15,6 +15,7 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
       id
       identifier
       url
+      description
       team {
         states(first: 250) {
           nodes {
@@ -25,6 +26,7 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
       }
       attachments {
         nodes {
+          sourceType
           title
           url
         }
@@ -381,6 +383,7 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
   defp required_checks_passed?(issue, %{owner: owner, repo: repo, number: number}, github_client) do
     with {:ok, pr} <- github_json(github_client, "#{@github_api}/repos/#{owner}/#{repo}/pulls/#{number}"),
          :ok <- pull_request_matches_issue?(issue, owner, repo, pr),
+         :ok <- pull_request_closes_origin_issue?(issue, owner, repo, pr),
          {:ok, head_sha} <- required_string(pr, ["head", "sha"], :review_readiness_missing_pr_head_sha),
          {:ok, base_ref} <- required_string(pr, ["base", "ref"], :review_readiness_missing_pr_base_ref),
          :ok <- pull_request_file_count_fetchable?(pr),
@@ -469,6 +472,99 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
       _ -> nil
     end
   end
+
+  defp pull_request_closes_origin_issue?(issue, owner, repo, pr) do
+    case origin_github_issue(issue, owner, repo) do
+      nil ->
+        :ok
+
+      %{owner: issue_owner, repo: issue_repo, number: issue_number} ->
+        body = Map.get(pr, "body")
+
+        if closing_keyword_for_issue?(body, issue_owner, issue_repo, issue_number) do
+          :ok
+        else
+          {:error, {:review_readiness_missing_closing_keyword, issue_owner, issue_repo, issue_number}}
+        end
+    end
+  end
+
+  defp origin_github_issue(issue, owner, repo) do
+    issue
+    |> origin_github_issues(owner, repo)
+    |> case do
+      [origin_issue] -> origin_issue
+      _ambiguous_or_absent -> nil
+    end
+  end
+
+  defp origin_github_issues(issue, owner, repo) do
+    description_issues =
+      issue
+      |> Map.get("description")
+      |> description_origin_github_issue_urls()
+      |> Enum.map(&parse_issue_url(&1, owner, repo))
+      |> Enum.reject(&is_nil/1)
+
+    attachment_issues =
+      issue
+      |> get_in(["attachments", "nodes"])
+      |> case do
+        attachments when is_list(attachments) ->
+          attachments
+          |> Enum.filter(&origin_github_issue_attachment?/1)
+          |> Enum.map(&parse_issue_url(Map.get(&1, "url"), owner, repo))
+          |> Enum.reject(&is_nil/1)
+
+        _ ->
+          []
+      end
+
+    Enum.uniq_by(description_issues ++ attachment_issues, &{normalize_repo_name("#{&1.owner}/#{&1.repo}"), &1.number})
+  end
+
+  defp description_origin_github_issue_urls(text) when is_binary(text) do
+    ~r/(?:^|\R)\s*GitHub(?:\s+issue)?\s*:\s*(?:\[[^\]]+\]\(<)?(https:\/\/github\.com\/[^\s\]\)>]+)/i
+    |> Regex.scan(text)
+    |> Enum.map(fn [_match, url] -> url end)
+  end
+
+  defp description_origin_github_issue_urls(_text), do: []
+
+  defp origin_github_issue_attachment?(%{"url" => url} = attachment) when is_binary(url) do
+    github_source? = normalize(Map.get(attachment, "sourceType") || "") == "github"
+
+    github_source? and Regex.match?(~r/^https:\/\/github\.com\/[^\/]+\/[^\/]+\/issues\/\d+/, url)
+  end
+
+  defp origin_github_issue_attachment?(_attachment), do: false
+
+  defp parse_issue_url(url, expected_owner, expected_repo) when is_binary(url) do
+    expected_repository = normalize_repo_name("#{expected_owner}/#{expected_repo}")
+
+    case Regex.run(~r/^https:\/\/github\.com\/([^\/]+)\/([^\/]+)\/issues\/(\d+)/, url) do
+      [_, owner, repo, number] ->
+        if normalize_repo_name("#{owner}/#{repo}") == expected_repository do
+          %{owner: owner, repo: repo, number: number}
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp closing_keyword_for_issue?(body, owner, repo, number) when is_binary(body) do
+    owner = Regex.escape(owner)
+    repo = Regex.escape(repo)
+    number = Regex.escape(to_string(number))
+
+    Regex.match?(
+      ~r/\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\s+(?:#{owner}\/#{repo})?##{number}\b/i,
+      body
+    )
+  end
+
+  defp closing_keyword_for_issue?(_body, _owner, _repo, _number), do: false
 
   defp normalize_repo_name(nil), do: nil
 
@@ -1194,6 +1290,9 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
 
   defp rejection_message({:review_readiness_pr_branch_mismatch, head_ref, identifier}),
     do: "linked PR branch #{head_ref} does not match Linear issue #{identifier}."
+
+  defp rejection_message({:review_readiness_missing_closing_keyword, owner, repo, number}),
+    do: "linked PR body is missing a closing keyword for GitHub issue #{owner}/#{repo}##{number}. Add `Fixes ##{number}` or another GitHub-supported closing keyword before review handoff."
 
   defp rejection_message({:review_readiness_required_checks_not_passing, failures}),
     do: "required GitHub checks are not passing: #{format_failures(failures)}."
