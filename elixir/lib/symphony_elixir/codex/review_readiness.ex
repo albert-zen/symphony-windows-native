@@ -383,6 +383,11 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
          :ok <- pull_request_matches_issue?(issue, owner, repo, pr),
          {:ok, head_sha} <- required_string(pr, ["head", "sha"], :review_readiness_missing_pr_head_sha),
          {:ok, base_ref} <- required_string(pr, ["base", "ref"], :review_readiness_missing_pr_base_ref),
+         :ok <- pull_request_file_count_fetchable?(pr),
+         {:ok, pr_files} <- pull_request_files(owner, repo, number, github_client),
+         :ok <- coverage_ignore_ready?(owner, repo, head_sha, pr_files, github_client),
+         {:ok, merge_base_sha} <- merge_base_sha(owner, repo, base_ref, head_sha, github_client),
+         :ok <- stale_base_ready?(owner, repo, base_ref, merge_base_sha, pr_files, github_client),
          {:ok, required_checks} <-
            required_checks(owner, repo, base_ref, github_client),
          {:ok, statuses} <- github_json(github_client, "#{@github_api}/repos/#{owner}/#{repo}/commits/#{head_sha}/status"),
@@ -504,6 +509,391 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
         {:error, {:review_readiness_github_unverifiable, reason}}
     end
   end
+
+  defp github_json_list(github_client, url) do
+    case github_client.(url, []) do
+      {:ok, %{status: status, body: body}} when status in 200..299 and is_list(body) ->
+        {:ok, body}
+
+      {:ok, %{status: status, body: body}} ->
+        {:error, {:review_readiness_github_unverifiable, status, summarize_body(body)}}
+
+      {:error, reason} ->
+        {:error, {:review_readiness_github_unverifiable, reason}}
+    end
+  end
+
+  defp pull_request_files(owner, repo, number, github_client) do
+    github_json_list(github_client, "#{@github_api}/repos/#{owner}/#{repo}/pulls/#{number}/files?per_page=100")
+  end
+
+  defp pull_request_file_count_fetchable?(%{"changed_files" => changed_files})
+       when is_integer(changed_files) and changed_files > 100 do
+    {:error, {:review_readiness_pr_file_list_too_large, changed_files}}
+  end
+
+  defp pull_request_file_count_fetchable?(_pr), do: :ok
+
+  defp coverage_ignore_ready?(owner, repo, head_sha, files, github_client) do
+    changed_modules = changed_production_modules(files)
+
+    with {:ok, ignored_modules} <- added_coverage_ignore_modules(owner, repo, head_sha, files, github_client) do
+      changed_module_keys = normalized_module_set(changed_modules)
+
+      overlap =
+        ignored_modules
+        |> Enum.filter(&changed_module_ignored?(&1, changed_module_keys))
+        |> Enum.sort()
+
+      if overlap == [] do
+        :ok
+      else
+        {:error, {:review_readiness_coverage_ignore_changed_modules, overlap}}
+      end
+    end
+  end
+
+  defp normalized_module_set(modules) do
+    modules
+    |> Enum.map(&normalize_module_name/1)
+    |> MapSet.new()
+  end
+
+  defp normalize_module_name(module) do
+    module
+    |> String.trim()
+    |> String.trim_leading("Elixir.")
+    |> String.downcase()
+  end
+
+  defp changed_module_ignored?(ignored_module, changed_module_keys) do
+    ignored_key = normalize_module_name(ignored_module)
+
+    Enum.any?(changed_module_keys, fn changed_key ->
+      ignored_key == changed_key or String.starts_with?(ignored_key, changed_key <> ".")
+    end)
+  end
+
+  defp changed_production_modules(files) do
+    Enum.reduce(files, MapSet.new(), fn file, acc ->
+      filename = Map.get(file, "filename")
+      status = Map.get(file, "status")
+      patch = Map.get(file, "patch")
+
+      if production_elixir_file?(filename) and status != "removed" do
+        path_module = module_name_from_path(filename)
+
+        patch
+        |> module_names_from_patch(path_module)
+        |> Enum.reduce(MapSet.put(acc, path_module), &MapSet.put(&2, &1))
+      else
+        acc
+      end
+    end)
+  end
+
+  defp production_elixir_file?(filename) when is_binary(filename) do
+    (String.starts_with?(filename, "lib/") or String.starts_with?(filename, "elixir/lib/")) and
+      String.ends_with?(filename, ".ex")
+  end
+
+  defp production_elixir_file?(_filename), do: false
+
+  defp module_name_from_path(filename) do
+    filename
+    |> String.trim_leading("elixir/")
+    |> String.trim_leading("lib/")
+    |> String.trim_trailing(".ex")
+    |> String.split("/", trim: true)
+    |> Enum.map_join(".", &Macro.camelize/1)
+  end
+
+  defp module_names_from_patch(patch, path_module) when is_binary(patch) do
+    Regex.scan(~r/^[ +]\s*defmodule\s+([A-Z][A-Za-z0-9_.]*)\s+do/m, patch)
+    |> Enum.flat_map(fn [_, module] -> changed_module_names(module, path_module) end)
+  end
+
+  defp module_names_from_patch(_patch, _path_module), do: []
+
+  defp changed_module_names(module, path_module) do
+    if String.contains?(module, ".") do
+      [module]
+    else
+      [module, path_module <> "." <> module]
+    end
+  end
+
+  defp added_coverage_ignore_modules(owner, repo, head_sha, files, github_client) do
+    files
+    |> Enum.filter(&(Map.get(&1, "filename") == "mix.exs" or String.ends_with?(Map.get(&1, "filename") || "", "/mix.exs")))
+    |> Enum.reduce_while({:ok, MapSet.new()}, fn file, {:ok, acc} ->
+      added_coverage_ignore_modules_for_file(owner, repo, head_sha, file, github_client, acc)
+    end)
+  end
+
+  defp added_coverage_ignore_modules_for_file(owner, repo, head_sha, file, github_client, acc) do
+    candidates =
+      file
+      |> Map.get("patch", "")
+      |> added_elixir_module_candidates()
+
+    case candidates do
+      [] ->
+        {:cont, {:ok, acc}}
+
+      candidates ->
+        add_coverage_ignore_candidates(owner, repo, head_sha, file, github_client, acc, candidates)
+    end
+  end
+
+  defp add_coverage_ignore_candidates(owner, repo, head_sha, file, github_client, acc, candidates) do
+    case github_file_lines(owner, repo, Map.fetch!(file, "filename"), head_sha, github_client) do
+      {:ok, lines} -> {:cont, {:ok, MapSet.union(acc, coverage_ignore_modules_at_lines(candidates, lines))}}
+      {:error, reason} -> {:halt, {:error, reason}}
+    end
+  end
+
+  defp coverage_ignore_modules_at_lines(candidates, lines) do
+    ranges = coverage_ignore_line_ranges(lines)
+
+    candidates
+    |> Enum.filter(fn {_module, line_number} -> line_in_ranges?(line_number, ranges) end)
+    |> Enum.map(fn {module, _line_number} -> module end)
+    |> MapSet.new()
+  end
+
+  defp added_elixir_module_candidates(patch) when is_binary(patch) do
+    patch
+    |> String.split("\n")
+    |> Enum.reduce(%{line_number: nil, modules: []}, &added_elixir_module_candidate/2)
+    |> Map.fetch!(:modules)
+    |> Enum.reverse()
+  end
+
+  defp added_elixir_module_candidates(_patch), do: []
+
+  defp added_elixir_module_candidate(line, state) do
+    cond do
+      hunk_start = hunk_new_start(line) ->
+        %{state | line_number: hunk_start - 1}
+
+      state.line_number == nil ->
+        state
+
+      deleted_line?(line) ->
+        state
+
+      added_line?(line) ->
+        state
+        |> increment_line_number()
+        |> maybe_add_candidate(line)
+
+      true ->
+        increment_line_number(state)
+    end
+  end
+
+  defp hunk_new_start(line) do
+    case Regex.run(~r/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/, line) do
+      [_, start] -> String.to_integer(start)
+      _ -> nil
+    end
+  end
+
+  defp increment_line_number(%{line_number: line_number} = state) when is_integer(line_number),
+    do: %{state | line_number: line_number + 1}
+
+  defp increment_line_number(state), do: state
+
+  defp maybe_add_candidate(%{line_number: line_number, modules: modules} = state, line) do
+    line_modules =
+      line
+      |> added_modules_from_line()
+      |> Enum.map(&{&1, line_number})
+
+    %{state | modules: line_modules ++ modules}
+  end
+
+  defp github_file_lines(owner, repo, filename, ref, github_client) do
+    path = filename |> String.split("/") |> Enum.map_join("/", fn segment -> URI.encode(segment, &URI.char_unreserved?/1) end)
+    encoded_ref = URI.encode(ref, &URI.char_unreserved?/1)
+
+    with {:ok, content} <- github_json(github_client, "#{@github_api}/repos/#{owner}/#{repo}/contents/#{path}?ref=#{encoded_ref}"),
+         {:ok, decoded} <- decode_github_content(content) do
+      {:ok, String.split(decoded, ~r/\R/)}
+    end
+  end
+
+  defp decode_github_content(%{"encoding" => "base64", "content" => content}) when is_binary(content) do
+    content
+    |> String.replace(~r/\s+/, "")
+    |> Base.decode64()
+    |> case do
+      {:ok, decoded} -> {:ok, decoded}
+      :error -> {:error, :review_readiness_github_content_unreadable}
+    end
+  end
+
+  defp decode_github_content(_content), do: {:error, :review_readiness_github_content_unreadable}
+
+  defp coverage_ignore_line_ranges(lines) do
+    lines
+    |> Enum.with_index(1)
+    |> Enum.reduce(
+      %{test_coverage_depth: 0, ignore_start: nil, ignore_depth: 0, ranges: []},
+      &coverage_ignore_line_range/2
+    )
+    |> Map.fetch!(:ranges)
+    |> Enum.reverse()
+  end
+
+  defp coverage_ignore_line_range({line, line_number}, state) do
+    state = maybe_open_coverage_ignore_range(state, line, line_number)
+    state = track_coverage_ignore_depth(state, line, line_number)
+    state = track_test_coverage_depth(state, line)
+
+    if state.test_coverage_depth == 0 and state.ignore_start != nil do
+      %{state | ignore_start: nil, ignore_depth: 0}
+    else
+      state
+    end
+  end
+
+  defp maybe_open_coverage_ignore_range(%{ignore_start: nil} = state, line, line_number) do
+    if in_test_coverage?(state, line) and opens_ignore_modules?(line) do
+      %{state | ignore_start: line_number, ignore_depth: ignore_modules_bracket_delta(line)}
+    else
+      state
+    end
+  end
+
+  defp maybe_open_coverage_ignore_range(state, _line, _line_number), do: state
+
+  defp track_coverage_ignore_depth(%{ignore_start: nil} = state, _line, _line_number), do: state
+
+  defp track_coverage_ignore_depth(state, line, line_number) do
+    ignore_depth =
+      if state.ignore_start == line_number do
+        state.ignore_depth
+      else
+        state.ignore_depth + bracket_delta(line)
+      end
+
+    if ignore_depth <= 0 do
+      %{state | ignore_start: nil, ignore_depth: 0, ranges: [{state.ignore_start, line_number} | state.ranges]}
+    else
+      %{state | ignore_depth: ignore_depth}
+    end
+  end
+
+  defp in_test_coverage?(%{test_coverage_depth: depth}, _line) when depth > 0, do: true
+  defp in_test_coverage?(_state, line), do: String.match?(line, ~r/\btest_coverage:\s*\[/)
+
+  defp track_test_coverage_depth(state, line) do
+    depth =
+      case state.test_coverage_depth do
+        0 ->
+          if String.match?(line, ~r/\btest_coverage:\s*\[/), do: bracket_delta(line), else: 0
+
+        depth ->
+          depth + bracket_delta(line)
+      end
+
+    %{state | test_coverage_depth: max(depth, 0)}
+  end
+
+  defp bracket_delta(content) do
+    uncommented = content |> String.split("#", parts: 2) |> hd()
+    length(Regex.scan(~r/\[/, uncommented)) - length(Regex.scan(~r/\]/, uncommented))
+  end
+
+  defp line_in_ranges?(line_number, ranges) do
+    Enum.any?(ranges, fn {first, last} -> line_number >= first and line_number <= last end)
+  end
+
+  defp added_line?(line), do: String.starts_with?(line, "+") and not String.starts_with?(line, "+++")
+  defp deleted_line?(line), do: String.starts_with?(line, "-")
+
+  defp opens_ignore_modules?(line) do
+    patch_line_content(line)
+    |> String.match?(~r/\bignore_modules:\s*\[/)
+  end
+
+  defp added_modules_from_line("+" <> rest) do
+    rest
+    |> String.split("#", parts: 2)
+    |> hd()
+    |> then(&Regex.scan(~r/\b([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*)\b/, &1))
+    |> Enum.map(fn [_, module] -> module end)
+  end
+
+  defp added_modules_from_line(_line), do: []
+
+  defp ignore_modules_bracket_delta(line) do
+    line
+    |> patch_line_content()
+    |> String.split(~r/\bignore_modules:\s*/, parts: 2)
+    |> case do
+      [_before, ignore_modules] -> bracket_delta(ignore_modules)
+      _ -> 0
+    end
+  end
+
+  defp patch_line_content("+" <> rest), do: rest
+  defp patch_line_content("-" <> rest), do: rest
+  defp patch_line_content(" " <> rest), do: rest
+  defp patch_line_content(line), do: line
+
+  defp merge_base_sha(owner, repo, base_ref, head_sha, github_client) do
+    encoded_base_ref = URI.encode(base_ref, &URI.char_unreserved?/1)
+    compare_url = "#{@github_api}/repos/#{owner}/#{repo}/compare/#{encoded_base_ref}...#{head_sha}"
+
+    with {:ok, comparison} <- github_json(github_client, compare_url) do
+      required_string(comparison, ["merge_base_commit", "sha"], :review_readiness_missing_pr_merge_base_sha)
+    end
+  end
+
+  defp stale_base_ready?(owner, repo, base_ref, merge_base_sha, pr_files, github_client) do
+    compare_url = "#{@github_api}/repos/#{owner}/#{repo}/compare/#{merge_base_sha}...#{URI.encode(base_ref, &URI.char_unreserved?/1)}"
+
+    with {:ok, comparison} <- github_json(github_client, compare_url) do
+      stale_base_overlap(comparison, pr_files)
+    end
+  end
+
+  defp stale_base_overlap(%{"ahead_by" => ahead_by, "files" => base_files}, pr_files)
+       when is_integer(ahead_by) and ahead_by > 0 and is_list(base_files) do
+    with :ok <- stale_base_file_list_fetchable?(base_files) do
+      pr_filenames = changed_filenames(pr_files)
+      base_filenames = changed_filenames(base_files)
+      overlap = MapSet.intersection(pr_filenames, base_filenames)
+
+      if MapSet.size(overlap) == 0 do
+        :ok
+      else
+        {:error, {:review_readiness_stale_base_overlap, Enum.sort(overlap)}}
+      end
+    end
+  end
+
+  defp stale_base_overlap(_comparison, _pr_files), do: :ok
+
+  defp stale_base_file_list_fetchable?(base_files) when length(base_files) >= 300 do
+    {:error, {:review_readiness_stale_base_file_list_too_large, length(base_files)}}
+  end
+
+  defp stale_base_file_list_fetchable?(_base_files), do: :ok
+
+  defp changed_filenames(files) do
+    Enum.reduce(files, MapSet.new(), fn file, acc ->
+      acc
+      |> maybe_put_filename(Map.get(file, "filename"))
+      |> maybe_put_filename(Map.get(file, "previous_filename"))
+    end)
+  end
+
+  defp maybe_put_filename(filenames, filename) when is_binary(filename), do: MapSet.put(filenames, filename)
+  defp maybe_put_filename(filenames, _filename), do: filenames
 
   defp required_string(payload, path, error) do
     case get_in(payload, path) do
@@ -778,6 +1168,8 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
   defp rejection_message(:review_readiness_required_checks_unverifiable), do: "required GitHub checks could not be verified."
   defp rejection_message(:review_readiness_missing_pr_head_sha), do: "the linked PR head SHA could not be verified."
   defp rejection_message(:review_readiness_missing_pr_base_ref), do: "the linked PR base branch could not be verified."
+  defp rejection_message(:review_readiness_missing_pr_merge_base_sha), do: "the linked PR merge-base SHA could not be verified."
+  defp rejection_message(:review_readiness_github_content_unreadable), do: "GitHub file content could not be decoded for review readiness."
 
   defp rejection_message(:review_readiness_agent_override_not_allowed),
     do: "manager override cannot be authorized by an agent tool call; a manager must move the issue outside the agent session and leave an audit note."
@@ -805,6 +1197,19 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
 
   defp rejection_message({:review_readiness_required_checks_not_passing, failures}),
     do: "required GitHub checks are not passing: #{format_failures(failures)}."
+
+  defp rejection_message({:review_readiness_pr_file_list_too_large, changed_files}),
+    do: "the linked PR changes #{changed_files} files; review readiness only verifies the first 100 GitHub PR files. Split the PR or get manager review outside the agent session."
+
+  defp rejection_message({:review_readiness_coverage_ignore_changed_modules, modules}),
+    do: "coverage ignore additions include modules changed in this PR: #{Enum.join(modules, ", ")}. Remove the ignore entry or get a manager to audit and move the issue outside the agent session."
+
+  defp rejection_message({:review_readiness_stale_base_overlap, filenames}),
+    do: "the PR base is stale and current base branch changes overlap PR files: #{Enum.join(filenames, ", ")}. Merge current base, resolve the overlap, and rerun validation."
+
+  defp rejection_message({:review_readiness_stale_base_file_list_too_large, changed_files}),
+    do:
+      "the PR base is stale and current base branch compare returns #{changed_files} files; review readiness cannot verify stale-base overlap from a capped GitHub compare file list. Merge current base and rerun validation."
 
   defp format_failures(failures) do
     Enum.map_join(failures, ", ", fn

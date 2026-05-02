@@ -199,9 +199,18 @@ When a ticket has an attached PR, run this protocol before moving to `Human Revi
 3. Treat every actionable reviewer comment (human or bot), including inline review comments, as blocking until one of these is true:
    - code/test/docs updated to address it, or
    - explicit, justified pushback reply is posted on that thread.
-4. Update the workpad plan/checklist to include each feedback item and its resolution status.
-5. Re-run validation after feedback-driven changes and push updates.
-6. Repeat this sweep until there are no outstanding actionable comments.
+4. Explicitly check for gate weakening and stale-base regressions:
+   - coverage-ignore additions must not include modules changed in the same PR unless a manager
+     audits and approves the exception outside the agent session.
+   - CI, lint, formatter, test, review, and readiness gates must not be skipped, disabled, relaxed,
+     or made non-blocking.
+   - if the PR branch is behind current `main` and touches files changed by newer merged work, merge
+     current `main`, resolve the overlap, and rerun validation before review handoff.
+   - deleted tests or removed public message handlers must be in scope for the issue and backed by
+     replacement coverage or explicit manager approval.
+5. Update the workpad plan/checklist to include each feedback item and its resolution status.
+6. Re-run validation after feedback-driven changes and push updates.
+7. Repeat this sweep until there are no outstanding actionable comments.
 
 ## Blocked-access escape hatch (required behavior)
 
