@@ -48,7 +48,8 @@ mise exec -- mix symphony.preflight.windows .\WORKFLOW.optimization.windows.md
 - Run `mix format` for touched Elixir files and `mix specs.check` when public
   `lib/` functions are added or changed.
 - Do not skip, weaken, disable, or hide failures from format, lint, coverage,
-  tests, CI, review-readiness, or PR-body checks.
+  tests, CI, review-readiness, or PR-body checks to land unrelated work. Quality
+  gate policy changes require a dedicated manager-owned issue, PR, and review.
 
 ## Branches, Commits, And PRs
 
@@ -86,6 +87,10 @@ Workpad. Blocking findings keep the issue in `In Progress` or return it to
 - For a true blocker, state what failed, the command/subsystem, recovery status,
   and the next operator action in the Workpad and, when useful for public review,
   the linked GitHub issue or PR.
+- If the blocker is shared pipeline friction, such as CI OS mismatch, GitHub
+  auth/rate-limit verification, stale runtime deployment, durable-claim
+  confusion, or manager-owned policy scope, do not keep retrying blindly. Record
+  the evidence and hand it to the manager as a system defect.
 - Move the issue to `Blocked` when that state exists. If it does not, record
   `Blocked state missing` and keep the issue active for manager triage.
 - If you discover a Symphony automation/system defect, create a GitHub issue
@@ -104,6 +109,8 @@ Workpad. Blocking findings keep the issue in `In Progress` or return it to
 - `WorkflowStore` and other global/stateful runtime paths can leak state across
   tests; preserve cleanup and isolation semantics.
 - Coverage threshold or ignore-list changes are quality-gate changes and need
-  explicit review; do not add changed production modules to coverage ignores.
+  explicit manager review; do not add changed production modules to coverage
+  ignores. Coverage is a signal for meaningful tests, not a demand for filler
+  tests to reach mechanical perfection.
 - Path and environment handling must preserve Windows drive paths, forward-slash
   compatibility, `$VAR` workflow expansion rules, and secret redaction.

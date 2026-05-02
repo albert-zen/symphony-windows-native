@@ -22,6 +22,7 @@ defmodule SymphonyElixir.CoreTest do
 
     config = Config.settings!()
     assert config.polling.interval_ms == 30_000
+    assert config.tracker.dispatch_states == ["Todo"]
     assert config.tracker.active_states == ["Todo", "In Progress"]
     assert config.tracker.terminal_states == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
     assert config.tracker.assignee == nil
@@ -51,6 +52,9 @@ defmodule SymphonyElixir.CoreTest do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_active_states: "Todo,  Review,")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
     assert message =~ "tracker.active_states"
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_dispatch_states: [" Todo ", "Todo", ""])
+    assert Config.settings!().tracker.dispatch_states == ["Todo"]
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: "token",

@@ -144,6 +144,88 @@ defmodule SymphonyElixir.Codex.ValidationEvidenceTest do
     assert ValidationEvidence.lint_pr_body(body) == []
   end
 
+  test "accepts checked heavy validation with skipped-test result counts" do
+    body = """
+    #### Test Plan
+
+    - [x] `make -C elixir all` passed locally - 443 tests, 0 failures, 7 skipped; coverage 100%.
+    """
+
+    assert ValidationEvidence.lint_pr_body(body) == []
+  end
+
+  test "accepts checked targeted validation with skipped-test result counts" do
+    body = """
+    #### Test Plan
+
+    - [ ] `make -C elixir all` not run locally because this test exercises targeted validation evidence.
+    - [x] `mix test test/symphony_elixir/validation_evidence_test.exs` passed locally - 44 tests, 0 failures, 2 tests skipped.
+    """
+
+    assert ValidationEvidence.lint_pr_body(body) == []
+  end
+
+  test "accepts skipped-test count variants with success evidence" do
+    for result <- [
+          "44 tests, no failures, 1 skip",
+          "44 tests, zero failures, 1 test skipped",
+          "44 tests, 0 failures, 1 test skip",
+          "successful local run with 1 skipped"
+        ] do
+      body = """
+      #### Test Plan
+
+      - [ ] `make -C elixir all` not run locally because this test exercises targeted validation evidence.
+      - [x] `mix test test/symphony_elixir/validation_evidence_test.exs` #{result}.
+      """
+
+      assert ValidationEvidence.lint_pr_body(body) == []
+    end
+  end
+
+  test "rejects checked validation commands reported as skipped or not run" do
+    for result <- [
+          "skipped locally",
+          "skip locally",
+          "not run locally",
+          "did not run locally",
+          "was not run locally",
+          "wasn't run locally",
+          "cannot run locally",
+          "can't run locally",
+          "unable to run locally",
+          "unavailable locally",
+          "pending local run",
+          "run later"
+        ] do
+      body = """
+      #### Test Plan
+
+      - [ ] `make -C elixir all` not run locally because this test checks explicit skip evidence rejection.
+      - [x] `mix test test/symphony_elixir/validation_evidence_test.exs` #{result}.
+      """
+
+      assert ValidationEvidence.lint_pr_body(body) == [
+               "Test Plan must include at least one checked local validation command or targeted check.",
+               "Test Plan must name narrower local validation when the heavy check is skipped."
+             ]
+    end
+  end
+
+  test "rejects checked validation commands with skipped-test counts but no success evidence" do
+    body = """
+    #### Test Plan
+
+    - [ ] `make -C elixir all` not run locally because this test checks explicit skip evidence rejection.
+    - [x] `mix test test/symphony_elixir/validation_evidence_test.exs` 2 skipped locally.
+    """
+
+    assert ValidationEvidence.lint_pr_body(body) == [
+             "Test Plan must include at least one checked local validation command or targeted check.",
+             "Test Plan must name narrower local validation when the heavy check is skipped."
+           ]
+  end
+
   test "rejects checked commands that only delegate validation to CI" do
     body = """
     #### Test Plan
