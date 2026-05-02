@@ -6,9 +6,17 @@ defmodule SymphonyElixirWeb.Presenter do
   alias SymphonyElixir.{Config, Orchestrator, Redactor, StatusDashboard}
 
   @conversation_display_limit 120
+  @conversation_event_scan_limit 400
   @text_excerpt_chars 2_000
   @raw_excerpt_chars 1_500
+  @raw_json_parse_chars 16_000
   @raw_items_per_display_item 8
+  @debug_sensitive_key_pattern ~r/(api[_-]?key|authorization|bearer|cookie|credential|password|private[_-]?key|secret|^token$|[_-]token$|token[_-]|access[_-]?token|refresh[_-]?token|session[_-]?token|id[_-]?token)/i
+  @debug_open_json_secret_field_pattern Regex.compile!(
+                                          ~s/("[^"]*(?:api[_-]?key|authorization|bearer|cookie|credential|password|private[_-]?key|secret|token)[^"]*"\\s*:\\s*")[^"]*\\z/,
+                                          "i"
+                                        )
+  @debug_open_assignment_pattern ~r/\b([A-Za-z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]*)=[^\s&]*\z/i
 
   @spec state_payload(GenServer.name(), timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
@@ -78,6 +86,7 @@ defmodule SymphonyElixirWeb.Presenter do
   @spec worker_conversation([map()]) :: [map()]
   def worker_conversation(events) when is_list(events) do
     events
+    |> Enum.take(-@conversation_event_scan_limit)
     |> Enum.reduce([], &append_conversation_event/2)
     |> Enum.reverse()
     |> Enum.take(-@conversation_display_limit)
@@ -266,7 +275,21 @@ defmodule SymphonyElixirWeb.Presenter do
   end
 
   defp raw_event_payload(event) when is_map(event) do
-    Redactor.redact(event[:raw] || event[:message])
+    raw = event[:raw]
+
+    cond do
+      is_binary(raw) and byte_size(raw) <= @raw_json_parse_chars ->
+        case Jason.decode(raw) do
+          {:ok, decoded} -> decoded
+          _ -> raw
+        end
+
+      is_nil(raw) ->
+        event[:message]
+
+      true ->
+        raw
+    end
   end
 
   defp bounded_raw_event_payload(event) when is_map(event) do
@@ -485,7 +508,7 @@ defmodule SymphonyElixirWeb.Presenter do
   defp display_event_payload(event) do
     cond do
       is_map(event[:message]) -> Redactor.redact(event[:message])
-      is_map(event[:raw]) -> raw_event_payload(event)
+      is_map(event[:raw]) -> event[:raw] |> bound_debug_value(@raw_excerpt_chars) |> elem(0)
       true -> Redactor.redact(event[:message])
     end
   end
@@ -719,13 +742,26 @@ defmodule SymphonyElixirWeb.Presenter do
     {excerpt, structurally_truncated? or text_truncated?}
   end
 
-  defp bound_debug_value(value, limit) when is_binary(value) do
-    value
-    |> Redactor.redact()
-    |> truncate_text(limit)
+  defp bound_debug_value(value, limit, key \\ nil)
+
+  defp bound_debug_value(value, limit, key) when is_atom(key) and not is_nil(key),
+    do: bound_debug_value(value, limit, Atom.to_string(key))
+
+  defp bound_debug_value(value, limit, key) when is_binary(key) do
+    if Regex.match?(@debug_sensitive_key_pattern, key) do
+      {"[REDACTED]", false}
+    else
+      bound_debug_value(value, limit, nil)
+    end
   end
 
-  defp bound_debug_value(value, limit) when is_list(value) do
+  defp bound_debug_value(value, limit, nil) when is_binary(value) do
+    {excerpt, truncated?} = truncate_text(value, limit)
+    {redacted_excerpt, redaction_truncated?} = excerpt |> redact_bounded_string() |> truncate_text(limit)
+    {redacted_excerpt, truncated? or redaction_truncated?}
+  end
+
+  defp bound_debug_value(value, limit, _key) when is_list(value) do
     {items, truncated?} = take_with_truncation(value, @raw_items_per_display_item)
 
     {bounded_items, child_truncated?} =
@@ -736,13 +772,13 @@ defmodule SymphonyElixirWeb.Presenter do
     {bounded_items, truncated? or child_truncated?}
   end
 
-  defp bound_debug_value(value, limit) when is_map(value) do
-    {items, truncated?} = value |> Enum.to_list() |> take_with_truncation(50)
+  defp bound_debug_value(value, limit, _key) when is_map(value) do
+    {items, truncated?} = take_with_truncation(value, 50)
 
     {bounded_items, child_truncated?} =
       items
       |> Enum.map(fn {key, item} ->
-        {bounded_item, item_truncated?} = bound_debug_value(item, limit)
+        {bounded_item, item_truncated?} = bound_debug_value(item, limit, key)
         {{key, bounded_item}, item_truncated?}
       end)
       |> unzip_bounded_values()
@@ -750,10 +786,25 @@ defmodule SymphonyElixirWeb.Presenter do
     {Map.new(bounded_items), truncated? or child_truncated?}
   end
 
-  defp bound_debug_value(value, _limit), do: {Redactor.redact(value), false}
+  defp bound_debug_value(value, _limit, _key), do: {Redactor.redact(value), false}
+
+  defp redact_bounded_string(value) do
+    value
+    |> Redactor.redact()
+    |> then(&Regex.replace(@debug_open_json_secret_field_pattern, &1, "\\1[REDACTED]"))
+    |> then(&Regex.replace(@debug_open_assignment_pattern, &1, "\\1=[REDACTED]"))
+  end
 
   defp take_with_truncation(values, limit) do
-    {Enum.take(values, limit), length(values) > limit}
+    values
+    |> Enum.reduce_while({[], 0, false}, fn value, {items, count, _truncated?} ->
+      if count < limit do
+        {:cont, {[value | items], count + 1, false}}
+      else
+        {:halt, {items, count, true}}
+      end
+    end)
+    |> then(fn {items, _count, truncated?} -> {Enum.reverse(items), truncated?} end)
   end
 
   defp unzip_bounded_values(values) do

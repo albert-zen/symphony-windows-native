@@ -1355,6 +1355,55 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert List.last(issue_payload["conversation"])["excerpt"] == "system event 160"
   end
 
+  test "worker detail projection does not process oversized raw payloads outside the display window" do
+    hidden_old_marker = "OLD_RAW_MARKER_SHOULD_NOT_LEAK"
+
+    old_oversized_event = %{
+      event: :notification,
+      message: "old oversized event",
+      raw: %{
+        "html_blob" => String.duplicate("<html>cloudflare</html>", 500) <> hidden_old_marker,
+        "items" => Enum.map(1..200, &%{"index" => &1, "value" => String.duplicate("x", 100)})
+      },
+      session_id: "thread-http",
+      thread_id: "thread-http",
+      turn_id: "turn-http",
+      timestamp: ~U[2026-01-01 00:00:00Z]
+    }
+
+    recent_events =
+      1..420
+      |> Enum.map(fn index ->
+        %{
+          event: :notification,
+          message: "recent system event #{index}",
+          raw: %{"index" => index},
+          session_id: "thread-http",
+          thread_id: "thread-http",
+          turn_id: "turn-http",
+          timestamp: DateTime.add(~U[2026-01-01 00:00:00Z], index, :second)
+        }
+      end)
+
+    snapshot = put_in(static_snapshot(), [:running, Access.at(0), :recent_codex_events], [old_oversized_event | recent_events])
+    orchestrator_name = Module.concat(__MODULE__, :WorkerDetailOversizedOldEventsOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    issue_payload = json_response(get(build_conn(), "/api/v1/MT-HTTP"), 200)
+    rendered_payload = inspect(issue_payload, limit: :infinity)
+
+    assert length(issue_payload["conversation"]) == 120
+    refute rendered_payload =~ hidden_old_marker
+    refute rendered_payload =~ "old oversized event"
+  end
+
   test "worker detail projection keeps large assistant and debug payloads bounded" do
     hidden_assistant_marker = "ASSISTANT_TAIL_SHOULD_NOT_LEAK"
     hidden_debug_marker = "DEBUG_TAIL_SHOULD_NOT_LEAK"
@@ -1429,6 +1478,166 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert raw["truncated?"] == true
     refute rendered_payload =~ "sk-live-secret"
+    assert rendered_payload =~ "[REDACTED]"
+  end
+
+  test "worker detail debug excerpts bound large decoded lists and large raw JSON strings" do
+    hidden_list_marker = "LIST_TAIL_SHOULD_NOT_LEAK"
+    hidden_json_marker = "JSON_TAIL_SHOULD_NOT_LEAK"
+
+    large_list =
+      Enum.map(1..80, fn index ->
+        %{"index" => index, "value" => if(index == 80, do: hidden_list_marker, else: "value")}
+      end)
+
+    large_json =
+      Jason.encode!(%{
+        method: "item/agentMessage/delta",
+        params: %{
+          itemId: "large-json",
+          delta: String.duplicate("j", 20_000) <> hidden_json_marker,
+          token: "sk-large-json-secret"
+        }
+      })
+
+    snapshot =
+      static_snapshot()
+      |> put_in([:running, Access.at(0), :recent_codex_events], [
+        command_event(
+          "item/started",
+          %{"item" => %{"id" => "cmd-list", "type" => "commandExecution", "command" => "mix test", "details" => large_list}},
+          ~U[2026-01-01 00:00:00Z]
+        ),
+        %{
+          event: :codex_event,
+          message: nil,
+          raw: large_json,
+          session_id: "thread-http",
+          thread_id: "thread-http",
+          turn_id: "turn-http",
+          timestamp: ~U[2026-01-01 00:00:01Z]
+        }
+      ])
+
+    orchestrator_name = Module.concat(__MODULE__, :WorkerDetailLargeDebugBoundsOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    issue_payload = json_response(get(build_conn(), "/api/v1/MT-HTTP"), 200)
+    rendered_payload = inspect(issue_payload, limit: :infinity)
+
+    assert [%{"raw" => [list_raw | _]}, %{"raw" => [json_raw | _]}] = issue_payload["conversation"]
+    assert list_raw["truncated?"] == true
+    assert json_raw["truncated?"] == true
+    refute rendered_payload =~ hidden_list_marker
+    refute rendered_payload =~ hidden_json_marker
+    refute rendered_payload =~ "sk-large-json-secret"
+  end
+
+  test "worker detail bounded excerpts redact secrets crossing truncation boundary" do
+    secret_prefix = "sk-" <> String.duplicate("a", 1_700)
+
+    snapshot =
+      static_snapshot()
+      |> put_in([:running, Access.at(0), :recent_codex_events], [
+        %{
+          event: :notification,
+          message: nil,
+          raw: ~s({"password":"#{secret_prefix}),
+          session_id: "thread-http",
+          thread_id: "thread-http",
+          turn_id: "turn-http",
+          timestamp: ~U[2026-01-01 00:00:00Z]
+        },
+        %{
+          event: :notification,
+          message: nil,
+          raw: "OPENAI_API_KEY=#{secret_prefix}",
+          session_id: "thread-http",
+          thread_id: "thread-http",
+          turn_id: "turn-http",
+          timestamp: ~U[2026-01-01 00:00:01Z]
+        }
+      ])
+
+    orchestrator_name = Module.concat(__MODULE__, :WorkerDetailBoundaryRedactionOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    issue_payload = json_response(get(build_conn(), "/api/v1/MT-HTTP"), 200)
+    rendered_payload = inspect(issue_payload, limit: :infinity)
+
+    refute rendered_payload =~ "sk-"
+    refute rendered_payload =~ String.slice(secret_prefix, 0, 100)
+    assert rendered_payload =~ "[REDACTED]"
+  end
+
+  test "worker detail redacts visible fields derived from raw-only map events" do
+    snapshot =
+      static_snapshot()
+      |> put_in([:running, Access.at(0), :recent_codex_events], [
+        %{
+          event: :codex_event,
+          message: nil,
+          raw: %{
+            "method" => "item/started",
+            "params" => %{
+              "item" => %{
+                "id" => "cmd-secret",
+                "type" => "commandExecution",
+                "command" => "curl https://example.test?token=raw-visible-secret"
+              }
+            }
+          },
+          session_id: "thread-http",
+          thread_id: "thread-http",
+          turn_id: "turn-http",
+          timestamp: ~U[2026-01-01 00:00:00Z]
+        },
+        %{
+          event: :codex_event,
+          message: nil,
+          raw: %{
+            "method" => "item/commandExecution/outputDelta",
+            "params" => %{
+              "itemId" => "cmd-secret",
+              "outputDelta" => "Authorization: Bearer raw-output-secret"
+            }
+          },
+          session_id: "thread-http",
+          thread_id: "thread-http",
+          turn_id: "turn-http",
+          timestamp: ~U[2026-01-01 00:00:01Z]
+        }
+      ])
+
+    orchestrator_name = Module.concat(__MODULE__, :WorkerDetailRawMapVisibleRedactionOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    issue_payload = json_response(get(build_conn(), "/api/v1/MT-HTTP"), 200)
+    rendered_payload = inspect(issue_payload, limit: :infinity)
+
+    refute rendered_payload =~ "raw-visible-secret"
+    refute rendered_payload =~ "raw-output-secret"
     assert rendered_payload =~ "[REDACTED]"
   end
 
