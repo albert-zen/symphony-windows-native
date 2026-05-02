@@ -53,7 +53,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
   end
 
   defp gh_available? do
-    not is_nil(System.find_executable("gh"))
+    not is_nil(find_executable("gh"))
   end
 
   defp gh_authenticated? do
@@ -61,29 +61,32 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
   end
 
   defp list_open_pull_request_numbers(repo, branch) do
-    case run_command("gh", [
-           "pr",
-           "list",
-           "--repo",
-           repo,
-           "--head",
-           branch,
-           "--state",
-           "open",
-           "--json",
-           "number",
-           "--jq",
-           ".[].number"
-         ]) do
-      {:ok, output} ->
-        output
-        |> String.split("\n", trim: true)
-        |> Enum.reject(&(&1 == ""))
-
-      {:error, _reason} ->
-        []
-    end
+    "gh"
+    |> run_command([
+      "pr",
+      "list",
+      "--repo",
+      repo,
+      "--head",
+      branch,
+      "--state",
+      "open",
+      "--json",
+      "number",
+      "--jq",
+      ".[].number"
+    ])
+    |> pull_request_numbers_from_result()
   end
+
+  defp pull_request_numbers_from_result({:ok, output}) do
+    output
+    |> String.split("\n", trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp pull_request_numbers_from_result({:error, _reason}), do: []
 
   defp close_pull_request(repo, branch, pr_number) do
     case run_command("gh", [
@@ -126,15 +129,29 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
   end
 
   defp run_command(command, args) do
-    case System.find_executable(command) do
+    case find_executable(command) do
       nil ->
         {:error, {:enoent, ""}}
 
       path ->
-        case System.cmd(path, args, stderr_to_stdout: true) do
+        {command, command_args} = windows_command_args(path, args)
+
+        case System.cmd(command, command_args, stderr_to_stdout: true) do
           {output, 0} -> {:ok, output}
           {output, status} -> {:error, {status, output}}
         end
     end
+  end
+
+  defp windows_command_args(path, args) do
+    if String.downcase(Path.extname(path)) in [".bat", ".cmd"] and not is_nil(System.find_executable("cmd.exe")) do
+      {System.find_executable("cmd.exe"), ["/c", path | args]}
+    else
+      {path, args}
+    end
+  end
+
+  defp find_executable(command) do
+    Enum.find_value([command, command <> ".cmd", command <> ".bat"], &System.find_executable/1)
   end
 end

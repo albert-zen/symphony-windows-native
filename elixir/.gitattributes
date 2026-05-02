@@ -1,1 +1,10 @@
+*.ex text eol=lf
+*.exs text eol=lf
+*.heex text eol=lf
+*.lock text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
 test/fixtures/status_dashboard_snapshots/* linguist-generated=true
