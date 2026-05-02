@@ -50,6 +50,96 @@ defmodule SymphonyElixir.WindowsPreflightTest do
     assert output =~ "[PASS] PowerShell hooks"
   end
 
+  test "capabilities-only reports machine-readable environment evidence without expensive probes" do
+    workflow_path = workflow_with_preflight_config()
+
+    deps =
+      ready_deps(%{
+        find_executable: fn
+          "powershell" -> "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+          "tasklist" -> nil
+          _name -> "C:/tools/bin.exe"
+        end,
+        os_type: fn -> {:win32, :nt} end,
+        local_shell_run: fn
+          "gh auth status", _opts -> {:ok, {"Logged in to github.com\n", 0}}
+          unexpected, _opts -> flunk("capabilities-only should not run #{unexpected}")
+        end
+      })
+
+    assert {:ok, checks} = WindowsPreflight.run(workflow_path, deps, capabilities_only: true)
+
+    names = Enum.map(checks, & &1.name)
+    assert "Operating system" in names
+    assert "PowerShell" in names
+    assert "Windows tasklist" in names
+    assert "GitHub CLI" in names
+    assert "Linear auth" in names
+    assert "Coverage policy" in names
+    refute "Codex app-server" in names
+    refute "Git repository" in names
+
+    assert %WindowsPreflight.Check{status: :warn, remediation: remediation} =
+             Enum.find(checks, &(&1.name == "Windows tasklist"))
+
+    assert remediation =~ "graceful fallback"
+  end
+
+  test "JSON output redacts capability secrets and includes status labels" do
+    workflow_path = workflow_with_preflight_config()
+
+    deps =
+      ready_deps(%{
+        find_executable: fn
+          "powershell" -> "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+          "tasklist" -> "C:/Windows/System32/tasklist.exe"
+          _name -> "C:/tools/bin.exe"
+        end,
+        os_type: fn -> {:win32, :nt} end,
+        env: fn
+          "LINEAR_API_KEY" -> "lin_secret_token"
+          _name -> nil
+        end,
+        local_shell_run: fn
+          "gh auth status", _opts -> {:ok, {"Logged in with token ghp_secret\n", 0}}
+          unexpected, _opts -> flunk("unexpected command: #{unexpected}")
+        end
+      })
+
+    assert {:ok, checks} = WindowsPreflight.run(workflow_path, deps, capabilities_only: true)
+    json = WindowsPreflight.to_json(checks)
+
+    assert %{"checks" => encoded_checks} = Jason.decode!(json)
+    assert Enum.any?(encoded_checks, &(&1["name"] == "Linear auth" and &1["status"] == "pass"))
+    refute json =~ "lin_secret_token"
+    refute json =~ "ghp_secret"
+    assert json =~ "[redacted]"
+  end
+
+  test "default text output redacts failed GitHub auth details" do
+    workflow_path = workflow_with_preflight_config()
+
+    deps =
+      ready_deps(%{
+        find_executable: fn _name -> "C:/tools/bin.exe" end,
+        local_shell_run: fn
+          "gh auth status", _opts ->
+            {:ok, {"failed with ghp_secret and https://token:secret@github.com/example/repo.git", 1}}
+
+          unexpected, _opts ->
+            flunk("unexpected command: #{unexpected}")
+        end
+      })
+
+    assert {:error, checks} = WindowsPreflight.run(workflow_path, deps, capabilities_only: true)
+    output = WindowsPreflight.format(checks)
+
+    refute output =~ "ghp_secret"
+    refute output =~ "token"
+    refute output =~ "secret"
+    assert output =~ "[redacted]"
+  end
+
   test "returns an error and remediation when required checks fail" do
     workflow_path = workflow_with_preflight_config()
 

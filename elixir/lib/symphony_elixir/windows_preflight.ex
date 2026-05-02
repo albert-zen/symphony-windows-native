@@ -20,9 +20,11 @@ defmodule SymphonyElixir.WindowsPreflight do
 
   @type deps :: %{
           optional(:codex_command_resolves?) => (String.t(), Path.t() -> :ok | {:error, term()}),
+          optional(:env) => (String.t() -> String.t() | nil),
           optional(:find_executable) => (String.t() -> String.t() | nil),
           optional(:linear_graphql) => (String.t(), map() -> {:ok, map()} | {:error, term()}),
           optional(:local_shell_run) => (String.t(), keyword() -> LocalShell.run_result()),
+          optional(:os_type) => (-> {atom(), atom()}),
           optional(:port_available?) => (non_neg_integer() -> boolean()),
           optional(:start_codex_session) => (Path.t() -> :ok | {:error, term()})
         }
@@ -39,25 +41,43 @@ defmodule SymphonyElixir.WindowsPreflight do
 
   @spec run(Path.t(), deps()) :: {:ok | :error, [check()]}
   def run(workflow_path, deps \\ %{}) when is_binary(workflow_path) and is_map(deps) do
+    run(workflow_path, deps, [])
+  end
+
+  @spec run(Path.t(), deps(), keyword()) :: {:ok | :error, [check()]}
+  def run(workflow_path, deps, opts) when is_binary(workflow_path) and is_map(deps) and is_list(opts) do
     expanded_path = Path.expand(workflow_path)
     Workflow.set_workflow_file_path(expanded_path)
+    capabilities_only? = Keyword.get(opts, :capabilities_only, false)
 
     checks =
       case Config.settings() do
         {:ok, settings} ->
-          [
+          capability_checks = [
             workflow_check(expanded_path),
             workflow_semantics_check(),
+            operating_system_check(deps),
+            powershell_check(deps),
+            tasklist_check(deps),
             linear_check(settings, deps),
-            path_tools_check(settings, deps),
             github_cli_check(deps),
-            git_main_tracking_check(deps),
-            codex_app_server_check(settings, deps),
-            workspace_root_check(settings),
-            git_clone_check(settings, deps),
-            dashboard_port_check(settings, deps),
-            powershell_hooks_check(settings, deps)
+            coverage_policy_check()
           ]
+
+          if capabilities_only? do
+            capability_checks
+          else
+            capability_checks ++
+              [
+                path_tools_check(settings, deps),
+                git_main_tracking_check(deps),
+                codex_app_server_check(settings, deps),
+                workspace_root_check(settings),
+                git_clone_check(settings, deps),
+                dashboard_port_check(settings, deps),
+                powershell_hooks_check(settings, deps)
+              ]
+          end
 
         {:error, reason} ->
           [
@@ -87,8 +107,65 @@ defmodule SymphonyElixir.WindowsPreflight do
     end)
   end
 
+  @spec to_json([check()]) :: String.t()
+  def to_json(checks) when is_list(checks) do
+    checks
+    |> Enum.map(&check_to_map/1)
+    |> then(&%{checks: &1})
+    |> Jason.encode!()
+  end
+
+  defp check_to_map(%Check{} = check) do
+    %{
+      name: check.name,
+      status: status_label(check.status) |> String.downcase(),
+      message: sanitize_command_output(check.message || ""),
+      remediation: sanitize_command_output(check.remediation || "")
+    }
+  end
+
   defp workflow_check(path) do
     pass("Workflow config", "Loaded #{path}.")
+  end
+
+  defp operating_system_check(deps) do
+    os_type = Map.get(deps, :os_type, &:os.type/0)
+    {family, name} = os_type.()
+    pass("Operating system", "Running on #{family}/#{name}.")
+  end
+
+  defp powershell_check(deps) do
+    find_executable = Map.get(deps, :find_executable, &System.find_executable/1)
+
+    ["pwsh", "powershell"]
+    |> Enum.find_value(find_executable)
+    |> case do
+      nil ->
+        fail(
+          "PowerShell",
+          "PowerShell was not found on PATH.",
+          "Install PowerShell 5.1+ or PowerShell 7 and make sure the runtime PowerShell session inherits PATH."
+        )
+
+      path ->
+        pass("PowerShell", "PowerShell is available at #{path}.")
+    end
+  end
+
+  defp tasklist_check(deps) do
+    find_executable = Map.get(deps, :find_executable, &System.find_executable/1)
+
+    case find_executable.("tasklist") do
+      nil ->
+        warn(
+          "Windows tasklist",
+          "tasklist was not found; Windows PID ownership checks will use graceful fallback behavior.",
+          "This graceful fallback is acceptable on non-Windows hosts. On Windows, ensure tasklist.exe is available before relying on local PID claim recovery."
+        )
+
+      path ->
+        pass("Windows tasklist", "tasklist is available at #{path}.")
+    end
   end
 
   defp workflow_semantics_check do
@@ -122,7 +199,7 @@ defmodule SymphonyElixir.WindowsPreflight do
 
         case linear_graphql.(@linear_viewer_query, %{}) do
           {:ok, %{"data" => %{"viewer" => %{"id" => viewer_id}}}} when is_binary(viewer_id) ->
-            pass("Linear auth", "Linear GraphQL is reachable for viewer #{viewer_id}.")
+            pass("Linear auth", "Linear GraphQL is reachable for viewer #{viewer_id} with credential [redacted].")
 
           {:ok, body} ->
             fail(
@@ -216,12 +293,12 @@ defmodule SymphonyElixir.WindowsPreflight do
 
     case local_shell_run.("gh auth status", cd: File.cwd!()) do
       {:ok, {_output, 0}} ->
-        pass("GitHub CLI", "gh is authenticated.")
+        pass("GitHub CLI", "gh is authenticated; details [redacted].")
 
       {:ok, {output, status}} ->
         fail(
           "GitHub CLI",
-          "gh auth status exited #{status}: #{String.trim(output)}",
+          "gh auth status exited #{status}: #{sanitize_command_output(output)}",
           "Run `gh auth login` for the Windows user that runs Symphony."
         )
 
@@ -414,6 +491,32 @@ defmodule SymphonyElixir.WindowsPreflight do
     end
   end
 
+  defp coverage_policy_check do
+    threshold =
+      Mix.Project.config()
+      |> Keyword.fetch!(:test_coverage)
+      |> get_in([:summary, :threshold])
+
+    cond do
+      is_integer(threshold) and threshold < 100 and threshold >= 95 ->
+        pass("Coverage policy", "Coverage threshold is #{threshold}%; high signal without requiring mechanical perfection.")
+
+      is_integer(threshold) ->
+        warn(
+          "Coverage policy",
+          "Coverage threshold is #{threshold}%.",
+          "Keep the total threshold high but below 100% unless a manager explicitly approves a policy change."
+        )
+
+      true ->
+        fail(
+          "Coverage policy",
+          "Coverage threshold could not be read.",
+          "Set test_coverage.summary.threshold in mix.exs."
+        )
+    end
+  end
+
   defp configured_clone_url(nil), do: nil
 
   defp configured_clone_url(command) when is_binary(command) do
@@ -427,6 +530,7 @@ defmodule SymphonyElixir.WindowsPreflight do
     output
     |> String.trim()
     |> then(&Regex.replace(~r/[a-z][a-z0-9+.-]*:\/\/[^\s'"]+/i, &1, fn url -> redact_url(url) end))
+    |> then(&Regex.replace(~r/\b(?:gh[pousr]_|github_pat_|lin_)[A-Za-z0-9_]+/i, &1, "[redacted]"))
   end
 
   defp redact_url(url) when is_binary(url) do
