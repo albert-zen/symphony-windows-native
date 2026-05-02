@@ -15,6 +15,9 @@ defmodule SymphonyElixir.WindowsPreflightTest do
       local_shell_run: fn
         hook_probe, _opts when is_binary(hook_probe) ->
           cond do
+            line_ending_command?(hook_probe) ->
+              ready_line_ending_response(hook_probe)
+
             git_main_tracking_command?(hook_probe) ->
               ready_git_main_tracking_response(hook_probe)
 
@@ -62,8 +65,18 @@ defmodule SymphonyElixir.WindowsPreflightTest do
         end,
         os_type: fn -> {:win32, :nt} end,
         local_shell_run: fn
-          "gh auth status", _opts -> {:ok, {"Logged in to github.com\n", 0}}
-          unexpected, _opts -> flunk("capabilities-only should not run #{unexpected}")
+          "gh auth status", _opts ->
+            {:ok, {"Logged in to github.com\n", 0}}
+
+          command, _opts when is_binary(command) ->
+            if line_ending_command?(command) do
+              ready_line_ending_response(command)
+            else
+              flunk("capabilities-only should not run #{command}")
+            end
+
+          unexpected, _opts ->
+            flunk("capabilities-only should not run #{unexpected}")
         end
       })
 
@@ -101,8 +114,18 @@ defmodule SymphonyElixir.WindowsPreflightTest do
           _name -> nil
         end,
         local_shell_run: fn
-          "gh auth status", _opts -> {:ok, {"Logged in with token ghp_secret\n", 0}}
-          unexpected, _opts -> flunk("unexpected command: #{unexpected}")
+          "gh auth status", _opts ->
+            {:ok, {"Logged in with token ghp_secret\n", 0}}
+
+          command, _opts when is_binary(command) ->
+            if line_ending_command?(command) do
+              ready_line_ending_response(command)
+            else
+              flunk("unexpected command: #{command}")
+            end
+
+          unexpected, _opts ->
+            flunk("unexpected command: #{unexpected}")
         end
       })
 
@@ -126,6 +149,13 @@ defmodule SymphonyElixir.WindowsPreflightTest do
           "gh auth status", _opts ->
             {:ok, {"failed with ghp_secret and https://token:secret@github.com/example/repo.git", 1}}
 
+          command, _opts when is_binary(command) ->
+            if line_ending_command?(command) do
+              ready_line_ending_response(command)
+            else
+              flunk("unexpected command: #{command}")
+            end
+
           unexpected, _opts ->
             flunk("unexpected command: #{unexpected}")
         end
@@ -138,6 +168,145 @@ defmodule SymphonyElixir.WindowsPreflightTest do
     refute output =~ "token"
     refute output =~ "secret"
     assert output =~ "[redacted]"
+  end
+
+  test "warns when repo autocrlf is true but formatter-managed files are LF-normalized" do
+    workflow_path = workflow_with_preflight_config()
+
+    deps =
+      ready_deps(%{
+        local_shell_run: fn
+          command, _opts when is_binary(command) ->
+            cond do
+              line_ending_command?(command) ->
+                ready_line_ending_response(command, core_autocrlf: "true")
+
+              command == "gh auth status" ->
+                {:ok, {"Logged in\n", 0}}
+
+              true ->
+                flunk("unexpected command: #{command}")
+            end
+        end
+      })
+
+    assert {:ok, checks} = WindowsPreflight.run(workflow_path, deps, capabilities_only: true)
+
+    assert %WindowsPreflight.Check{status: :warn, message: message, remediation: remediation} =
+             Enum.find(checks, &(&1.name == "Git line endings"))
+
+    assert message =~ "core.autocrlf=true"
+    assert message =~ "no formatter-managed files are checked out as CRLF"
+    assert remediation =~ "git config --local core.autocrlf false"
+  end
+
+  test "warns when effective autocrlf is true from global config" do
+    workflow_path = workflow_with_preflight_config()
+
+    deps =
+      ready_deps(%{
+        local_shell_run: fn
+          command, _opts when is_binary(command) ->
+            cond do
+              line_ending_command?(command) ->
+                ready_line_ending_response(command,
+                  local_core_autocrlf: nil,
+                  effective_core_autocrlf: "true"
+                )
+
+              command == "gh auth status" ->
+                {:ok, {"Logged in\n", 0}}
+
+              true ->
+                flunk("unexpected command: #{command}")
+            end
+        end
+      })
+
+    assert {:ok, checks} = WindowsPreflight.run(workflow_path, deps, capabilities_only: true)
+
+    assert %WindowsPreflight.Check{status: :warn, message: message, remediation: remediation} =
+             Enum.find(checks, &(&1.name == "Git line endings"))
+
+    assert message =~ "core.autocrlf=true"
+    assert message =~ "effective Git config"
+    assert remediation =~ "git config --local core.autocrlf false"
+  end
+
+  test "fails when formatter-managed files are checked out with CRLF worktree endings" do
+    workflow_path = workflow_with_preflight_config()
+
+    deps =
+      ready_deps(%{
+        local_shell_run: fn
+          command, _opts when is_binary(command) ->
+            cond do
+              line_ending_command?(command) ->
+                ready_line_ending_response(command,
+                  core_autocrlf: "false",
+                  eol_output: """
+                  i/lf    w/lf    attr/text eol=lf      \t.gitattributes
+                  i/lf    w/crlf  attr/text eol=lf      \telixir/lib/symphony_elixir/windows_preflight.ex
+                  i/lf    w/lf    attr/text eol=lf      \telixir/docs/windows-native.md
+                  """
+                )
+
+              command == "gh auth status" ->
+                {:ok, {"Logged in\n", 0}}
+
+              true ->
+                flunk("unexpected command: #{command}")
+            end
+        end
+      })
+
+    assert {:error, checks} = WindowsPreflight.run(workflow_path, deps, capabilities_only: true)
+
+    assert %WindowsPreflight.Check{status: :fail, message: message, remediation: remediation} =
+             Enum.find(checks, &(&1.name == "Git line endings"))
+
+    assert message =~ "formatter-managed files are checked out as CRLF"
+    assert message =~ "elixir/lib/symphony_elixir/windows_preflight.ex"
+    assert remediation =~ "git add --renormalize"
+  end
+
+  test "fails when repo attributes do not force formatter-managed files to LF" do
+    workflow_path = workflow_with_preflight_config()
+
+    deps =
+      ready_deps(%{
+        local_shell_run: fn
+          command, _opts when is_binary(command) ->
+            cond do
+              line_ending_command?(command) ->
+                ready_line_ending_response(command,
+                  attr_output: """
+                  .gitattributes: eol: lf
+                  elixir/.formatter.exs: eol: lf
+                  elixir/.gitattributes: eol: lf
+                  elixir/mix.exs: eol: unspecified
+                  elixir/docs/windows-native.md: eol: lf
+                  .github/workflows/make-all.yml: eol: lf
+                  """
+                )
+
+              command == "gh auth status" ->
+                {:ok, {"Logged in\n", 0}}
+
+              true ->
+                flunk("unexpected command: #{command}")
+            end
+        end
+      })
+
+    assert {:error, checks} = WindowsPreflight.run(workflow_path, deps, capabilities_only: true)
+
+    assert %WindowsPreflight.Check{status: :fail, message: message, remediation: remediation} =
+             Enum.find(checks, &(&1.name == "Git line endings"))
+
+    assert message =~ "missing LF coverage"
+    assert message =~ "elixir/mix.exs"
+    assert remediation =~ ".gitattributes"
   end
 
   test "returns an error and remediation when required checks fail" do
@@ -153,6 +322,9 @@ defmodule SymphonyElixir.WindowsPreflightTest do
       local_shell_run: fn
         hook_probe, _opts when is_binary(hook_probe) ->
           cond do
+            line_ending_command?(hook_probe) ->
+              ready_line_ending_response(hook_probe)
+
             git_main_tracking_command?(hook_probe) ->
               ready_git_main_tracking_response(hook_probe)
 
@@ -195,6 +367,9 @@ defmodule SymphonyElixir.WindowsPreflightTest do
       local_shell_run: fn
         hook_probe, _opts when is_binary(hook_probe) ->
           cond do
+            line_ending_command?(hook_probe) ->
+              ready_line_ending_response(hook_probe)
+
             git_main_tracking_command?(hook_probe) ->
               ready_git_main_tracking_response(hook_probe)
 
@@ -236,6 +411,9 @@ defmodule SymphonyElixir.WindowsPreflightTest do
         local_shell_run: fn
           command, _opts when is_binary(command) ->
             cond do
+              line_ending_command?(command) ->
+                ready_line_ending_response(command)
+
               git_main_tracking_command?(command) ->
                 ready_git_main_tracking_response(command)
 
@@ -275,6 +453,9 @@ defmodule SymphonyElixir.WindowsPreflightTest do
         local_shell_run: fn
           command, _opts when is_binary(command) ->
             cond do
+              line_ending_command?(command) ->
+                ready_line_ending_response(command)
+
               git_main_tracking_command?(command) ->
                 ready_git_main_tracking_response(command)
 
@@ -322,6 +503,9 @@ defmodule SymphonyElixir.WindowsPreflightTest do
         local_shell_run: fn
           command, _opts when is_binary(command) ->
             cond do
+              line_ending_command?(command) ->
+                ready_line_ending_response(command)
+
               git_main_tracking_command?(command) ->
                 ready_git_main_tracking_response(command)
 
@@ -355,6 +539,9 @@ defmodule SymphonyElixir.WindowsPreflightTest do
         local_shell_run: fn
           command, _opts when is_binary(command) ->
             cond do
+              line_ending_command?(command) ->
+                ready_line_ending_response(command)
+
               command == "git rev-parse --show-toplevel" ->
                 {:ok, {"C:/repo/symphony-windows-native\n", 0}}
 
@@ -457,6 +644,57 @@ defmodule SymphonyElixir.WindowsPreflightTest do
       String.contains?(command, "rev-parse --verify origin/main") or
       String.contains?(command, "rev-parse --abbrev-ref main@{upstream}") or
       String.contains?(command, "merge-base --is-ancestor main origin/main")
+  end
+
+  defp line_ending_command?(command) do
+    command == "git rev-parse --show-toplevel" or
+      (String.contains?(command, "git -C") and
+         (String.contains?(command, "config --local --get core.autocrlf") or
+            String.contains?(command, "config --get core.autocrlf") or
+            String.contains?(command, "ls-files --eol") or
+            String.contains?(command, "check-attr eol --")))
+  end
+
+  defp ready_line_ending_response(command, opts \\ []) do
+    local_core_autocrlf = Keyword.get(opts, :local_core_autocrlf, Keyword.get(opts, :core_autocrlf, "false"))
+    effective_core_autocrlf = Keyword.get(opts, :effective_core_autocrlf, local_core_autocrlf || "false")
+
+    eol_output =
+      Keyword.get(opts, :eol_output, """
+      i/lf    w/lf    attr/text eol=lf      \t.gitattributes
+      i/lf    w/lf    attr/text eol=lf      \telixir/lib/symphony_elixir/windows_preflight.ex
+      i/lf    w/lf    attr/text eol=lf      \telixir/docs/windows-native.md
+      """)
+
+    attr_output =
+      Keyword.get(opts, :attr_output, """
+      .gitattributes: eol: lf
+      elixir/.formatter.exs: eol: lf
+      elixir/.gitattributes: eol: lf
+      elixir/mix.exs: eol: lf
+      elixir/docs/windows-native.md: eol: lf
+      .github/workflows/make-all.yml: eol: lf
+      """)
+
+    cond do
+      command == "git rev-parse --show-toplevel" ->
+        {:ok, {"C:/repo/symphony-windows-native\n", 0}}
+
+      String.contains?(command, "config --local --get core.autocrlf") ->
+        case local_core_autocrlf do
+          nil -> {:ok, {"", 1}}
+          value -> {:ok, {value <> "\n", 0}}
+        end
+
+      String.contains?(command, "config --get core.autocrlf") ->
+        {:ok, {effective_core_autocrlf <> "\n", 0}}
+
+      String.contains?(command, "ls-files --eol") ->
+        {:ok, {eol_output, 0}}
+
+      String.contains?(command, "check-attr eol --") ->
+        {:ok, {attr_output, 0}}
+    end
   end
 
   defp ready_git_main_tracking_response("git rev-parse --show-toplevel") do
