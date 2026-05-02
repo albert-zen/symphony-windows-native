@@ -38,6 +38,18 @@ defmodule SymphonyElixir.WindowsPreflight do
   """
 
   @required_path_tools ["git", "gh", "node"]
+  @line_ending_attr_paths [
+    ".gitattributes",
+    ".github/workflows/make-all.yml",
+    "elixir/.formatter.exs",
+    "elixir/.gitattributes",
+    "elixir/config/config.exs",
+    "elixir/mix.exs",
+    "elixir/lib/symphony_elixir/orchestrator.ex",
+    "elixir/test/symphony_elixir/orchestrator_status_test.exs",
+    "elixir/test/support/test_support.exs",
+    "elixir/docs/windows-native.md"
+  ]
 
   @spec run(Path.t(), deps()) :: {:ok | :error, [check()]}
   def run(workflow_path, deps \\ %{}) when is_binary(workflow_path) and is_map(deps) do
@@ -61,7 +73,8 @@ defmodule SymphonyElixir.WindowsPreflight do
             tasklist_check(deps),
             linear_check(settings, deps),
             github_cli_check(deps),
-            coverage_policy_check()
+            coverage_policy_check(),
+            line_ending_check(deps)
           ]
 
           if capabilities_only? do
@@ -514,6 +527,146 @@ defmodule SymphonyElixir.WindowsPreflight do
           "Coverage threshold could not be read.",
           "Set test_coverage.summary.threshold in mix.exs."
         )
+    end
+  end
+
+  defp line_ending_check(deps) do
+    local_shell_run = Map.get(deps, :local_shell_run, &LocalShell.run/2)
+
+    with {:ok, repo_root} <- git_repo_root(local_shell_run),
+         {:ok, autocrlf} <- git_config_autocrlf(local_shell_run, repo_root),
+         {:ok, eol_output} <- git_ls_files_eol(local_shell_run, repo_root),
+         {:ok, attr_output} <- git_check_line_ending_attrs(local_shell_run, repo_root) do
+      crlf_files = formatter_managed_crlf_files(eol_output)
+      missing_attr_paths = missing_lf_attr_paths(attr_output)
+
+      cond do
+        crlf_files != [] ->
+          fail(
+            "Git line endings",
+            "formatter-managed files are checked out as CRLF: #{Enum.join(crlf_files, ", ")}.",
+            "Run `git config --local core.autocrlf false`, rewrite the checkout or run `git add --renormalize`, then rerun preflight."
+          )
+
+        missing_attr_paths != [] ->
+          fail(
+            "Git line endings",
+            "repo line-ending attributes are missing LF coverage for: #{Enum.join(missing_attr_paths, ", ")}.",
+            "Update repo-level .gitattributes and elixir/.gitattributes so formatter-managed inputs resolve to eol=lf."
+          )
+
+        autocrlf.value == "true" ->
+          warn(
+            "Git line endings",
+            "core.autocrlf=true from #{autocrlf.source}, but no formatter-managed files are checked out as CRLF.",
+            "Prefer `git config --local core.autocrlf false` for this repo so future checkouts do not reintroduce CRLF formatter friction."
+          )
+
+        true ->
+          pass("Git line endings", "formatter-managed files are LF-normalized and Git attributes resolve to eol=lf.")
+      end
+    else
+      {:error, reason} ->
+        warn(
+          "Git line endings",
+          "Could not inspect repository line endings: #{inspect(reason)}.",
+          "Run preflight from the repository checkout and confirm git is available."
+        )
+    end
+  end
+
+  defp git_repo_root(local_shell_run) do
+    case local_shell_run.("git rev-parse --show-toplevel", cd: File.cwd!()) do
+      {:ok, {output, 0}} -> {:ok, String.trim(output)}
+      {:ok, {output, status}} -> {:error, {"git rev-parse --show-toplevel", status, sanitize_command_output(output)}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp git_config_autocrlf(local_shell_run, repo_root) do
+    local_command = "git -C #{shell_quote(repo_root)} config --local --get core.autocrlf"
+
+    case local_shell_run.(local_command, cd: repo_root) do
+      {:ok, {output, 0}} -> {:ok, %{source: "repo-local Git config", value: normalize_git_config_value(output)}}
+      {:ok, {_output, _status}} -> git_effective_autocrlf(local_shell_run, repo_root)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp git_effective_autocrlf(local_shell_run, repo_root) do
+    command = "git -C #{shell_quote(repo_root)} config --get core.autocrlf"
+
+    case local_shell_run.(command, cd: repo_root) do
+      {:ok, {output, 0}} -> {:ok, %{source: "effective Git config", value: normalize_git_config_value(output)}}
+      {:ok, {_output, _status}} -> {:ok, %{source: "Git config", value: "unset"}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp normalize_git_config_value(output) do
+    output
+    |> String.trim()
+    |> String.downcase()
+  end
+
+  defp git_ls_files_eol(local_shell_run, repo_root) do
+    command = "git -C #{shell_quote(repo_root)} ls-files --eol"
+
+    case local_shell_run.(command, cd: repo_root) do
+      {:ok, {output, 0}} -> {:ok, output}
+      {:ok, {output, status}} -> {:error, {command, status, sanitize_command_output(output)}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp git_check_line_ending_attrs(local_shell_run, repo_root) do
+    command = "git -C #{shell_quote(repo_root)} check-attr eol -- #{Enum.map_join(@line_ending_attr_paths, " ", &shell_quote/1)}"
+
+    case local_shell_run.(command, cd: repo_root) do
+      {:ok, {output, 0}} -> {:ok, output}
+      {:ok, {output, status}} -> {:error, {command, status, sanitize_command_output(output)}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp formatter_managed_crlf_files(eol_output) do
+    eol_output
+    |> String.split("\n", trim: true)
+    |> Enum.flat_map(&formatter_managed_crlf_file/1)
+  end
+
+  defp formatter_managed_crlf_file(line) do
+    case Regex.run(~r/\bw\/crlf\b.*\t(.+)$/, line) do
+      [_match, path] -> formatter_managed_crlf_path(path)
+      _ -> []
+    end
+  end
+
+  defp formatter_managed_crlf_path(path) do
+    if formatter_managed_path?(path), do: [path], else: []
+  end
+
+  defp formatter_managed_path?(path) do
+    String.starts_with?(path, "elixir/") and
+      String.match?(path, ~r/\.(ex|exs|heex|md|yml|yaml|txt|lock)$/)
+  end
+
+  defp missing_lf_attr_paths(attr_output) do
+    attr_output
+    |> String.split("\n", trim: true)
+    |> Enum.flat_map(&missing_lf_attr_path/1)
+  end
+
+  defp missing_lf_attr_path(line) do
+    case String.split(line, ":", parts: 3) do
+      [path, eol_label, value] when eol_label in [" eol", "eol"] ->
+        if String.trim(value) == "lf", do: [], else: [path]
+
+      [path | _rest] ->
+        [String.trim(path)]
+
+      _ ->
+        []
     end
   end
 
