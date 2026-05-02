@@ -95,10 +95,6 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     if windows?(), do: "Start-Sleep -Seconds 1", else: "sleep 1"
   end
 
-  defp hook_block_command do
-    if windows?(), do: "while ($true) { Start-Sleep -Seconds 1 }", else: "while true; do sleep 1; done"
-  end
-
   defp hook_large_output_fail_command do
     if windows?() do
       "[Console]::Out.Write(('a' * 3000)); exit 17"
@@ -356,10 +352,6 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
-  if match?({:win32, _}, :os.type()) do
-    @tag skip: "Windows hook timeout is covered by before_remove timeout handling."
-  end
-
   test "workspace surfaces after_create hook timeouts" do
     workspace_root =
       Path.join(
@@ -368,15 +360,18 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       )
 
     try do
+      File.rm_rf!(workspace_root)
+
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
         hook_timeout_ms: 100,
-        hook_after_create: hook_block_command()
+        hook_after_create: hook_sleep_command()
       )
 
       assert {:error, {:workspace_hook_timeout, "after_create", 100}} =
                Workspace.create_for_issue("MT-TIMEOUT")
     after
+      if windows?(), do: Process.sleep(1_100)
       File.rm_rf(workspace_root)
     end
   end
