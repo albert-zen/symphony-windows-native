@@ -18,8 +18,10 @@ policy or recurring pitfalls change.
 ## Windows Paths And Commands
 
 - Work from the generated issue workspace, not a normal source checkout.
-- Treat `albert-zen/symphony-windows-native` and `origin/main` as the canonical
-  repo/base unless the workflow explicitly says otherwise.
+- Treat the configured Windows-native GitHub repository and `origin/main` as
+  the canonical repo/base unless the workflow explicitly says otherwise.
+- Keep OpenAI's original Symphony repository as `upstream`, not `origin`, when
+  you need to compare against the prototype.
 - Run repo commands from `elixir/` unless the command says otherwise.
 - Prefer PowerShell syntax on Windows. If GNU Make is unavailable, use `make.cmd`.
 
@@ -94,8 +96,9 @@ Workpad. Blocking findings keep the issue in `In Progress` or return it to
   directly unless the wrapper is proven quiet.
 - Windows CRLF and snapshot rendering can differ from Unix expectations.
 - Fake `ssh`, `gh`, and Codex fixtures may assume Unix shebang/chmod behavior.
-- Stale `main` or noncanonical upstreams can hide newer `origin/main`; fetch and
-  compare against the canonical base before review handoff.
+- Stale `main` or a checkout where `origin` still points at the upstream
+  prototype can hide the intended Windows-native base; fetch and compare
+  against the configured canonical base before review handoff.
 - `WorkflowStore` and other global/stateful runtime paths can leak state across
   tests; preserve cleanup and isolation semantics.
 - Coverage threshold or ignore-list changes are quality-gate changes and need

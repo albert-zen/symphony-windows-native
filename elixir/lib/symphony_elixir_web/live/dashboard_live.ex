@@ -310,11 +310,48 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <div class="section-header">
             <div>
               <h2 class="section-title">Rate limits</h2>
-              <p class="section-copy">Latest upstream rate-limit snapshot, when available.</p>
+              <p class="section-copy"><%= rate_limit_metadata(@payload.rate_limits) %></p>
             </div>
           </div>
 
-          <pre class="code-panel"><%= pretty_value(@payload.rate_limits) %></pre>
+          <%= if rate_limit_snapshot?(@payload.rate_limits) do %>
+            <div class="rate-limit-list">
+              <article :for={limit <- rate_limit_rows(@payload.rate_limits, @now)} class="rate-limit-row">
+                <div class="rate-limit-main">
+                  <div>
+                    <p class="rate-limit-name"><%= limit.label %></p>
+                    <p class="rate-limit-detail">
+                      <%= limit.window %>
+                      <%= if limit.reset do %>
+                        · <%= limit.reset %>
+                      <% end %>
+                    </p>
+                  </div>
+                  <span class={limit.badge_class}><%= limit.used_label %></span>
+                </div>
+                <div class="rate-limit-bar" aria-label={limit.progress_label}>
+                  <span class={limit.bar_class} style={"width: #{limit.progress_width}%"}></span>
+                </div>
+                <%= if limit.reset_absolute do %>
+                  <p class="rate-limit-absolute">
+                    Reset at
+                    <time
+                      id={limit.reset_id}
+                      phx-hook="LocalTime"
+                      datetime={limit.reset_absolute.iso}
+                    ><%= limit.reset_absolute.fallback %></time>
+                  </p>
+                <% end %>
+              </article>
+            </div>
+
+            <details class="raw-details rate-limit-debug">
+              <summary>Raw rate-limit payload</summary>
+              <pre class="code-panel"><%= pretty_value(@payload.rate_limits) %></pre>
+            </details>
+          <% else %>
+            <p class="empty-state">No upstream rate-limit snapshot is available yet.</p>
+          <% end %>
         </section>
 
         <section class="section-card">
@@ -590,6 +627,203 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp format_int(_value), do: "n/a"
+
+  defp rate_limit_snapshot?(%{} = snapshot), do: map_size(snapshot) > 0
+  defp rate_limit_snapshot?(_snapshot), do: false
+
+  defp rate_limit_metadata(%{} = snapshot) when map_size(snapshot) > 0 do
+    [
+      field_value(snapshot, [
+        :limit_id,
+        :limitId,
+        :limit_name,
+        :limitName,
+        "limit_id",
+        "limitId",
+        "limit_name",
+        "limitName"
+      ]),
+      field_value(snapshot, [:plan_type, :planType, "plan_type", "planType"])
+    ]
+    |> Enum.reject(&blank?/1)
+    |> case do
+      [] -> "Latest upstream rate-limit snapshot."
+      values -> "Latest upstream rate-limit snapshot for #{Enum.join(values, " · ")}."
+    end
+  end
+
+  defp rate_limit_metadata(_snapshot), do: "Latest upstream rate-limit snapshot, when available."
+
+  defp rate_limit_rows(snapshot, now) do
+    [
+      rate_limit_row("Primary", field_value(snapshot, [:primary, "primary"]), now),
+      rate_limit_row("Secondary", field_value(snapshot, [:secondary, "secondary"]), now)
+    ]
+  end
+
+  defp rate_limit_row(label, %{} = bucket, now) do
+    used_percent = used_percent(bucket)
+    reset_at = reset_at(bucket, now)
+    reset_id = "rate-limit-reset-#{String.downcase(label)}"
+
+    %{
+      label: label,
+      reset_id: reset_id,
+      used_label: used_label(used_percent),
+      progress_label: "#{label} limit #{used_label(used_percent)}",
+      progress_width: used_percent || 0,
+      badge_class: rate_limit_badge_class(used_percent),
+      bar_class: rate_limit_bar_class(used_percent),
+      window: window_label(field_value(bucket, [:window_duration_mins, :windowDurationMins, "window_duration_mins", "windowDurationMins"])),
+      reset: reset_relative(reset_at, now),
+      reset_absolute: reset_absolute(reset_at)
+    }
+  end
+
+  defp rate_limit_row(label, _bucket, _now) do
+    %{
+      label: label,
+      reset_id: nil,
+      used_label: "n/a",
+      progress_label: "#{label} limit unavailable",
+      progress_width: 0,
+      badge_class: "rate-limit-badge",
+      bar_class: "rate-limit-bar-fill",
+      window: "window n/a",
+      reset: nil,
+      reset_absolute: nil
+    }
+  end
+
+  defp field_value(map, keys) when is_map(map) do
+    Enum.find_value(keys, fn key ->
+      value = Map.get(map, key)
+      if is_nil(value), do: nil, else: value
+    end)
+  end
+
+  defp field_value(_map, _keys), do: nil
+
+  defp used_percent(bucket) do
+    direct = field_value(bucket, [:used_percent, :usedPercent, "used_percent", "usedPercent"])
+
+    cond do
+      is_number(direct) ->
+        clamp_percent(round(direct))
+
+      is_number(field_value(bucket, [:limit, "limit"])) and is_number(field_value(bucket, [:remaining, "remaining"])) ->
+        limit = field_value(bucket, [:limit, "limit"])
+        remaining = field_value(bucket, [:remaining, "remaining"])
+
+        if limit > 0 do
+          clamp_percent(round((limit - remaining) / limit * 100))
+        end
+
+      true ->
+        nil
+    end
+  end
+
+  defp clamp_percent(value), do: value |> max(0) |> min(100)
+
+  defp used_label(value) when is_integer(value), do: "#{value}% used"
+  defp used_label(_value), do: "n/a"
+
+  defp rate_limit_badge_class(value) when is_integer(value) and value >= 90,
+    do: "rate-limit-badge rate-limit-badge-danger"
+
+  defp rate_limit_badge_class(value) when is_integer(value) and value >= 70,
+    do: "rate-limit-badge rate-limit-badge-warning"
+
+  defp rate_limit_badge_class(_value), do: "rate-limit-badge"
+
+  defp rate_limit_bar_class(value) when is_integer(value) and value >= 90,
+    do: "rate-limit-bar-fill rate-limit-bar-fill-danger"
+
+  defp rate_limit_bar_class(value) when is_integer(value) and value >= 70,
+    do: "rate-limit-bar-fill rate-limit-bar-fill-warning"
+
+  defp rate_limit_bar_class(_value), do: "rate-limit-bar-fill"
+
+  defp window_label(minutes) when is_integer(minutes), do: "#{duration_label(minutes)} window"
+  defp window_label(minutes) when is_float(minutes), do: "#{duration_label(round(minutes))} window"
+  defp window_label(_minutes), do: "window n/a"
+
+  defp duration_label(minutes) when minutes > 0 and rem(minutes, 1_440) == 0, do: "#{div(minutes, 1_440)}d"
+  defp duration_label(minutes) when minutes > 0 and rem(minutes, 60) == 0, do: "#{div(minutes, 60)}h"
+  defp duration_label(minutes) when minutes > 0, do: "#{minutes}m"
+  defp duration_label(_minutes), do: "n/a"
+
+  defp reset_at(bucket, now) do
+    cond do
+      is_binary(field_value(bucket, [:reset_at, :resetAt, "reset_at", "resetAt"])) ->
+        parse_datetime(field_value(bucket, [:reset_at, :resetAt, "reset_at", "resetAt"]))
+
+      is_binary(field_value(bucket, [:resets_at, :resetsAt, "resets_at", "resetsAt"])) ->
+        parse_datetime(field_value(bucket, [:resets_at, :resetsAt, "resets_at", "resetsAt"]))
+
+      is_number(field_value(bucket, [:resets_at, :resetsAt, "resets_at", "resetsAt"])) ->
+        parse_unix_timestamp(field_value(bucket, [:resets_at, :resetsAt, "resets_at", "resetsAt"]))
+
+      is_number(field_value(bucket, [:reset_in_seconds, :resetInSeconds, "reset_in_seconds", "resetInSeconds"])) ->
+        DateTime.add(now, trunc(field_value(bucket, [:reset_in_seconds, :resetInSeconds, "reset_in_seconds", "resetInSeconds"])), :second)
+
+      is_number(field_value(bucket, [:resets_in_seconds, :resetsInSeconds, "resets_in_seconds", "resetsInSeconds"])) ->
+        DateTime.add(now, trunc(field_value(bucket, [:resets_in_seconds, :resetsInSeconds, "resets_in_seconds", "resetsInSeconds"])), :second)
+
+      is_number(field_value(bucket, [:reset_timestamp, :resetTimestamp, "reset_timestamp", "resetTimestamp"])) ->
+        parse_unix_timestamp(field_value(bucket, [:reset_timestamp, :resetTimestamp, "reset_timestamp", "resetTimestamp"]))
+
+      true ->
+        nil
+    end
+  end
+
+  defp parse_datetime(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} -> datetime
+      _ -> nil
+    end
+  end
+
+  defp parse_unix_timestamp(value) do
+    unit = if value > 10_000_000_000, do: :millisecond, else: :second
+
+    case DateTime.from_unix(trunc(value), unit) do
+      {:ok, datetime} -> datetime
+      _ -> nil
+    end
+  end
+
+  defp reset_relative(%DateTime{} = reset_at, %DateTime{} = now) do
+    diff = DateTime.diff(reset_at, now, :second)
+
+    cond do
+      diff > 0 -> "resets in #{relative_duration(diff)}"
+      diff == 0 -> "resets now"
+      true -> "reset #{relative_duration(abs(diff))} ago"
+    end
+  end
+
+  defp reset_relative(_reset_at, _now), do: nil
+
+  defp relative_duration(seconds) when seconds >= 86_400, do: "#{div(seconds, 86_400)}d"
+  defp relative_duration(seconds) when seconds >= 3_600, do: "#{div(seconds, 3_600)}h #{div(rem(seconds, 3_600), 60)}m"
+  defp relative_duration(seconds) when seconds >= 60, do: "#{div(seconds, 60)}m #{rem(seconds, 60)}s"
+  defp relative_duration(seconds), do: "#{seconds}s"
+
+  defp reset_absolute(%DateTime{} = reset_at) do
+    %{
+      iso: DateTime.to_iso8601(reset_at),
+      fallback: Calendar.strftime(reset_at, "%Y-%m-%d %H:%M:%S UTC")
+    }
+  end
+
+  defp reset_absolute(_reset_at), do: nil
+
+  defp blank?(value) when is_binary(value), do: String.trim(value) == ""
+  defp blank?(nil), do: true
+  defp blank?(_value), do: false
 
   defp event_label(event) when is_atom(event), do: event |> Atom.to_string() |> String.replace("_", " ")
   defp event_label(event), do: event |> to_string() |> String.replace("_", " ")

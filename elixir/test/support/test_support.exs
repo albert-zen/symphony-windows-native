@@ -313,7 +313,7 @@ defmodule SymphonyElixir.TestSupport do
           codex_command_watchdog_stalled_ms: 300_000,
           codex_command_watchdog_repeated_output_limit: 20,
           codex_command_watchdog_block_on_stall: false,
-          codex_review_readiness_repository: "albert-zen/symphony-windows-native",
+          codex_review_readiness_repository: nil,
           codex_review_readiness_required_checks: [],
           hook_after_create: nil,
           hook_before_run: nil,
