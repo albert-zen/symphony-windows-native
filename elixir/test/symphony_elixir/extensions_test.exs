@@ -366,7 +366,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   test "linear adapter acquires visible claim when this worker owns the oldest active lease" do
     Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
-    now = ~U[2026-05-02 00:00:00Z]
+    now = DateTime.add(DateTime.utc_now(), -60, :second)
 
     Process.put({FakeLinearClient, :graphql_result}, fn query, variables ->
       cond do
