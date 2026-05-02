@@ -442,7 +442,6 @@ defmodule SymphonyElixir.LiveE2ETest do
     workflow_file = Path.join(workflow_root, "WORKFLOW.md")
     worker_setup = live_worker_setup!(backend, run_id, test_root)
     team_key = System.get_env("SYMPHONY_LIVE_LINEAR_TEAM_KEY") || @default_team_key
-    original_workflow_path = Workflow.workflow_file_path()
     orchestrator_pid = Process.whereis(SymphonyElixir.Orchestrator)
 
     File.mkdir_p!(workflow_root)
@@ -513,7 +512,7 @@ defmodule SymphonyElixir.LiveE2ETest do
     after
       restart_orchestrator_if_needed()
       cleanup_live_worker_setup(worker_setup)
-      Workflow.set_workflow_file_path(original_workflow_path)
+      Workflow.clear_workflow_file_path()
       File.rm_rf(test_root)
     end
   end

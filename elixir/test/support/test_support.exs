@@ -15,9 +15,9 @@ defmodule SymphonyElixir.TestSupport do
 
   @workflow_prompt "You are an agent for this repository."
 
-  defmacro __using__(_opts) do
+  defmacro __using__(opts) do
     quote do
-      use ExUnit.Case
+      use ExUnit.Case, unquote(opts)
       import ExUnit.CaptureLog
 
       alias SymphonyElixir.AgentRunner
@@ -61,7 +61,7 @@ defmodule SymphonyElixir.TestSupport do
         stop_default_http_server()
 
         on_exit(fn ->
-          Application.delete_env(:symphony_elixir, :workflow_file_path)
+          Workflow.clear_workflow_file_path()
           Application.delete_env(:symphony_elixir, :server_port_override)
           Application.delete_env(:symphony_elixir, :memory_tracker_issues)
           Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
@@ -77,6 +77,16 @@ defmodule SymphonyElixir.TestSupport do
     workflow = workflow_content(overrides)
     File.write!(path, workflow)
 
+    if path == SymphonyElixir.Workflow.workflow_file_path() do
+      SymphonyElixir.Workflow.set_workflow_file_path(path)
+    else
+      reload_workflow_store()
+    end
+
+    :ok
+  end
+
+  defp reload_workflow_store do
     if Process.whereis(SymphonyElixir.WorkflowStore) do
       try do
         SymphonyElixir.WorkflowStore.force_reload()
