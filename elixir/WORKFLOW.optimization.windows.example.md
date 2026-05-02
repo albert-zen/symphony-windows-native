@@ -90,6 +90,8 @@ Operating model:
    `docs(quality): add agent PR quality policy`, and push the branch to
    the configured GitHub repository.
 9. Open a GitHub pull request against `main` and link it in the Linear workpad.
+   If the Linear issue has one unambiguous origin GitHub issue, include a supported closing keyword
+   in the PR body, for example `Fixes #NN`.
 10. Wait for required GitHub checks to complete before moving the Linear issue to `In Review`.
     If checks cannot be verified, record the exact reason in the workpad and PR, then keep the
     issue in `In Progress` or return it to `Todo`; only a manager may explicitly override this.

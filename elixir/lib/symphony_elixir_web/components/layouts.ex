@@ -28,8 +28,36 @@ defmodule SymphonyElixirWeb.Layouts do
 
             if (!window.Phoenix || !window.LiveView) return;
 
+            var hooks = {
+              LocalTime: {
+                mounted: function () {
+                  this.renderLocalTime();
+                },
+                updated: function () {
+                  this.renderLocalTime();
+                },
+                renderLocalTime: function () {
+                  var iso = this.el.getAttribute("datetime");
+                  if (!iso) return;
+
+                  var date = new Date(iso);
+                  if (Number.isNaN(date.getTime())) return;
+
+                  this.el.textContent = date.toLocaleString(undefined, {
+                    year: "numeric",
+                    month: "short",
+                    day: "numeric",
+                    hour: "numeric",
+                    minute: "2-digit",
+                    second: "2-digit"
+                  });
+                }
+              }
+            };
+
             var liveSocket = new window.LiveView.LiveSocket("/live", window.Phoenix.Socket, {
-              params: {_csrf_token: csrfToken}
+              params: {_csrf_token: csrfToken},
+              hooks: hooks
             });
 
             liveSocket.connect();

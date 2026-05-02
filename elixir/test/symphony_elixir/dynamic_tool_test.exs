@@ -3,6 +3,14 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
   alias SymphonyElixir.Codex.DynamicTool
 
+  setup do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_review_readiness_repository: "albert-zen/symphony-windows-native"
+    )
+
+    :ok
+  end
+
   test "tool_specs advertises the linear_graphql input contract" do
     assert [
              %{
@@ -80,6 +88,407 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
             "commits/abc123/status" => %{"statuses" => []},
             "commits/abc123/check-runs" => %{"check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]}
           })
+      )
+
+    assert response["success"] == true
+    assert_received {:linear_mutation_allowed, "issue-1", "state-review"}
+    refute_received {:workpad_recorded, _}
+  end
+
+  test "linear_graphql allows In Review transition when PR body closes the originating GitHub issue" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_origin_github_issue()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{
+              "body" => with_validation_evidence("#### Context\n\nImplements the linked spec.\n\nFixes #46"),
+              "head" => %{"sha" => "abc123"},
+              "base" => %{"ref" => "main"}
+            },
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{"check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]}
+          })
+      )
+
+    assert response["success"] == true
+    assert_received {:linear_mutation_allowed, "issue-1", "state-review"}
+    refute_received {:workpad_recorded, _}
+  end
+
+  test "linear_graphql allows In Review transition when PR body uses a fully qualified closing keyword" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_origin_github_issue()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{
+              "body" => with_validation_evidence("#### Context\n\nImplements the linked spec.\n\nFixes albert-zen/symphony-windows-native#46"),
+              "head" => %{"sha" => "abc123"},
+              "base" => %{"ref" => "main"}
+            },
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{
+              "check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]
+            }
+          })
+      )
+
+    assert response["success"] == true
+    assert_received {:linear_mutation_allowed, "issue-1", "state-review"}
+    refute_received {:workpad_recorded, _}
+  end
+
+  test "linear_graphql allows In Review transition when PR body uses colon-form closing keyword" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_origin_github_issue()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{
+              "body" => with_validation_evidence("#### Context\n\nImplements the linked spec.\n\nFixes: #46"),
+              "head" => %{"sha" => "abc123"},
+              "base" => %{"ref" => "main"}
+            },
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{
+              "check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]
+            }
+          })
+      )
+
+    assert response["success"] == true
+    assert_received {:linear_mutation_allowed, "issue-1", "state-review"}
+    refute_received {:workpad_recorded, _}
+  end
+
+  test "linear_graphql rejects extra trusted repository closing keywords" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_origin_github_issue()),
+        github_client:
+          github_client(
+            passing_review_readiness_responses(%{
+              "body" => "#### Context\n\nImplements the linked spec.\n\nFixes #46\nFixes #47"
+            })
+          )
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "does not have exactly one unambiguous origin GitHub issue"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "Remove the closing keyword"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql recognizes current Linear GitHub origin markdown" do
+    test_pid = self()
+
+    issue =
+      issue_with_origin_github_issue()
+      |> Map.put("description", "GitHub: [https://github.com/albert-zen/symphony-windows-native/issues/46](<https://github.com/albert-zen/symphony-windows-native/issues/46>)")
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{
+              "body" => with_validation_evidence("#### Context\n\nImplements the linked spec without a closing keyword."),
+              "head" => %{"sha" => "abc123"},
+              "base" => %{"ref" => "main"}
+            }
+          })
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "missing a closing keyword for GitHub issue albert-zen/symphony-windows-native#46"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "Fixes #46"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql rejects In Review transition when PR body does not close the originating GitHub issue" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_origin_github_issue()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{
+              "body" => with_validation_evidence("#### Context\n\nImplements the linked spec without a closing keyword."),
+              "head" => %{"sha" => "abc123"},
+              "base" => %{"ref" => "main"}
+            }
+          })
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "missing a closing keyword for GitHub issue albert-zen/symphony-windows-native#46"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "Fixes #46"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql rejects In Review transition when attachment origin issue lacks closing keyword" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_origin_github_issue_attachment()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{
+              "body" => with_validation_evidence("#### Context\n\nImplements the linked spec without a closing keyword."),
+              "head" => %{"sha" => "abc123"},
+              "base" => %{"ref" => "main"}
+            }
+          })
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "missing a closing keyword for GitHub issue albert-zen/symphony-windows-native#46"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "Fixes #46"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql ignores non-trusted repository issue origins" do
+    test_pid = self()
+
+    issue =
+      issue_with_pr()
+      |> Map.put("description", "GitHub issue: https://github.com/elsewhere/symphony-windows-native/issues/46")
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue),
+        github_client: github_client(passing_review_readiness_responses(%{"body" => "#### Context\n\nNo closing keyword."}))
+      )
+
+    assert response["success"] == true
+    assert_received {:linear_mutation_allowed, "issue-1", "state-review"}
+    refute_received {:workpad_recorded, _}
+  end
+
+  test "linear_graphql ignores non-GitHub origin attachments" do
+    test_pid = self()
+
+    issue =
+      issue_with_pr()
+      |> update_in(["attachments", "nodes"], fn attachments ->
+        attachments ++ [%{"sourceType" => "url", "url" => "https://example.com/issues/46"}]
+      end)
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue),
+        github_client: github_client(passing_review_readiness_responses(%{"body" => "#### Context\n\nNo closing keyword."}))
+      )
+
+    assert response["success"] == true
+    assert_received {:linear_mutation_allowed, "issue-1", "state-review"}
+    refute_received {:workpad_recorded, _}
+  end
+
+  test "linear_graphql skips closing keyword enforcement for ambiguous origin issue links" do
+    test_pid = self()
+
+    issue =
+      issue_with_pr()
+      |> Map.put(
+        "description",
+        """
+        GitHub issue: https://github.com/albert-zen/symphony-windows-native/issues/46
+        GitHub issue: https://github.com/albert-zen/symphony-windows-native/issues/47
+        """
+      )
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue),
+        github_client: github_client(passing_review_readiness_responses(%{"body" => "#### Context\n\nNo closing keyword."}))
+      )
+
+    assert response["success"] == true
+    assert_received {:linear_mutation_allowed, "issue-1", "state-review"}
+    refute_received {:workpad_recorded, _}
+  end
+
+  test "linear_graphql rejects closing keywords for ambiguous origin issue links" do
+    test_pid = self()
+
+    issue =
+      issue_with_pr()
+      |> Map.put(
+        "description",
+        """
+        GitHub issue: https://github.com/albert-zen/symphony-windows-native/issues/46
+        GitHub issue: https://github.com/albert-zen/symphony-windows-native/issues/47
+        """
+      )
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue),
+        github_client: github_client(passing_review_readiness_responses(%{"body" => "#### Context\n\nFixes #46"}))
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "does not have exactly one unambiguous origin GitHub issue"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "Remove the closing keyword"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql rejects colon-form closing keywords for ambiguous origin issue links" do
+    test_pid = self()
+
+    issue =
+      issue_with_pr()
+      |> Map.put(
+        "description",
+        """
+        GitHub issue: https://github.com/albert-zen/symphony-windows-native/issues/46
+        GitHub issue: https://github.com/albert-zen/symphony-windows-native/issues/47
+        """
+      )
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue),
+        github_client: github_client(passing_review_readiness_responses(%{"body" => "#### Context\n\nFixes: #46"}))
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "does not have exactly one unambiguous origin GitHub issue"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "Remove the closing keyword"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql skips closing keyword enforcement for cross-source origin ambiguity" do
+    test_pid = self()
+
+    issue =
+      issue_with_origin_github_issue()
+      |> update_in(["attachments", "nodes"], fn attachments ->
+        attachments ++
+          [
+            %{
+              "sourceType" => "github",
+              "title" => "GH #47",
+              "url" => "https://github.com/albert-zen/symphony-windows-native/issues/47"
+            }
+          ]
+      end)
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue),
+        github_client: github_client(passing_review_readiness_responses(%{"body" => "#### Context\n\nNo closing keyword."}))
+      )
+
+    assert response["success"] == true
+    assert_received {:linear_mutation_allowed, "issue-1", "state-review"}
+    refute_received {:workpad_recorded, _}
+  end
+
+  test "linear_graphql rejects closing keywords for reference-only trusted issue links" do
+    test_pid = self()
+
+    issue =
+      issue_with_pr()
+      |> Map.put("description", "Related reference: https://github.com/albert-zen/symphony-windows-native/issues/46")
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue),
+        github_client: github_client(passing_review_readiness_responses(%{"body" => "#### Context\n\nFixes #46"}))
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "does not have exactly one unambiguous origin GitHub issue"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "Remove the closing keyword"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql rejects colon-form closing keywords for reference-only trusted issue links" do
+    test_pid = self()
+
+    issue =
+      issue_with_pr()
+      |> Map.put("description", "Related reference: https://github.com/albert-zen/symphony-windows-native/issues/46")
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue),
+        github_client: github_client(passing_review_readiness_responses(%{"body" => "#### Context\n\nFixes: #46"}))
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "does not have exactly one unambiguous origin GitHub issue"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "Remove the closing keyword"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql does not treat reference-only trusted issue links as origins" do
+    test_pid = self()
+
+    issue =
+      issue_with_pr()
+      |> Map.put("description", "Related reference: https://github.com/albert-zen/symphony-windows-native/issues/46")
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue),
+        github_client: github_client(passing_review_readiness_responses(%{"body" => "#### Context\n\nNo closing keyword."}))
       )
 
     assert response["success"] == true
@@ -863,7 +1272,11 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
   test "linear_graphql uses configured required checks when branch protection is unavailable" do
     test_pid = self()
-    write_workflow_file!(Workflow.workflow_file_path(), codex_review_readiness_required_checks: ["make-all"])
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_review_readiness_repository: "albert-zen/symphony-windows-native",
+      codex_review_readiness_required_checks: ["make-all"]
+    )
 
     response =
       DynamicTool.execute(
@@ -1128,6 +1541,107 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert Jason.decode!(response["output"])["error"]["message"] =~ "required GitHub checks are not passing"
     assert_received {:workpad_recorded, body}
     assert body =~ "make-all=check:in_progress"
+  end
+
+  test "linear_graphql rejects In Review transition when linked PR lacks local validation evidence" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{
+              "body" => """
+              #### Context
+
+              Context text.
+
+              #### TL;DR
+
+              Summary.
+
+              #### Summary
+
+              - Change.
+
+              #### Alternatives
+
+              - None.
+
+              #### Test Plan
+
+              - [ ] `make -C elixir all`
+              - CI will validate this later.
+              """,
+              "head" => %{"sha" => "abc123"},
+              "base" => %{"ref" => "main"}
+            },
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{"check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]}
+          })
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "local validation evidence is missing"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "local validation evidence is missing"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql accepts targeted local evidence without requiring local make all" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{
+              "body" => targeted_validation_pr_body(),
+              "head" => %{"sha" => "abc123"},
+              "base" => %{"ref" => "main"}
+            },
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{"check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]}
+          })
+      )
+
+    assert response["success"] == true
+    assert_received {:linear_mutation_allowed, "issue-1", "state-review"}
+    refute_received {:workpad_recorded, _}
+  end
+
+  test "linear_graphql accepts justified skipped heavy validation with narrower local evidence" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{
+              "body" => justified_skip_pr_body(),
+              "head" => %{"sha" => "abc123"},
+              "base" => %{"ref" => "main"}
+            },
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{"check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]}
+          })
+      )
+
+    assert response["success"] == true
+    assert_received {:linear_mutation_allowed, "issue-1", "state-review"}
+    refute_received {:workpad_recorded, _}
   end
 
   test "linear_graphql rejects In Review transition when required checks fail" do
@@ -1492,6 +2006,28 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     }
   end
 
+  defp issue_with_origin_github_issue do
+    Map.put(
+      issue_with_pr(),
+      "description",
+      "GitHub issue: https://github.com/albert-zen/symphony-windows-native/issues/46"
+    )
+  end
+
+  defp issue_with_origin_github_issue_attachment do
+    issue_with_pr()
+    |> update_in(["attachments", "nodes"], fn attachments ->
+      attachments ++
+        [
+          %{
+            "sourceType" => "github",
+            "title" => "GH #46",
+            "url" => "https://github.com/albert-zen/symphony-windows-native/issues/46"
+          }
+        ]
+    end)
+  end
+
   defp issue_without_pr do
     put_in(issue_with_pr(), ["attachments", "nodes"], [])
   end
@@ -1545,6 +2081,34 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     end
   end
 
+  defp passing_review_readiness_responses(pr_payload) do
+    pr_payload = Map.update(pr_payload, "body", targeted_validation_pr_body(), &with_validation_evidence/1)
+
+    %{
+      "pulls/42" =>
+        Map.merge(
+          %{"head" => %{"sha" => "abc123"}, "base" => %{"ref" => "main"}},
+          pr_payload
+        ),
+      "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+      "commits/abc123/status" => %{"statuses" => []},
+      "commits/abc123/check-runs" => %{
+        "check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]
+      }
+    }
+  end
+
+  defp with_validation_evidence(body) do
+    body <>
+      """
+
+      #### Test Plan
+
+      - [ ] `make -C elixir all` not run locally because this test simulates targeted review-readiness validation.
+      - [x] `mix test test/symphony_elixir/dynamic_tool_test.exs` passed locally.
+      """
+  end
+
   defp default_pr_payload(url, %{"head" => head} = payload) when is_map(head) do
     if String.contains?(url, "/pulls/") do
       default_head =
@@ -1559,6 +2123,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         |> Map.put_new("sha", "base123")
 
       payload
+      |> Map.put_new("body", targeted_validation_pr_body())
       |> put_in(["head"], default_head)
       |> put_in(["base"], default_base)
     else
@@ -1567,6 +2132,56 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
   end
 
   defp default_pr_payload(_url, payload), do: payload
+
+  defp targeted_validation_pr_body do
+    """
+    #### Context
+
+    Context text.
+
+    #### TL;DR
+
+    Summary.
+
+    #### Summary
+
+    - Change.
+
+    #### Alternatives
+
+    - None.
+
+    #### Test Plan
+
+    - [ ] `make -C elixir all` not run locally because this test simulates targeted review-readiness validation.
+    - [x] `mix test test/symphony_elixir/dynamic_tool_test.exs` passed locally.
+    """
+  end
+
+  defp justified_skip_pr_body do
+    """
+    #### Context
+
+    Context text.
+
+    #### TL;DR
+
+    Summary.
+
+    #### Summary
+
+    - Change.
+
+    #### Alternatives
+
+    - None.
+
+    #### Test Plan
+
+    - [ ] `make -C elixir all` not run locally because this test simulates a narrower handoff.
+    - [x] `mix test test/symphony_elixir/dynamic_tool_test.exs` passed locally as narrower validation.
+    """
+  end
 
   defp default_github_response(url) do
     cond do
