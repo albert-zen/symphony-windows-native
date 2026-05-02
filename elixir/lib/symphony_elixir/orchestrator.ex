@@ -16,6 +16,7 @@ defmodule SymphonyElixir.Orchestrator do
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @max_recent_codex_events 80
+  @max_completed_agent_messages 120
   @steer_request_timeout_ms 3_000
   @startup_cleanup_preserved_states ["In Review", "Blocked"]
   @workspace_cleanup_progress_notify_every 10
@@ -1524,6 +1525,7 @@ defmodule SymphonyElixir.Orchestrator do
           last_codex_message: metadata.last_codex_message,
           last_codex_event: metadata.last_codex_event,
           recent_codex_events: Map.get(metadata, :recent_codex_events, []),
+          completed_agent_messages: Map.get(metadata, :completed_agent_messages, []),
           command_watchdog:
             CommandWatchdog.snapshot(
               Map.get(metadata, :command_watchdog),
@@ -1657,6 +1659,7 @@ defmodule SymphonyElixir.Orchestrator do
         turn_id: id_for_update(Map.get(running_entry, :turn_id), update, :turn_id),
         last_codex_event: event,
         recent_codex_events: recent_codex_events_for_update(running_entry, update),
+        completed_agent_messages: completed_agent_messages_for_update(running_entry, update),
         codex_app_server_pid: codex_app_server_pid_for_update(codex_app_server_pid, update),
         codex_input_tokens: codex_input_tokens + token_delta.input_tokens,
         codex_output_tokens: codex_output_tokens + token_delta.output_tokens,
@@ -1821,18 +1824,76 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp recent_codex_events_for_update(running_entry, update) do
-    next_event =
-      summarize_codex_update(update)
-      |> Map.put(:raw, update[:raw])
-      |> Map.put(:session_id, update[:session_id] || Map.get(running_entry, :session_id))
-      |> Map.put(:thread_id, update[:thread_id] || Map.get(running_entry, :thread_id))
-      |> Map.put(:turn_id, update[:turn_id] || Map.get(running_entry, :turn_id))
-
     running_entry
     |> Map.get(:recent_codex_events, [])
-    |> Kernel.++([next_event])
+    |> Kernel.++([codex_event_for_update(running_entry, update)])
     |> Enum.take(-@max_recent_codex_events)
   end
+
+  defp completed_agent_messages_for_update(running_entry, update) do
+    existing = Map.get(running_entry, :completed_agent_messages, [])
+
+    if completed_agent_message_update?(update) do
+      existing
+      |> Kernel.++([codex_event_for_update(running_entry, update)])
+      |> Enum.take(-@max_completed_agent_messages)
+    else
+      existing
+    end
+  end
+
+  defp codex_event_for_update(running_entry, update) do
+    summarize_codex_update(update)
+    |> Map.put(:raw, update[:raw])
+    |> Map.put(:session_id, update[:session_id] || Map.get(running_entry, :session_id))
+    |> Map.put(:thread_id, update[:thread_id] || Map.get(running_entry, :thread_id))
+    |> Map.put(:turn_id, update[:turn_id] || Map.get(running_entry, :turn_id))
+  end
+
+  defp completed_agent_message_update?(update) do
+    payload = codex_update_payload(update)
+
+    event_method(payload) == "item/completed" and
+      (map_path(payload, ["params", "item", "type"]) ||
+         map_path(payload, [:params, :item, :type])) == "agentMessage"
+  end
+
+  defp codex_update_payload(update) do
+    cond do
+      is_map(update[:message]) -> update[:message]
+      is_map(update[:payload]) -> update[:payload]
+      is_map(update[:raw]) -> update[:raw]
+      is_binary(update[:raw]) -> decode_json_payload(update[:raw])
+      true -> nil
+    end
+  end
+
+  defp decode_json_payload(raw) do
+    case Jason.decode(raw) do
+      {:ok, %{} = payload} -> payload
+      _ -> nil
+    end
+  end
+
+  defp event_method(payload) do
+    map_path(payload, ["method"]) ||
+      map_path(payload, [:method]) ||
+      map_path(payload, ["payload", "method"]) ||
+      map_path(payload, [:payload, :method]) ||
+      map_path(payload, ["params", "msg", "method"]) ||
+      map_path(payload, [:params, :msg, :method])
+  end
+
+  defp map_path(value, path), do: Enum.reduce_while(path, value, &map_path_step/2)
+
+  defp map_path_step(key, %{} = value) do
+    case Map.fetch(value, key) do
+      {:ok, next} -> {:cont, next}
+      :error -> {:halt, nil}
+    end
+  end
+
+  defp map_path_step(_key, _value), do: {:halt, nil}
 
   defp validate_steer_message(message) when is_binary(message) do
     case String.trim(message) do
