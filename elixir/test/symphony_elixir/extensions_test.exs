@@ -1794,6 +1794,65 @@ defmodule SymphonyElixir.ExtensionsTest do
     refute html =~ hidden_marker
   end
 
+  test "worker detail projection redacts secrets after coalescing streamed chunks" do
+    snapshot =
+      static_snapshot()
+      |> put_in([:running, Access.at(0), :recent_codex_events], [
+        agent_delta_event("msg-secret", "token sk-", ~U[2026-01-01 00:00:00Z]),
+        agent_delta_event("msg-secret", "liveSecret123", ~U[2026-01-01 00:00:01Z]),
+        command_event(
+          "item/started",
+          %{"item" => %{"id" => "cmd-secret", "type" => "commandExecution", "command" => "mix test"}},
+          ~U[2026-01-01 00:00:02Z]
+        ),
+        command_event("item/commandExecution/outputDelta", %{"itemId" => "cmd-secret", "outputDelta" => "Authorization: Bearer sk-"}, ~U[2026-01-01 00:00:03Z]),
+        command_event("item/commandExecution/outputDelta", %{"itemId" => "cmd-secret", "outputDelta" => "liveSecret123"}, ~U[2026-01-01 00:00:04Z])
+      ])
+
+    orchestrator_name = Module.concat(__MODULE__, :WorkerDetailCoalescedSecretOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    issue_payload = json_response(get(build_conn(), "/api/v1/MT-HTTP"), 200)
+    rendered_payload = inspect(issue_payload, limit: :infinity)
+
+    assert [%{"type" => "assistant", "excerpt" => "token [REDACTED]"}, %{"type" => "tool"} = tool] =
+             issue_payload["conversation"]
+
+    assert tool["output_excerpt"] == "Authorization: Bearer [REDACTED]"
+    refute rendered_payload =~ "sk-liveSecret123"
+  end
+
+  test "worker detail projection renders textDelta assistant chunks" do
+    snapshot =
+      static_snapshot()
+      |> put_in([:running, Access.at(0), :recent_codex_events], [
+        notification_event("item/agentMessage/delta", %{"textDelta" => "Hello "}, 1),
+        notification_event("item/agentMessage/delta", %{"textDelta" => "from textDelta"}, 2)
+      ])
+
+    orchestrator_name = Module.concat(__MODULE__, :WorkerDetailTextDeltaOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    issue_payload = json_response(get(build_conn(), "/api/v1/MT-HTTP"), 200)
+
+    assert [%{"type" => "assistant", "excerpt" => "Hello from textDelta"}] =
+             issue_payload["conversation"]
+  end
+
   test "worker detail projection reads parsed messages when raw app-server JSON is a string" do
     snapshot =
       static_snapshot()

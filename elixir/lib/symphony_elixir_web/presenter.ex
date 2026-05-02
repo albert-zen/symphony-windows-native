@@ -444,7 +444,14 @@ defmodule SymphonyElixirWeb.Presenter do
     key = item_key(event, payload)
 
     update_matching_or_append_tool(items, key, fn item ->
-      output_text = Map.get(item, :output_excerpt, "") <> output
+      output_text =
+        item
+        |> Map.get(:output_excerpt, "")
+        |> String.replace_suffix("\n[truncated]", "")
+        |> Kernel.<>(output)
+        |> Redactor.redact()
+        |> absorb_redacted_suffix()
+
       {excerpt, truncated?} = truncate_text(output_text, @text_excerpt_chars)
 
       item
@@ -525,11 +532,20 @@ defmodule SymphonyElixirWeb.Presenter do
       |> Map.get(:excerpt, "")
       |> String.replace_suffix("\n[truncated]", "")
 
-    {excerpt, truncated?} = truncate_text(current_excerpt <> delta, @text_excerpt_chars)
+    {excerpt, truncated?} =
+      current_excerpt
+      |> Kernel.<>(delta)
+      |> Redactor.redact()
+      |> absorb_redacted_suffix()
+      |> truncate_text(@text_excerpt_chars)
 
     item
     |> Map.put(:excerpt, excerpt <> if(truncated?, do: "\n[truncated]", else: ""))
     |> Map.put(:truncated?, Map.get(item, :truncated?, false) or truncated?)
+  end
+
+  defp absorb_redacted_suffix(text) when is_binary(text) do
+    Regex.replace(~r/\[REDACTED\][A-Za-z0-9_=\-]+/, text, "[REDACTED]")
   end
 
   defp manager_message_item(event, message, raw) do
@@ -620,10 +636,16 @@ defmodule SymphonyElixirWeb.Presenter do
     first_map_path(payload, [
       ["params", "delta"],
       [:params, :delta],
+      ["params", "textDelta"],
+      [:params, :textDelta],
       ["params", "msg", "delta"],
       [:params, :msg, :delta],
+      ["params", "msg", "textDelta"],
+      [:params, :msg, :textDelta],
       ["params", "msg", "payload", "delta"],
       [:params, :msg, :payload, :delta],
+      ["params", "msg", "payload", "textDelta"],
+      [:params, :msg, :payload, :textDelta],
       ["params", "msg", "content"],
       [:params, :msg, :content],
       ["params", "msg", "payload", "content"],
