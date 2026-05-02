@@ -46,6 +46,8 @@ erl_crash.dump
 status.txt
 .codex/original-user-prompt.txt
 WORKFLOW.windows.md
+WORKFLOW.optimization.windows*.md
+!WORKFLOW.optimization.windows.example.md
 
 # Also ignore archive artifacts (built via "mix archive.build").
 *.ez
