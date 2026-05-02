@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.WindowsLifecycleScriptsTest do
   use SymphonyElixir.TestSupport, async: false
 
+  @moduletag :windows_native
+
   defp powershell do
     Enum.find(["pwsh", "powershell"], fn command ->
       System.find_executable(command)
