@@ -587,12 +587,13 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp terminate_task(pid) when is_pid(pid) do
-    case Task.Supervisor.terminate_child(SymphonyElixir.TaskSupervisor, pid) do
-      :ok ->
-        :ok
-
-      {:error, :not_found} ->
-        Process.exit(pid, :shutdown)
+    if Process.whereis(SymphonyElixir.TaskSupervisor) do
+      case Task.Supervisor.terminate_child(SymphonyElixir.TaskSupervisor, pid) do
+        :ok -> :ok
+        {:error, :not_found} -> Process.exit(pid, :shutdown)
+      end
+    else
+      Process.exit(pid, :shutdown)
     end
   end
 
