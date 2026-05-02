@@ -95,12 +95,20 @@ Good saturation looks like:
 - A small number of active issues, each scoped to one PR.
 - A ready queue of `Backlog` issues that can be promoted one at a time.
 - Clear GitHub acceptance criteria before an issue reaches `Todo`.
+- Explicit dependency notes so prerequisite work lands or deploys before
+  dependent issues are released to `Todo`.
 - Fast human responses to true blockers.
 - Follow-up issues for discovered defects instead of broadening the active PR.
 
 Avoid moving many speculative issues to `Todo` before the claim, lease, and
 quality gates are proven. A small team gets better throughput from predictable
 handoffs than from maximum parallelism.
+
+Dependent work is not independent capacity. If issue B depends on issue A,
+keep B parked in `Backlog` until A is merged and deployed when deployment is
+part of the unblock condition. Releasing both into `Todo` at the same time
+usually creates stale branches, repeated validation, and misleading `Blocked`
+states.
 
 ## Guardrails that stop quality debt from compounding
 
