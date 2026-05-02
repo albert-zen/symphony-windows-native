@@ -260,6 +260,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       File.mkdir_p!(workspace_root)
       File.mkdir_p!(outside_root)
+      File.rm_rf!(symlink_path)
       File.ln_s!(outside_root, symlink_path)
 
       write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
