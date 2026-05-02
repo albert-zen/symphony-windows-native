@@ -87,6 +87,10 @@ Workpad. Blocking findings keep the issue in `In Progress` or return it to
 - For a true blocker, state what failed, the command/subsystem, recovery status,
   and the next operator action in the Workpad and, when useful for public review,
   the linked GitHub issue or PR.
+- If the blocker is shared pipeline friction, such as CI OS mismatch, GitHub
+  auth/rate-limit verification, stale runtime deployment, durable-claim
+  confusion, or manager-owned policy scope, do not keep retrying blindly. Record
+  the evidence and hand it to the manager as a system defect.
 - Move the issue to `Blocked` when that state exists. If it does not, record
   `Blocked state missing` and keep the issue active for manager triage.
 - If you discover a Symphony automation/system defect, create a GitHub issue

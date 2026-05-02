@@ -6,6 +6,8 @@ tracker:
   # Optional: restrict candidate dispatch to issues with any of these labels.
   # labels:
   #   - symphony-optimization
+  dispatch_states:
+    - Todo
   active_states:
     - Todo
     - In Progress
