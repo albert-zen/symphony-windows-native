@@ -404,28 +404,41 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <div class="rate-limit-main">
                   <div>
                     <p class="rate-limit-name"><%= limit.label %></p>
-                    <p class="rate-limit-detail">
-                      <%= limit.window %>
-                      <%= if limit.reset do %>
-                        · <%= limit.reset %>
-                      <% end %>
-                    </p>
+                    <p class="rate-limit-detail"><%= limit.status %></p>
                   </div>
                   <span class={limit.badge_class}><%= limit.used_label %></span>
                 </div>
+                <dl class="rate-limit-fields">
+                  <div>
+                    <dt>Window</dt>
+                    <dd><%= limit.window %></dd>
+                  </div>
+                  <div>
+                    <dt>Reset countdown</dt>
+                    <dd><%= limit.reset || "n/a" %></dd>
+                  </div>
+                  <div>
+                    <dt>Used</dt>
+                    <dd><%= limit.used_label %></dd>
+                  </div>
+                  <div>
+                    <dt>Reset time</dt>
+                    <dd>
+                      <%= if limit.reset_absolute do %>
+                        <time
+                          id={limit.reset_id}
+                          phx-hook="LocalTime"
+                          datetime={limit.reset_absolute.iso}
+                        ><%= limit.reset_absolute.fallback %></time>
+                      <% else %>
+                        n/a
+                      <% end %>
+                    </dd>
+                  </div>
+                </dl>
                 <div class="rate-limit-bar" aria-label={limit.progress_label}>
                   <span class={limit.bar_class} style={"width: #{limit.progress_width}%"}></span>
                 </div>
-                <%= if limit.reset_absolute do %>
-                  <p class="rate-limit-absolute">
-                    Reset at
-                    <time
-                      id={limit.reset_id}
-                      phx-hook="LocalTime"
-                      datetime={limit.reset_absolute.iso}
-                    ><%= limit.reset_absolute.fallback %></time>
-                  </p>
-                <% end %>
               </article>
             </div>
 
@@ -830,6 +843,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       badge_class: rate_limit_badge_class(used_percent),
       bar_class: rate_limit_bar_class(used_percent),
       tone_class: rate_limit_tone_class(label),
+      status: rate_limit_status(used_percent),
       window: window_label(field_value(bucket, [:window_duration_mins, :windowDurationMins, "window_duration_mins", "windowDurationMins"])),
       reset: reset_relative(reset_at, now),
       reset_absolute: reset_absolute(reset_at)
@@ -846,6 +860,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       badge_class: "rate-limit-badge",
       bar_class: "rate-limit-bar-fill",
       tone_class: rate_limit_tone_class(label),
+      status: "Snapshot unavailable",
       window: "window n/a",
       reset: nil,
       reset_absolute: nil
@@ -903,6 +918,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp rate_limit_bar_class(_value), do: "rate-limit-bar-fill"
 
   defp rate_limit_tone_class(label), do: "rate-limit-row-#{String.downcase(label)}"
+
+  defp rate_limit_status(value) when is_integer(value) and value >= 90, do: "Critical usage"
+  defp rate_limit_status(value) when is_integer(value) and value >= 70, do: "Elevated usage"
+  defp rate_limit_status(value) when is_integer(value), do: "Operational"
+  defp rate_limit_status(_value), do: "Usage unavailable"
 
   defp window_label(minutes) when is_integer(minutes), do: "#{duration_label(minutes)} window"
   defp window_label(minutes) when is_float(minutes), do: "#{duration_label(round(minutes))} window"

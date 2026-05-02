@@ -448,10 +448,10 @@ pre,
 .rate-limit-row {
   display: grid;
   gap: 0.8rem;
-  min-height: 11rem;
+  min-height: 14rem;
   padding: 1rem;
   border: 1px solid var(--line);
-  border-radius: 18px;
+  border-radius: 8px;
   background: white;
   box-shadow: var(--shadow-sm);
 }
@@ -481,10 +481,38 @@ pre,
 }
 
 .rate-limit-detail,
-.rate-limit-absolute {
+.rate-limit-fields dd {
   margin: 0.22rem 0 0;
   color: var(--muted);
   font-size: 0.88rem;
+}
+
+.rate-limit-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+  margin: 0;
+}
+
+.rate-limit-fields div {
+  min-width: 0;
+  padding: 0.62rem 0.7rem;
+  border: 1px solid rgba(217, 217, 227, 0.85);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.rate-limit-fields dt {
+  margin: 0;
+  color: #5f6368;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.rate-limit-fields dd {
+  overflow-wrap: anywhere;
+  font-weight: 700;
 }
 
 .rate-limit-badge {
@@ -538,6 +566,12 @@ pre,
 
 .rate-limit-debug {
   margin-top: 0.85rem;
+}
+
+@media (max-width: 560px) {
+  .rate-limit-fields {
+    grid-template-columns: 1fr;
+  }
 }
 
 .worker-detail-workspace {
