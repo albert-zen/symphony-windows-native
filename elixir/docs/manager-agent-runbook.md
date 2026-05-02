@@ -27,6 +27,60 @@ system defects into durable issues.
   review still needs manager review, state cleanup, and sometimes deployment.
 - Keep the system saturated, not chaotic. Raise concurrency only after claim
   behavior, review readiness, and CI signal are trustworthy.
+- Treat repeated pipeline friction as a product defect in the flywheel, not as a
+  worker performance problem. If multiple workers are debugging the same CI,
+  auth, rate-limit, deployment, or queue-control failure, stop feeding that wall
+  and fix the shared path.
+
+## Manager-owned work
+
+Some issues should stay with the manager instead of being released to an
+ordinary worker. Keep work manager-owned when success depends on global context
+across the live dashboard, GitHub, Linear, previous operator intent, or recent
+flywheel incidents.
+
+Examples:
+
+- Choosing the canonical issue for a repeated system defect, marking duplicates,
+  or defining defect intake policy.
+- Deciding whether a dependency chain is resolved enough to release downstream
+  work to `Todo`.
+- Applying privacy-sensitive history cleanup or deployment/restart changes.
+- Root-causing why active work is `Blocked`, stale, duplicated, or running on
+  old code.
+- Changing manager automation, concurrency policy, release criteria, or review
+  policy.
+
+Workers are a good fit for bounded implementation tasks with a complete public
+spec, test intent, acceptance criteria, and no need to decide cross-system
+policy. If a manager-owned issue can be decomposed, create narrower worker-safe
+subtasks and keep the policy decision in the manager Workpad.
+
+## Worker blocker handoff
+
+Workers should not burn long sessions rediscovering orchestration failures. When
+a worker hits a blocker it cannot resolve within its issue scope, the desired
+handoff is:
+
+1. Update the single `## Codex Workpad` with the exact failure, command or
+   subsystem, affected PR/check/log, local recovery attempted, and the next
+   operator action needed.
+2. Add a short Linear comment only when the Workpad is not enough to make the
+   blocker visible to a manager scanning the board.
+3. Move the issue to `Blocked` when that state exists, then release any durable
+   claim so another worker does not immediately reclaim it.
+4. Do not repeatedly retry a failing shared gate unless the Workpad records new
+   evidence that the root cause changed.
+
+The manager owns the next step after this handoff. The manager should classify
+the blocker, find or create the canonical system issue, and decide whether to
+deploy a fix, add a narrow worker-safe follow-up, or return the original issue
+to `Backlog` until the road is clear.
+
+Good blocker reports are small and concrete. They name the failed command or
+API, include the PR/check URL when available, distinguish local pass from CI
+failure, and say whether the current worker can continue after an operator
+action. Vague reports such as "GitHub failed" or "CI flaky" are not enough.
 
 ## Main loop
 
@@ -51,12 +105,16 @@ Run this loop until the operator deliberately pauses the flywheel.
    - Classify the blocker as worker implementation, stale base, failing CI,
      missing config, connector/API failure, credentials, runtime deployment, or
      duplicate/canonical issue confusion.
+   - If several workers hit the same class of blocker, pause release of related
+     work and solve the shared system defect before increasing concurrency.
    - Record the exact failure and next operator action in the Workpad.
    - Create or update one canonical GitHub issue labeled
      `symphony-optimization`, plus a Linear mirror, for system defects.
 4. Feed the next work.
    - Choose the next Backlog issue after completed work is reviewed and blockers
      are root-caused, owned, or confirmed not to affect available capacity.
+   - Classify whether the issue is worker-safe or manager-owned before moving
+     it. Do not release manager-owned work merely to fill a concurrency slot.
    - Complete the GitHub issue spec, testing intent, and acceptance criteria.
    - Add links between GitHub and Linear.
    - Move it to `Todo` only when there is available capacity and the task is
@@ -105,6 +163,9 @@ logs, dashboard state, and runtime logs. Ask these questions:
 - Did review readiness fail because the runtime is missing repository, token, or
   state configuration?
 - Did Linear/GitHub connector lookup fail while direct API access would work?
+- Is the failure caused by CI running on a different OS than the local worker,
+  such as Windows-only commands executed on Ubuntu?
+- Is a merged system fix still absent from the running runtime?
 - Did the issue duplicate a known canonical defect?
 - Did the runtime run old code after a system fix was merged?
 

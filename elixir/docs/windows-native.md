@@ -234,7 +234,7 @@ explicit review target.
 
 The optimization example is a fixed-project routing template. Replace
 `YOUR_LINEAR_PROJECT_SLUG` with the slug for the Linear project you want
-Symphony to poll. Keep `Backlog` out of `tracker.active_states`; parked issues
+Symphony to poll. Keep `Backlog` out of `tracker.dispatch_states`; parked issues
 remain invisible to Symphony until a human moves one issue at a time to `Todo`.
 
 Keep the public example generic. Operator-specific project names, workspace
@@ -250,14 +250,17 @@ tracker:
   project_slug: "YOUR_LINEAR_PROJECT_SLUG"
   labels:
     - symphony-optimization
+  dispatch_states:
+    - Todo
   active_states:
     - Todo
     - In Progress
 ```
 
-The label match is case-insensitive and applies only to candidate dispatch.
-Already-running issues are still reconciled by their tracker state so Symphony
-can stop them cleanly when they move to a terminal state.
+The label match and `dispatch_states` apply only to candidate dispatch.
+Already-running issues are still reconciled by `active_states` so Symphony keeps
+valid workers alive after they move from `Todo` to `In Progress`, and stops them
+cleanly when they move to a terminal state.
 
 To find the right Linear values, use the Linear UI for the project slug when
 possible, or query Linear GraphQL with your own API key. Do not commit API keys,
@@ -379,15 +382,16 @@ A practical flow is:
 - `Done`: terminal. Symphony stops the active agent.
 - `Canceled`, `Cancelled`, `Duplicate`: terminal.
 
-Set `tracker.active_states` to the states where agents should work, and
-`tracker.terminal_states` to states where Symphony should stop.
+Set `tracker.dispatch_states` to the states Symphony should poll for new work,
+`tracker.active_states` to the states where already-running agents remain valid,
+and `tracker.terminal_states` to states where Symphony should stop.
 
 ## What each phase does
 
 ### Poll
 
 Symphony queries Linear for issues in the configured project whose state is in
-`active_states`. If `tracker.labels` is configured, candidates must also have
+`dispatch_states`. If `tracker.labels` is configured, candidates must also have
 at least one matching label.
 
 ### Claim and workspace

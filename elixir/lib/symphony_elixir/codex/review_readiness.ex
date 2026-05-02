@@ -42,6 +42,40 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
   }
   """
 
+  @identifier_context_query """
+  query SymphonyReviewReadinessContextByIdentifier($identifier: String!) {
+    issues(filter: {identifier: {eq: $identifier}}, first: 1) {
+      nodes {
+        id
+        identifier
+        url
+        description
+        team {
+          states(first: 250) {
+            nodes {
+              id
+              name
+            }
+          }
+        }
+        attachments {
+          nodes {
+            sourceType
+            title
+            url
+          }
+        }
+        comments(first: 50) {
+          nodes {
+            id
+            body
+          }
+        }
+      }
+    }
+  }
+  """
+
   @create_comment_mutation """
   mutation SymphonyReviewReadinessCreateWorkpad($issueId: String!, $body: String!) {
     commentCreate(input: {issueId: $issueId, body: $body}) {
@@ -302,10 +336,35 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
   defp fetch_issue_context(issue_id, linear_client) do
     case linear_client.(@context_query, %{"issueId" => issue_id}, []) do
       {:ok, %{"data" => %{"issue" => issue}}} when is_map(issue) -> {:ok, issue}
+      {:ok, %{"data" => %{"issue" => nil}}} -> fetch_issue_context_by_identifier(issue_id, linear_client)
+      {:ok, %{"errors" => errors}} when is_list(errors) -> fetch_issue_context_by_identifier(issue_id, linear_client)
       {:ok, _payload} -> {:error, :review_readiness_issue_unverifiable}
       {:error, reason} -> {:error, {:review_readiness_issue_unverifiable, reason}}
     end
   end
+
+  defp fetch_issue_context_by_identifier(issue_id, linear_client) do
+    if linear_identifier?(issue_id) do
+      case linear_client.(@identifier_context_query, %{"identifier" => issue_id}, []) do
+        {:ok, %{"data" => %{"issues" => %{"nodes" => [issue | _]}}}} when is_map(issue) ->
+          {:ok, issue}
+
+        {:ok, _payload} ->
+          {:error, :review_readiness_issue_unverifiable}
+
+        {:error, reason} ->
+          {:error, {:review_readiness_issue_unverifiable, reason}}
+      end
+    else
+      {:error, :review_readiness_issue_unverifiable}
+    end
+  end
+
+  defp linear_identifier?(issue_id) when is_binary(issue_id) do
+    Regex.match?(~r/^[A-Z][A-Z0-9]+-\d+$/, String.trim(issue_id))
+  end
+
+  defp linear_identifier?(_issue_id), do: false
 
   defp destination_state(issue, state_id) do
     issue
@@ -392,13 +451,113 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
          {:ok, pr_files} <- pull_request_files(owner, repo, number, github_client),
          :ok <- coverage_ignore_ready?(owner, repo, head_sha, pr_files, github_client),
          {:ok, merge_base_sha} <- merge_base_sha(owner, repo, base_ref, head_sha, github_client),
-         :ok <- stale_base_ready?(owner, repo, base_ref, merge_base_sha, pr_files, github_client),
-         {:ok, required_checks} <-
-           required_checks(owner, repo, base_ref, github_client),
-         {:ok, statuses} <- github_json(github_client, "#{@github_api}/repos/#{owner}/#{repo}/commits/#{head_sha}/status"),
+         :ok <- stale_base_ready?(owner, repo, base_ref, merge_base_sha, pr_files, github_client) do
+      pr_context = %{owner: owner, repo: repo, number: number, head_sha: head_sha}
+
+      with {:ok, required_checks} <- required_checks(issue, pr_context, base_ref, github_client) do
+        verify_required_checks(issue, pr_context, required_checks, github_client)
+      end
+    end
+  end
+
+  defp github_rate_limited?({:review_readiness_github_unverifiable, 403, body}) when is_binary(body) do
+    body
+    |> String.downcase()
+    |> String.contains?("rate limit")
+  end
+
+  defp github_rate_limited?(_reason), do: false
+
+  defp verify_required_checks(issue, %{owner: owner, repo: repo, head_sha: head_sha} = pr, required_checks, github_client) do
+    with {:ok, statuses} <- github_json(github_client, "#{@github_api}/repos/#{owner}/#{repo}/commits/#{head_sha}/status"),
          {:ok, check_runs} <- github_json(github_client, "#{@github_api}/repos/#{owner}/#{repo}/commits/#{head_sha}/check-runs") do
       verify_contexts(required_checks, statuses, check_runs)
+    else
+      {:error, reason} ->
+        if github_auth_unavailable?(reason) and connector_check_evidence_ready?(issue, pr, required_checks) do
+          :ok
+        else
+          {:error, reason}
+        end
     end
+  end
+
+  defp connector_check_evidence_ready?(issue, %{owner: owner, repo: repo, number: number, head_sha: head_sha}, required_checks) do
+    required_contexts = Enum.map(required_checks, & &1.context)
+
+    with [_ | _] <- required_contexts,
+         {:ok, workpad} <- workpad_body(issue),
+         true <- workpad_references_pr?(workpad, owner, repo, number),
+         true <- workpad_references_head_sha?(workpad, head_sha) do
+      successful_checks = MapSet.new(workpad_successful_checks(workpad))
+
+      required_contexts
+      |> MapSet.new()
+      |> MapSet.subset?(successful_checks)
+    else
+      _ -> false
+    end
+  end
+
+  defp connector_required_checks_or_error(issue, %{owner: owner, repo: repo, number: number, head_sha: head_sha}, reason) do
+    with true <- github_auth_unavailable?(reason),
+         {:ok, workpad} <- workpad_body(issue),
+         true <- workpad_references_pr?(workpad, owner, repo, number),
+         true <- workpad_references_head_sha?(workpad, head_sha),
+         [_ | _] = checks <- workpad_successful_checks(workpad) do
+      {:ok, Enum.map(checks, &%{context: &1, app_id: nil})}
+    else
+      _ -> {:error, reason}
+    end
+  end
+
+  defp github_auth_unavailable?(reason), do: github_rate_limited?(reason) or github_auth_required?(reason)
+
+  defp github_auth_required?({:review_readiness_github_unverifiable, 401, body}) when is_binary(body) do
+    body
+    |> String.downcase()
+    |> String.contains?("requires authentication")
+  end
+
+  defp github_auth_required?(_reason), do: false
+
+  defp workpad_body(issue) do
+    case workpad_comment(issue) do
+      %{"body" => body} when is_binary(body) -> {:ok, body}
+      _ -> :error
+    end
+  end
+
+  defp workpad_references_pr?(workpad, owner, repo, number) do
+    String.contains?(workpad, "https://github.com/#{owner}/#{repo}/pull/#{number}")
+  end
+
+  defp workpad_references_head_sha?(workpad, head_sha) do
+    normalized_head_sha = String.downcase(head_sha)
+
+    workpad
+    |> workpad_head_sha_candidates()
+    |> Enum.any?(fn candidate ->
+      String.starts_with?(normalized_head_sha, candidate)
+    end)
+  end
+
+  defp workpad_head_sha_candidates(workpad) do
+    [
+      ~r/\b(?:current\s+head|final\s+head|head)\s+`?([a-f0-9]{6,40})`?/i,
+      ~r/\bgithub\s+checks\s+on\s+`?([a-f0-9]{6,40})`?/i,
+      ~r/\bverified\s+checks\s+for\s+`?([a-f0-9]{6,40})`?/i
+    ]
+    |> Enum.flat_map(fn regex -> Regex.scan(regex, workpad) end)
+    |> Enum.map(fn [_, sha] -> String.downcase(sha) end)
+    |> Enum.uniq()
+  end
+
+  defp workpad_successful_checks(workpad) do
+    ~r/^\s*-\s*`?([^`:\r\n]+?)`?\s*(?:run\s+\d+\s*)?(?::|\s)\s*success\s*\.?\s*$/im
+    |> Regex.scan(workpad)
+    |> Enum.map(fn [_, check] -> String.trim(check) end)
+    |> Enum.reject(&(&1 == ""))
   end
 
   defp local_validation_evidence_ready?(pr) do
@@ -642,13 +801,23 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
     |> String.trim("-")
   end
 
-  defp required_checks(owner, repo, base_ref, github_client) do
+  defp required_checks(issue, %{owner: owner, repo: repo} = pr_context, base_ref, github_client) do
     encoded_base_ref = URI.encode(base_ref, &URI.char_unreserved?/1)
     protection_url = "#{@github_api}/repos/#{owner}/#{repo}/branches/#{encoded_base_ref}/protection/required_status_checks"
 
     case github_json(github_client, protection_url) do
       {:ok, protection} -> required_check_specs(protection)
-      {:error, reason} -> configured_required_checks_or_error(reason)
+      {:error, reason} -> configured_or_connector_required_checks(issue, pr_context, reason)
+    end
+  end
+
+  defp configured_or_connector_required_checks(issue, pr_context, reason) do
+    case configured_required_checks_or_error(reason) do
+      {:ok, specs} ->
+        {:ok, specs}
+
+      {:error, ^reason} ->
+        connector_required_checks_or_error(issue, pr_context, reason)
     end
   end
 
