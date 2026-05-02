@@ -5,6 +5,19 @@ defmodule SymphonyElixirWeb.Presenter do
 
   alias SymphonyElixir.{Config, Orchestrator, Redactor, StatusDashboard}
 
+  @conversation_display_limit 120
+  @conversation_event_scan_limit 400
+  @text_excerpt_chars 2_000
+  @raw_excerpt_chars 1_500
+  @raw_json_parse_chars 16_000
+  @raw_items_per_display_item 8
+  @debug_sensitive_key_pattern ~r/(api[_-]?key|authorization|bearer|cookie|credential|password|private[_-]?key|secret|^token$|[_-]token$|token[_-]|access[_-]?token|refresh[_-]?token|session[_-]?token|id[_-]?token)/i
+  @debug_open_json_secret_field_pattern Regex.compile!(
+                                          ~s/("[^"]*(?:api[_-]?key|authorization|bearer|cookie|credential|password|private[_-]?key|secret|token)[^"]*"\\s*:\\s*")[^"]*\\z/,
+                                          "i"
+                                        )
+  @debug_open_assignment_pattern ~r/\b([A-Za-z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]*)=[^\s&]*\z/i
+
   @spec state_payload(GenServer.name(), timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
     generated_at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
@@ -70,6 +83,15 @@ defmodule SymphonyElixirWeb.Presenter do
     end
   end
 
+  @spec worker_conversation([map()]) :: [map()]
+  def worker_conversation(events) when is_list(events) do
+    events
+    |> Enum.take(-@conversation_event_scan_limit)
+    |> Enum.reduce([], &append_conversation_event/2)
+    |> Enum.reverse()
+    |> Enum.take(-@conversation_display_limit)
+  end
+
   defp issue_payload_body(issue_identifier, running, retry) do
     %{
       issue_identifier: issue_identifier,
@@ -92,6 +114,8 @@ defmodule SymphonyElixirWeb.Presenter do
       },
       recent_events: optional_recent_events(running),
       timeline: optional_timeline(running),
+      conversation: optional_conversation(running),
+      debug: debug_payload(issue_identifier, running, retry),
       last_error: retry_error(retry),
       tracked: %{}
     }
@@ -117,6 +141,9 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp optional_timeline(nil), do: []
   defp optional_timeline(running), do: timeline_payload(running)
+
+  defp optional_conversation(nil), do: []
+  defp optional_conversation(running), do: running |> Map.get(:recent_codex_events, []) |> worker_conversation()
 
   defp retry_error(nil), do: nil
   defp retry_error(retry), do: retry.error
@@ -231,6 +258,7 @@ defmodule SymphonyElixirWeb.Presenter do
   defp timeline_payload(running) do
     running
     |> Map.get(:recent_codex_events, [])
+    |> Enum.take(-@conversation_display_limit)
     |> Enum.map(&timeline_event_payload/1)
   end
 
@@ -239,7 +267,7 @@ defmodule SymphonyElixirWeb.Presenter do
       at: iso8601(event[:timestamp]),
       event: event[:event],
       message: summarize_message(event),
-      raw: raw_event_payload(event),
+      raw: bounded_raw_event_payload(event),
       session_id: event[:session_id],
       thread_id: event[:thread_id],
       turn_id: event[:turn_id]
@@ -247,7 +275,587 @@ defmodule SymphonyElixirWeb.Presenter do
   end
 
   defp raw_event_payload(event) when is_map(event) do
-    Redactor.redact(event[:raw] || event[:message])
+    raw = event[:raw]
+
+    cond do
+      is_binary(raw) and byte_size(raw) <= @raw_json_parse_chars ->
+        case Jason.decode(raw) do
+          {:ok, decoded} -> decoded
+          _ -> raw
+        end
+
+      is_nil(raw) ->
+        event[:message]
+
+      true ->
+        raw
+    end
+  end
+
+  defp bounded_raw_event_payload(event) when is_map(event) do
+    {excerpt, truncated?} = inspect_bounded(raw_event_payload(event), @raw_excerpt_chars)
+    %{excerpt: excerpt, truncated?: truncated?}
+  end
+
+  defp debug_payload(issue_identifier, running, retry) do
+    payload =
+      %{
+        issue_identifier: issue_identifier,
+        running: optional_running_payload(running),
+        retry: optional_retry_payload(retry),
+        conversation: optional_conversation(running)
+      }
+
+    {excerpt, truncated?} = inspect_bounded(payload, @raw_excerpt_chars)
+
+    %{
+      payload_excerpt: excerpt,
+      payload_truncated?: truncated?
+    }
+  end
+
+  defp append_conversation_event(event, items) when is_map(event) do
+    raw = raw_event_payload(event)
+    payload = display_event_payload(event)
+    message = Redactor.redact(event[:message])
+    method = event_method(payload) || event_method(raw) || event_method(message)
+
+    event
+    |> conversation_event_kind(method, payload, message)
+    |> append_classified_conversation_event(event, method, payload, raw, message, items)
+  end
+
+  defp append_conversation_event(_event, items), do: items
+
+  defp conversation_event_kind(event, method, payload, message) do
+    cond do
+      agent_message_delta?(method) -> :assistant_delta
+      command_begin?(method, payload) -> :command_begin
+      command_output?(method) -> :command_output
+      command_end?(method, payload) -> :command_end
+      manager_steer?(event, message) -> :manager_steer
+      warning_or_error?(event, message) -> :warning
+      true -> :system
+    end
+  end
+
+  defp append_classified_conversation_event(:assistant_delta, event, method, payload, _raw, _message, items) do
+    append_assistant_delta(event, method, payload, items)
+  end
+
+  defp append_classified_conversation_event(:command_begin, event, method, payload, _raw, _message, items) do
+    append_command_begin(event, method, payload, items)
+  end
+
+  defp append_classified_conversation_event(:command_output, event, _method, payload, _raw, _message, items) do
+    append_command_output(event, payload, items)
+  end
+
+  defp append_classified_conversation_event(:command_end, event, _method, payload, _raw, _message, items) do
+    append_command_end(event, payload, items)
+  end
+
+  defp append_classified_conversation_event(:manager_steer, event, _method, _payload, raw, message, items) do
+    append_new_item(manager_message_item(event, message, raw), items)
+  end
+
+  defp append_classified_conversation_event(:warning, event, _method, _payload, raw, message, items) do
+    append_system_item(event, "warning", summarized_event_message(event, message), raw, items)
+  end
+
+  defp append_classified_conversation_event(:system, event, _method, _payload, raw, message, items) do
+    append_system_item(event, "system", summarized_event_message(event, message), raw, items)
+  end
+
+  defp append_assistant_delta(event, method, payload, []) do
+    delta = extract_text_delta(payload)
+    {excerpt, truncated?} = truncate_text(delta, @text_excerpt_chars)
+
+    append_new_item(
+      %{
+        type: "assistant",
+        key: item_key(event, payload),
+        at: iso8601(event[:timestamp]),
+        title: "Assistant",
+        excerpt: excerpt <> if(truncated?, do: "\n[truncated]", else: ""),
+        truncated?: truncated?,
+        raw: [raw_item(method, event, payload)]
+      },
+      []
+    )
+  end
+
+  defp append_assistant_delta(event, method, payload, [last | rest] = items) do
+    key = item_key(event, payload)
+    delta = extract_text_delta(payload)
+
+    if last[:type] == "assistant" and last[:key] == key do
+      updated =
+        last
+        |> append_excerpt_delta(delta)
+        |> prepend_raw(raw_item(method, event, payload))
+
+      [updated | rest]
+    else
+      {excerpt, truncated?} = truncate_text(delta, @text_excerpt_chars)
+
+      append_new_item(
+        %{
+          type: "assistant",
+          key: key,
+          at: iso8601(event[:timestamp]),
+          title: "Assistant",
+          excerpt: excerpt <> if(truncated?, do: "\n[truncated]", else: ""),
+          truncated?: truncated?,
+          raw: [raw_item(method, event, payload)]
+        },
+        items
+      )
+    end
+  end
+
+  defp append_assistant_delta(event, method, payload, items) do
+    append_assistant_delta(event, method, payload, List.wrap(items))
+  end
+
+  defp append_command_begin(event, method, payload, items) do
+    command = extract_command(payload) || summarize_message(payload) || "command"
+    key = item_key(event, payload)
+
+    append_new_item(
+      %{
+        type: "tool",
+        key: key,
+        at: iso8601(event[:timestamp]),
+        title: "Command",
+        command: command,
+        status: "running",
+        elapsed_ms: nil,
+        output_excerpt: "",
+        output_truncated?: false,
+        raw: [raw_item(method, event, payload)]
+      },
+      items
+    )
+  end
+
+  defp append_command_output(event, payload, items) do
+    output = extract_command_output(payload)
+    key = item_key(event, payload)
+
+    update_matching_or_append_tool(items, key, fn item ->
+      output_text =
+        item
+        |> Map.get(:output_excerpt, "")
+        |> String.replace_suffix("\n[truncated]", "")
+        |> Kernel.<>(output)
+        |> Redactor.redact()
+        |> absorb_redacted_suffix()
+
+      {excerpt, truncated?} = truncate_text(output_text, @text_excerpt_chars)
+
+      item
+      |> Map.put(:output_excerpt, excerpt)
+      |> Map.put(:output_truncated?, Map.get(item, :output_truncated?, false) or truncated?)
+      |> prepend_raw(raw_item("command output", event, payload))
+    end)
+  end
+
+  defp append_command_end(event, payload, items) do
+    key = item_key(event, payload)
+    status = command_status(payload)
+
+    update_matching_or_append_tool(items, key, fn item ->
+      item
+      |> Map.put(:status, status)
+      |> Map.put(:elapsed_ms, elapsed_ms(item.at, event[:timestamp]))
+      |> prepend_raw(raw_item("command end", event, payload))
+    end)
+  end
+
+  defp update_matching_or_append_tool(items, key, fun) do
+    case Enum.split_while(items, fn item -> !(item[:type] == "tool" and item[:key] == key) end) do
+      {before, [item | after_items]} ->
+        before ++ [fun.(item) | after_items]
+
+      _ ->
+        placeholder = %{
+          type: "tool",
+          key: key,
+          at: nil,
+          title: "Command",
+          command: "command",
+          status: "running",
+          elapsed_ms: nil,
+          output_excerpt: "",
+          output_truncated?: false,
+          raw: []
+        }
+
+        append_new_item(fun.(placeholder), items)
+    end
+  end
+
+  defp append_system_item(event, kind, message, raw, items) do
+    append_new_item(
+      %{
+        type: kind,
+        key: "#{kind}:#{iso8601(event[:timestamp])}:#{event[:event]}:#{length(items)}",
+        at: iso8601(event[:timestamp]),
+        title: if(kind == "warning", do: "Warning", else: event_label(event[:event])),
+        excerpt: message || "Worker update",
+        raw: [raw_item(event[:event], event, raw)]
+      },
+      items
+    )
+  end
+
+  defp append_new_item(item, items), do: [item | items]
+
+  defp display_event_payload(event) do
+    cond do
+      is_map(event[:message]) -> Redactor.redact(event[:message])
+      is_map(event[:raw]) -> event[:raw] |> bound_debug_value(@raw_excerpt_chars) |> elem(0)
+      true -> Redactor.redact(event[:message])
+    end
+  end
+
+  defp prepend_raw(item, raw) do
+    Map.update(item, :raw, [raw], fn entries ->
+      [raw | entries] |> Enum.take(@raw_items_per_display_item)
+    end)
+  end
+
+  defp append_excerpt_delta(item, delta) do
+    current_excerpt =
+      item
+      |> Map.get(:excerpt, "")
+      |> String.replace_suffix("\n[truncated]", "")
+
+    {excerpt, truncated?} =
+      current_excerpt
+      |> Kernel.<>(delta)
+      |> Redactor.redact()
+      |> absorb_redacted_suffix()
+      |> truncate_text(@text_excerpt_chars)
+
+    item
+    |> Map.put(:excerpt, excerpt <> if(truncated?, do: "\n[truncated]", else: ""))
+    |> Map.put(:truncated?, Map.get(item, :truncated?, false) or truncated?)
+  end
+
+  defp absorb_redacted_suffix(text) when is_binary(text) do
+    Regex.replace(~r/\[REDACTED\][A-Za-z0-9_=\-]+/, text, "[REDACTED]")
+  end
+
+  defp manager_message_item(event, message, raw) do
+    text =
+      message
+      |> summarize_message()
+      |> strip_manager_prefix()
+
+    %{
+      type: "user",
+      key: "manager:#{iso8601(event[:timestamp])}:#{event[:turn_id]}",
+      at: iso8601(event[:timestamp]),
+      title: "Manager",
+      excerpt: text,
+      raw: [raw_item(event[:event], event, raw)]
+    }
+  end
+
+  defp raw_item(label, event, payload) do
+    {excerpt, truncated?} = inspect_bounded(payload, @raw_excerpt_chars)
+
+    %{
+      label: to_string(label || event[:event] || "event"),
+      at: iso8601(event[:timestamp]),
+      excerpt: excerpt,
+      truncated?: truncated?
+    }
+  end
+
+  defp event_method(%{} = payload) do
+    map_path(payload, ["method"]) ||
+      map_path(payload, [:method]) ||
+      map_path(payload, ["payload", "method"]) ||
+      map_path(payload, [:payload, :method]) ||
+      map_path(payload, ["params", "msg", "method"]) ||
+      map_path(payload, [:params, :msg, :method])
+  end
+
+  defp event_method(_payload), do: nil
+
+  defp agent_message_delta?(method), do: method in ["item/agentMessage/delta", "codex/event/agent_message_delta", "codex/event/agent_message_content_delta"]
+
+  defp command_begin?(method, payload) do
+    method in ["codex/event/exec_command_begin", "item/commandExecution/begin"] ||
+      item_lifecycle_type?(method, payload, "item/started", "commandExecution")
+  end
+
+  defp command_output?(method), do: method in ["codex/event/exec_command_output_delta", "item/commandExecution/outputDelta"]
+
+  defp command_end?(method, payload) do
+    method in ["codex/event/exec_command_end", "item/commandExecution/end"] ||
+      item_lifecycle_type?(method, payload, "item/completed", "commandExecution")
+  end
+
+  defp item_lifecycle_type?(method, payload, expected_method, expected_type) do
+    method == expected_method and
+      (map_path(payload, ["params", "item", "type"]) ||
+         map_path(payload, [:params, :item, :type])) == expected_type
+  end
+
+  defp manager_steer?(event, message) do
+    event[:event] in [:manager_steer_queued, :manager_steer_delivered] or
+      (summarize_message(message) || "") =~ "manager steer"
+  end
+
+  defp warning_or_error?(event, message) do
+    event_name = event[:event] |> to_string() |> String.downcase()
+    text = (summarize_message(message) || "") |> String.downcase()
+    String.contains?(event_name, ["error", "warning", "failed"]) or String.contains?(text, ["error", "warning", "failed"])
+  end
+
+  defp summarized_event_message(event, message) do
+    summarize_message(event[:message] || message || event[:raw])
+  end
+
+  defp item_key(event, payload) do
+    map_path(payload, ["params", "itemId"]) ||
+      map_path(payload, [:params, :itemId]) ||
+      map_path(payload, ["params", "item", "id"]) ||
+      map_path(payload, [:params, :item, :id]) ||
+      event[:turn_id] ||
+      event[:thread_id] ||
+      iso8601(event[:timestamp]) ||
+      "event"
+  end
+
+  defp extract_text_delta(payload) do
+    first_map_path(payload, [
+      ["params", "delta"],
+      [:params, :delta],
+      ["params", "textDelta"],
+      [:params, :textDelta],
+      ["params", "msg", "delta"],
+      [:params, :msg, :delta],
+      ["params", "msg", "textDelta"],
+      [:params, :msg, :textDelta],
+      ["params", "msg", "payload", "delta"],
+      [:params, :msg, :payload, :delta],
+      ["params", "msg", "payload", "textDelta"],
+      [:params, :msg, :payload, :textDelta],
+      ["params", "msg", "content"],
+      [:params, :msg, :content],
+      ["params", "msg", "payload", "content"],
+      [:params, :msg, :payload, :content]
+    ]) ||
+      ""
+  end
+
+  defp extract_command_output(payload) do
+    map_path(payload, ["params", "outputDelta"]) ||
+      map_path(payload, [:params, :outputDelta]) ||
+      map_path(payload, ["params", "msg", "delta"]) ||
+      map_path(payload, [:params, :msg, :delta]) ||
+      map_path(payload, ["params", "delta"]) ||
+      map_path(payload, [:params, :delta]) ||
+      ""
+  end
+
+  defp extract_command(payload) do
+    command =
+      first_map_path(payload, [
+        ["params", "msg", "command"],
+        [:params, :msg, :command],
+        ["params", "item", "command"],
+        [:params, :item, :command],
+        ["params", "item", "parsedCmd"],
+        [:params, :item, :parsedCmd],
+        ["params", "item", "parsed_cmd"],
+        [:params, :item, :parsed_cmd],
+        ["params", "command"],
+        [:params, :command],
+        ["params", "parsedCmd"],
+        [:params, :parsedCmd],
+        ["params", "parsed_cmd"],
+        [:params, :parsed_cmd]
+      ])
+
+    normalize_command(command)
+  end
+
+  defp command_status(payload) do
+    exit_code =
+      map_path(payload, ["params", "msg", "exit_code"]) ||
+        map_path(payload, [:params, :msg, :exit_code]) ||
+        map_path(payload, ["params", "exitCode"]) ||
+        map_path(payload, [:params, :exitCode]) ||
+        map_path(payload, ["params", "item", "exitCode"]) ||
+        map_path(payload, [:params, :item, :exitCode])
+
+    case exit_code do
+      0 -> "completed"
+      code when is_integer(code) -> "failed (exit #{code})"
+      _ -> "completed"
+    end
+  end
+
+  defp elapsed_ms(nil, _ended_at), do: nil
+  defp elapsed_ms(_started_at, nil), do: nil
+
+  defp elapsed_ms(started_at, %DateTime{} = ended_at) when is_binary(started_at) do
+    case DateTime.from_iso8601(started_at) do
+      {:ok, parsed, _offset} -> max(DateTime.diff(ended_at, parsed, :millisecond), 0)
+      _ -> nil
+    end
+  end
+
+  defp elapsed_ms(_started_at, _ended_at), do: nil
+
+  defp strip_manager_prefix(nil), do: nil
+
+  defp strip_manager_prefix(text) when is_binary(text) do
+    text
+    |> String.replace_prefix("manager steer queued: ", "")
+    |> String.replace_prefix("manager steer delivered: ", "")
+  end
+
+  defp normalize_command(%{} = command) do
+    binary_command = map_value(command, ["parsedCmd", :parsedCmd, "command", :command, "cmd", :cmd])
+    args = map_value(command, ["args", :args, "argv", :argv])
+
+    if is_binary(binary_command) and is_list(args) do
+      normalize_command([binary_command | args])
+    else
+      normalize_command(binary_command || args)
+    end
+  end
+
+  defp normalize_command(command) when is_binary(command), do: String.trim(command)
+
+  defp normalize_command(command) when is_list(command) do
+    if Enum.all?(command, &is_binary/1) do
+      command |> Enum.join(" ") |> normalize_command()
+    end
+  end
+
+  defp normalize_command(_command), do: nil
+
+  defp truncate_text(text, limit) when is_binary(text) do
+    if String.length(text) > limit do
+      {String.slice(text, 0, limit), true}
+    else
+      {text, false}
+    end
+  end
+
+  defp truncate_text(value, limit), do: value |> to_string() |> truncate_text(limit)
+
+  defp inspect_bounded(value, limit) do
+    {bounded, structurally_truncated?} = bound_debug_value(value, limit)
+
+    {excerpt, text_truncated?} =
+      bounded
+      |> inspect(pretty: true, limit: 50, printable_limit: limit)
+      |> truncate_text(limit)
+
+    {excerpt, structurally_truncated? or text_truncated?}
+  end
+
+  defp bound_debug_value(value, limit, key \\ nil)
+
+  defp bound_debug_value(value, limit, key) when is_atom(key) and not is_nil(key),
+    do: bound_debug_value(value, limit, Atom.to_string(key))
+
+  defp bound_debug_value(value, limit, key) when is_binary(key) do
+    if Regex.match?(@debug_sensitive_key_pattern, key) do
+      {"[REDACTED]", false}
+    else
+      bound_debug_value(value, limit, nil)
+    end
+  end
+
+  defp bound_debug_value(value, limit, nil) when is_binary(value) do
+    {excerpt, truncated?} = truncate_text(value, limit)
+    {redacted_excerpt, redaction_truncated?} = excerpt |> redact_bounded_string() |> truncate_text(limit)
+    {redacted_excerpt, truncated? or redaction_truncated?}
+  end
+
+  defp bound_debug_value(value, limit, _key) when is_list(value) do
+    {items, truncated?} = take_with_truncation(value, @raw_items_per_display_item)
+
+    {bounded_items, child_truncated?} =
+      items
+      |> Enum.map(&bound_debug_value(&1, limit))
+      |> unzip_bounded_values()
+
+    {bounded_items, truncated? or child_truncated?}
+  end
+
+  defp bound_debug_value(value, limit, _key) when is_map(value) do
+    {items, truncated?} = take_with_truncation(value, 50)
+
+    {bounded_items, child_truncated?} =
+      items
+      |> Enum.map(fn {key, item} ->
+        {bounded_item, item_truncated?} = bound_debug_value(item, limit, key)
+        {{key, bounded_item}, item_truncated?}
+      end)
+      |> unzip_bounded_values()
+
+    {Map.new(bounded_items), truncated? or child_truncated?}
+  end
+
+  defp bound_debug_value(value, _limit, _key), do: {Redactor.redact(value), false}
+
+  defp redact_bounded_string(value) do
+    value
+    |> Redactor.redact()
+    |> then(&Regex.replace(@debug_open_json_secret_field_pattern, &1, "\\1[REDACTED]"))
+    |> then(&Regex.replace(@debug_open_assignment_pattern, &1, "\\1=[REDACTED]"))
+  end
+
+  defp take_with_truncation(values, limit) do
+    values
+    |> Enum.reduce_while({[], 0, false}, fn value, {items, count, _truncated?} ->
+      if count < limit do
+        {:cont, {[value | items], count + 1, false}}
+      else
+        {:halt, {items, count, true}}
+      end
+    end)
+    |> then(fn {items, _count, truncated?} -> {Enum.reverse(items), truncated?} end)
+  end
+
+  defp unzip_bounded_values(values) do
+    {
+      Enum.map(values, fn {value, _truncated?} -> value end),
+      Enum.any?(values, fn {_value, truncated?} -> truncated? end)
+    }
+  end
+
+  defp event_label(event) when is_atom(event), do: event |> Atom.to_string() |> String.replace("_", " ")
+  defp event_label(event), do: event |> to_string() |> String.replace("_", " ")
+
+  defp first_map_path(value, paths) do
+    Enum.find_value(paths, &map_path(value, &1))
+  end
+
+  defp map_path(value, path), do: Enum.reduce_while(path, value, &map_path_step/2)
+
+  defp map_path_step(key, %{} = value) do
+    case Map.fetch(value, key) do
+      {:ok, next} -> {:cont, next}
+      :error -> {:halt, nil}
+    end
+  end
+
+  defp map_path_step(_key, _value), do: {:halt, nil}
+
+  defp map_value(%{} = map, keys) do
+    Enum.find_value(keys, &Map.get(map, &1))
   end
 
   defp summarize_message(nil), do: nil

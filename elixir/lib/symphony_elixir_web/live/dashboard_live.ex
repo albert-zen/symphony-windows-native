@@ -106,9 +106,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <div>
               <p class="eyebrow">Worker Detail</p>
               <h1 class="hero-title"><%= @issue_identifier %></h1>
-              <p class="hero-copy">
-                Human-readable Codex session activity, raw event details, and targeted manager steering.
-              </p>
+              <p class="hero-copy">Agent conversation view for the active Symphony worker session.</p>
             </div>
             <div class="status-stack">
               <a class="subtle-button" href="/">Dashboard</a>
@@ -149,33 +147,73 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <p class="metric-detail"><%= detail.workspace.host || "local" %></p>
             </article>
             <article class="metric-card">
-              <p class="metric-label">Tokens</p>
-              <p class="metric-value numeric"><%= format_int(running.tokens.total_tokens) %></p>
-              <p class="metric-detail numeric">
-                In <%= format_int(running.tokens.input_tokens) %> / Out <%= format_int(running.tokens.output_tokens) %>
-              </p>
+              <p class="metric-label">Branch / Checks</p>
+              <p class="metric-value detail-path"><%= detail.retry && detail.retry.branch_name || "n/a" %></p>
+              <p class="metric-detail"><%= if detail.url, do: detail.url, else: "PR and checks unavailable" %></p>
             </article>
           </section>
 
-          <section class="section-card">
-            <div class="section-header">
+          <section class="agent-panel">
+            <div class="agent-panel-header">
               <div>
-                <h2 class="section-title">Steer worker</h2>
+                <h2 class="section-title">Conversation</h2>
                 <p class="section-copy">
                   <%= if detail.running do %>
                     <%= if @steer_auth_required and not @steer_token_configured do %>
                       Steering is locked because this dashboard is exposed without an operator token.
                     <% else %>
-                      Send an auditable manager message to this exact active session.
+                      Messages and tool activity for this exact worker session.
                     <% end %>
                   <% else %>
                     This worker is not running, so steering is disabled.
                   <% end %>
                 </p>
               </div>
+              <span class="state-badge"><%= length(detail.conversation) %> items</span>
             </div>
 
-            <.form for={%{}} as={:steer} phx-submit="steer" class="steer-form">
+            <div class="conversation-scroll">
+              <%= if detail.conversation == [] do %>
+                <p class="empty-state">No Codex conversation events recorded yet.</p>
+              <% else %>
+                <ol class="conversation-list">
+                  <li :for={item <- detail.conversation} class={conversation_item_class(item)}>
+                    <div class="conversation-meta">
+                      <span><%= item.title %></span>
+                      <span class="mono"><%= item.at || "pending" %></span>
+                    </div>
+
+                    <%= case item.type do %>
+                      <% "tool" -> %>
+                        <div class="tool-card">
+                          <div class="tool-card-main">
+                            <span class={tool_status_class(item.status)}><%= item.status %></span>
+                            <code><%= item.command %></code>
+                            <%= if item.elapsed_ms do %>
+                              <span class="muted mono"><%= format_elapsed_ms(item.elapsed_ms) %></span>
+                            <% end %>
+                          </div>
+                          <%= if item.output_excerpt != "" do %>
+                            <pre class="tool-output"><%= item.output_excerpt %><%= if item.output_truncated?, do: "\n[truncated]" %></pre>
+                          <% end %>
+                        </div>
+                      <% _ -> %>
+                        <p class="message-bubble-text"><%= item.excerpt || "Worker update" %></p>
+                    <% end %>
+
+                    <details class="raw-details">
+                      <summary>Debug JSON</summary>
+                      <div :for={raw <- item.raw || []} class="debug-block">
+                        <p class="debug-label"><%= raw.label %><%= if raw.truncated?, do: " (truncated)" %></p>
+                        <pre class="code-panel"><%= raw.excerpt %></pre>
+                      </div>
+                    </details>
+                  </li>
+                </ol>
+              <% end %>
+            </div>
+
+            <.form for={%{}} as={:steer} phx-submit="steer" class="composer-form">
               <input type="hidden" name="steer[session_id]" value={running.session_id || ""} />
               <%= if @steer_auth_required and @steer_token_configured do %>
                 <input
@@ -187,56 +225,26 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   disabled={is_nil(running.session_id)}
                 />
               <% end %>
-              <textarea
-                name="steer[message]"
-                class="steer-input"
-                rows="4"
-                placeholder="Send a targeted instruction to this running worker"
-                disabled={is_nil(running.session_id) or steer_locked?(@steer_auth_required, @steer_token_configured)}
-              ></textarea>
-              <button
-                type="submit"
-                disabled={is_nil(running.session_id) or steer_locked?(@steer_auth_required, @steer_token_configured)}
-              >Send steer</button>
+              <div class="composer-row">
+                <textarea
+                  name="steer[message]"
+                  class="composer-input"
+                  rows="2"
+                  placeholder="Send a targeted instruction to this running worker"
+                  disabled={is_nil(running.session_id) or steer_locked?(@steer_auth_required, @steer_token_configured)}
+                ></textarea>
+                <button
+                  type="submit"
+                  disabled={is_nil(running.session_id) or steer_locked?(@steer_auth_required, @steer_token_configured)}
+                >Send</button>
+              </div>
             </.form>
           </section>
 
-          <section class="section-card">
-            <div class="section-header">
-              <div>
-                <h2 class="section-title">Timeline</h2>
-                <p class="section-copy">Readable Codex updates with raw JSON preserved per event.</p>
-              </div>
-            </div>
-
-            <%= if detail.timeline == [] do %>
-              <p class="empty-state">No Codex events recorded yet.</p>
-            <% else %>
-              <ol class="timeline-list">
-                <li :for={event <- detail.timeline} class="timeline-item">
-                  <div class="timeline-main">
-                    <span class="timeline-event"><%= event_label(event.event) %></span>
-                    <span class="timeline-time mono"><%= event.at || "pending" %></span>
-                  </div>
-                  <p class="timeline-message"><%= event.message || "n/a" %></p>
-                  <details class="raw-details">
-                    <summary>Raw JSON</summary>
-                    <pre class="code-panel"><%= pretty_value(event.raw) %></pre>
-                  </details>
-                </li>
-              </ol>
-            <% end %>
-          </section>
-
-          <section class="section-card">
-            <div class="section-header">
-              <div>
-                <h2 class="section-title">Raw worker payload</h2>
-                <p class="section-copy">Full JSON projection used by the detail page.</p>
-              </div>
-            </div>
-            <pre class="code-panel"><%= pretty_value(detail) %></pre>
-          </section>
+          <details class="debug-drawer">
+            <summary>Worker debug payload</summary>
+            <pre class="code-panel"><%= detail.debug.payload_excerpt %><%= if detail.debug.payload_truncated?, do: "\n[truncated]" %></pre>
+          </details>
         <% end %>
       </section>
     <% else %>
@@ -825,9 +833,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp blank?(nil), do: true
   defp blank?(_value), do: false
 
-  defp event_label(event) when is_atom(event), do: event |> Atom.to_string() |> String.replace("_", " ")
-  defp event_label(event), do: event |> to_string() |> String.replace("_", " ")
-
   defp steer_error_message(:blank_message), do: "Steer message cannot be blank."
   defp steer_error_message(:worker_not_running), do: "Worker is no longer running."
   defp steer_error_message(:session_mismatch), do: "Worker session changed before the steer was sent."
@@ -866,6 +871,28 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp format_watchdog_age(_age_ms), do: "n/a"
+
+  defp format_elapsed_ms(elapsed_ms) when is_integer(elapsed_ms) do
+    "#{Float.round(elapsed_ms / 1_000, 1)}s"
+  end
+
+  defp format_elapsed_ms(_elapsed_ms), do: "n/a"
+
+  defp conversation_item_class(%{type: "assistant"}), do: "conversation-item conversation-item-assistant"
+  defp conversation_item_class(%{type: "user"}), do: "conversation-item conversation-item-user"
+  defp conversation_item_class(%{type: "tool"}), do: "conversation-item conversation-item-tool"
+  defp conversation_item_class(%{type: "warning"}), do: "conversation-item conversation-item-warning"
+  defp conversation_item_class(_item), do: "conversation-item conversation-item-system"
+
+  defp tool_status_class(status) do
+    base = "tool-status"
+
+    cond do
+      status == "running" -> "#{base} tool-status-running"
+      String.starts_with?(to_string(status), "failed") -> "#{base} tool-status-failed"
+      true -> "#{base} tool-status-completed"
+    end
+  end
 
   defp schedule_runtime_tick do
     Process.send_after(self(), :runtime_tick, @runtime_tick_ms)
