@@ -249,6 +249,7 @@ defmodule SymphonyElixirWeb.Presenter do
   defp timeline_payload(running) do
     running
     |> Map.get(:recent_codex_events, [])
+    |> Enum.take(-@conversation_display_limit)
     |> Enum.map(&timeline_event_payload/1)
   end
 
@@ -257,7 +258,7 @@ defmodule SymphonyElixirWeb.Presenter do
       at: iso8601(event[:timestamp]),
       event: event[:event],
       message: summarize_message(event),
-      raw: raw_event_payload(event),
+      raw: bounded_raw_event_payload(event),
       session_id: event[:session_id],
       thread_id: event[:thread_id],
       turn_id: event[:turn_id]
@@ -268,16 +269,21 @@ defmodule SymphonyElixirWeb.Presenter do
     Redactor.redact(event[:raw] || event[:message])
   end
 
+  defp bounded_raw_event_payload(event) when is_map(event) do
+    {excerpt, truncated?} = inspect_bounded(raw_event_payload(event), @raw_excerpt_chars)
+    %{excerpt: excerpt, truncated?: truncated?}
+  end
+
   defp debug_payload(issue_identifier, running, retry) do
     payload =
       %{
         issue_identifier: issue_identifier,
-        running: running,
-        retry: retry
+        running: optional_running_payload(running),
+        retry: optional_retry_payload(retry),
+        conversation: optional_conversation(running)
       }
-      |> Redactor.redact()
 
-    {excerpt, truncated?} = truncate_text(inspect(payload, pretty: true, limit: :infinity), @raw_excerpt_chars)
+    {excerpt, truncated?} = inspect_bounded(payload, @raw_excerpt_chars)
 
     %{
       payload_excerpt: excerpt,
@@ -348,7 +354,6 @@ defmodule SymphonyElixirWeb.Presenter do
         key: item_key(event, payload),
         at: iso8601(event[:timestamp]),
         title: "Assistant",
-        content: delta,
         excerpt: excerpt <> if(truncated?, do: "\n[truncated]", else: ""),
         truncated?: truncated?,
         raw: [raw_item(method, event, payload)]
@@ -364,8 +369,7 @@ defmodule SymphonyElixirWeb.Presenter do
     if last[:type] == "assistant" and last[:key] == key do
       updated =
         last
-        |> Map.update!(:content, &(&1 <> delta))
-        |> put_truncated_excerpt()
+        |> append_excerpt_delta(delta)
         |> prepend_raw(raw_item(method, event, payload))
 
       [updated | rest]
@@ -378,7 +382,6 @@ defmodule SymphonyElixirWeb.Presenter do
           key: key,
           at: iso8601(event[:timestamp]),
           title: "Assistant",
-          content: delta,
           excerpt: excerpt <> if(truncated?, do: "\n[truncated]", else: ""),
           truncated?: truncated?,
           raw: [raw_item(method, event, payload)]
@@ -405,7 +408,6 @@ defmodule SymphonyElixirWeb.Presenter do
         command: command,
         status: "running",
         elapsed_ms: nil,
-        output: "",
         output_excerpt: "",
         output_truncated?: false,
         raw: [raw_item(method, event, payload)]
@@ -419,13 +421,12 @@ defmodule SymphonyElixirWeb.Presenter do
     key = item_key(event, payload)
 
     update_matching_or_append_tool(items, key, fn item ->
-      output_text = item.output <> output
+      output_text = Map.get(item, :output_excerpt, "") <> output
       {excerpt, truncated?} = truncate_text(output_text, @text_excerpt_chars)
 
       item
-      |> Map.put(:output, output_text)
       |> Map.put(:output_excerpt, excerpt)
-      |> Map.put(:output_truncated?, truncated?)
+      |> Map.put(:output_truncated?, Map.get(item, :output_truncated?, false) or truncated?)
       |> prepend_raw(raw_item("command output", event, payload))
     end)
   end
@@ -456,7 +457,6 @@ defmodule SymphonyElixirWeb.Presenter do
           command: "command",
           status: "running",
           elapsed_ms: nil,
-          output: "",
           output_excerpt: "",
           output_truncated?: false,
           raw: []
@@ -496,12 +496,17 @@ defmodule SymphonyElixirWeb.Presenter do
     end)
   end
 
-  defp put_truncated_excerpt(%{content: content} = item) do
-    {excerpt, truncated?} = truncate_text(content, @text_excerpt_chars)
+  defp append_excerpt_delta(item, delta) do
+    current_excerpt =
+      item
+      |> Map.get(:excerpt, "")
+      |> String.replace_suffix("\n[truncated]", "")
+
+    {excerpt, truncated?} = truncate_text(current_excerpt <> delta, @text_excerpt_chars)
 
     item
     |> Map.put(:excerpt, excerpt <> if(truncated?, do: "\n[truncated]", else: ""))
-    |> Map.put(:truncated?, truncated?)
+    |> Map.put(:truncated?, Map.get(item, :truncated?, false) or truncated?)
   end
 
   defp manager_message_item(event, message, raw) do
@@ -521,11 +526,7 @@ defmodule SymphonyElixirWeb.Presenter do
   end
 
   defp raw_item(label, event, payload) do
-    {excerpt, truncated?} =
-      payload
-      |> Redactor.redact()
-      |> inspect(pretty: true, limit: :infinity)
-      |> truncate_text(@raw_excerpt_chars)
+    {excerpt, truncated?} = inspect_bounded(payload, @raw_excerpt_chars)
 
     %{
       label: to_string(label || event[:event] || "event"),
@@ -706,6 +707,57 @@ defmodule SymphonyElixirWeb.Presenter do
   end
 
   defp truncate_text(value, limit), do: value |> to_string() |> truncate_text(limit)
+
+  defp inspect_bounded(value, limit) do
+    {bounded, structurally_truncated?} = bound_debug_value(value, limit)
+    {excerpt, text_truncated?} = bounded |> inspect(pretty: true, limit: 50, printable_limit: limit) |> truncate_text(limit)
+
+    {excerpt, structurally_truncated? or text_truncated?}
+  end
+
+  defp bound_debug_value(value, limit) when is_binary(value) do
+    value
+    |> Redactor.redact()
+    |> truncate_text(limit)
+  end
+
+  defp bound_debug_value(value, limit) when is_list(value) do
+    {items, truncated?} = take_with_truncation(value, @raw_items_per_display_item)
+
+    {bounded_items, child_truncated?} =
+      items
+      |> Enum.map(&bound_debug_value(&1, limit))
+      |> unzip_bounded_values()
+
+    {bounded_items, truncated? or child_truncated?}
+  end
+
+  defp bound_debug_value(value, limit) when is_map(value) do
+    {items, truncated?} = value |> Enum.to_list() |> take_with_truncation(50)
+
+    {bounded_items, child_truncated?} =
+      items
+      |> Enum.map(fn {key, item} ->
+        {bounded_item, item_truncated?} = bound_debug_value(item, limit)
+        {{key, bounded_item}, item_truncated?}
+      end)
+      |> unzip_bounded_values()
+
+    {Map.new(bounded_items), truncated? or child_truncated?}
+  end
+
+  defp bound_debug_value(value, _limit), do: {Redactor.redact(value), false}
+
+  defp take_with_truncation(values, limit) do
+    {Enum.take(values, limit), length(values) > limit}
+  end
+
+  defp unzip_bounded_values(values) do
+    {
+      Enum.map(values, fn {value, _truncated?} -> value end),
+      Enum.any?(values, fn {_value, truncated?} -> truncated? end)
+    }
+  end
 
   defp event_label(event) when is_atom(event), do: event |> Atom.to_string() |> String.replace("_", " ")
   defp event_label(event), do: event |> to_string() |> String.replace("_", " ")

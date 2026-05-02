@@ -931,7 +931,10 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "at" => "2026-01-01T00:00:00Z",
                  "event" => "manager_steer_delivered",
                  "message" => "manager steer delivered: Keep the PR focused.",
-                 "raw" => %{"id" => 10_123, "result" => %{"turnId" => "turn-http"}},
+                 "raw" => %{
+                   "excerpt" => "%{\"id\" => 10123, \"result\" => %{\"turnId\" => \"turn-http\"}}",
+                   "truncated?" => false
+                 },
                  "session_id" => "thread-http",
                  "thread_id" => "thread-http",
                  "turn_id" => "turn-http"
@@ -1238,6 +1241,11 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert tool["status"] == "completed"
     assert tool["output_truncated?"] == true
     assert String.length(tool["output_excerpt"]) == 2_000
+    refute Map.has_key?(List.first(issue_payload["conversation"]), "content")
+    refute Map.has_key?(tool, "output")
+
+    rendered_payload = inspect(issue_payload, limit: :infinity)
+    refute rendered_payload =~ hidden_marker
 
     {:ok, _view, html} = live(build_conn(), "/workers/MT-HTTP")
     assert html =~ "Hello manager."
@@ -1341,8 +1349,87 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     issue_payload = json_response(get(build_conn(), "/api/v1/MT-HTTP"), 200)
     assert length(issue_payload["conversation"]) == 120
+    assert length(issue_payload["timeline"]) == 120
     refute Enum.any?(issue_payload["conversation"], &(&1["excerpt"] == "system event 1"))
+    refute Enum.any?(issue_payload["timeline"], &(&1["message"] == "system event 1"))
     assert List.last(issue_payload["conversation"])["excerpt"] == "system event 160"
+  end
+
+  test "worker detail projection keeps large assistant and debug payloads bounded" do
+    hidden_assistant_marker = "ASSISTANT_TAIL_SHOULD_NOT_LEAK"
+    hidden_debug_marker = "DEBUG_TAIL_SHOULD_NOT_LEAK"
+
+    long_delta = String.duplicate("c", 2_050) <> hidden_assistant_marker
+    long_debug_value = String.duplicate("d", 1_650) <> hidden_debug_marker
+
+    snapshot =
+      static_snapshot()
+      |> put_in([:running, Access.at(0), :giant_debug_blob], long_debug_value)
+      |> put_in([:running, Access.at(0), :recent_codex_events], [
+        agent_delta_event("msg-long", long_delta, ~U[2026-01-01 00:00:00Z])
+      ])
+
+    orchestrator_name = Module.concat(__MODULE__, :WorkerDetailBoundedPayloadOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    issue_payload = json_response(get(build_conn(), "/api/v1/MT-HTTP"), 200)
+    rendered_payload = inspect(issue_payload, limit: :infinity)
+
+    assert [%{"type" => "assistant"} = assistant] = issue_payload["conversation"]
+    assert assistant["truncated?"] == true
+    assert String.length(String.replace_suffix(assistant["excerpt"], "\n[truncated]", "")) == 2_000
+    refute Map.has_key?(assistant, "content")
+    assert issue_payload["debug"]["payload_truncated?"] == true
+    refute rendered_payload =~ hidden_assistant_marker
+    refute rendered_payload =~ hidden_debug_marker
+
+    {:ok, _view, html} = live(build_conn(), "/workers/MT-HTTP")
+    refute html =~ hidden_assistant_marker
+    refute html =~ hidden_debug_marker
+  end
+
+  test "worker detail debug excerpts preserve redaction and structural truncation flags" do
+    secret = "OPENAI_API_KEY=sk-live-secret"
+
+    many_small_fields =
+      1..60
+      |> Map.new(fn index -> {"field_#{index}", "value_#{index}"} end)
+      |> Map.put("secret", secret)
+
+    snapshot =
+      static_snapshot()
+      |> put_in([:running, Access.at(0), :recent_codex_events], [
+        command_event(
+          "item/started",
+          %{"item" => Map.merge(many_small_fields, %{"id" => "cmd-many", "type" => "commandExecution", "command" => "mix test"})},
+          ~U[2026-01-01 00:00:00Z]
+        )
+      ])
+
+    orchestrator_name = Module.concat(__MODULE__, :WorkerDetailDebugTruncationOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    issue_payload = json_response(get(build_conn(), "/api/v1/MT-HTTP"), 200)
+    rendered_payload = inspect(issue_payload, limit: :infinity)
+    [%{"raw" => [raw | _]}] = issue_payload["conversation"]
+
+    assert raw["truncated?"] == true
+    refute rendered_payload =~ "sk-live-secret"
+    assert rendered_payload =~ "[REDACTED]"
   end
 
   test "worker detail liveview rejects missing or blank steer session ids" do
