@@ -1769,6 +1769,58 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     refute_received {:workpad_recorded, _}
   end
 
+  test "linear_graphql accepts Workpad connector check evidence with adjacent worker formats" do
+    test_pid = self()
+
+    issue =
+      issue_with_connector_check_evidence("""
+      ## Codex Workpad
+
+      PR: https://github.com/albert-zen/symphony-windows-native/pull/42
+      GitHub connector verified checks for abc123 passed:
+      - make-all run 191: success.
+      - pr-description-lint success.
+      """)
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue),
+        github_client: github_client_with_rate_limited_checks()
+      )
+
+    assert response["success"] == true
+    assert_received {:linear_mutation_allowed, "issue-1", "state-review"}
+    refute_received {:workpad_recorded, _}
+  end
+
+  test "linear_graphql accepts Workpad connector check evidence from GitHub checks heading" do
+    test_pid = self()
+
+    issue =
+      issue_with_connector_check_evidence("""
+      ## Codex Workpad
+
+      PR: https://github.com/albert-zen/symphony-windows-native/pull/42
+      GitHub checks on `abc123`:
+      - `make-all`: success.
+      - `pr-description-lint` run 255: success.
+      """)
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue),
+        github_client: github_client_with_rate_limited_checks()
+      )
+
+    assert response["success"] == true
+    assert_received {:linear_mutation_allowed, "issue-1", "state-review"}
+    refute_received {:workpad_recorded, _}
+  end
+
   test "linear_graphql accepts Workpad connector check evidence when branch protection requires auth" do
     test_pid = self()
 
@@ -2129,11 +2181,10 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     ])
   end
 
-  defp issue_with_connector_check_evidence do
-    put_in(issue_with_origin_github_issue(), ["comments", "nodes"], [
-      %{
-        "id" => "comment-1",
-        "body" => """
+  defp issue_with_connector_check_evidence(body \\ nil) do
+    body =
+      body ||
+        """
         ## Codex Workpad
 
         PR: https://github.com/albert-zen/symphony-windows-native/pull/42
@@ -2143,6 +2194,11 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         - `make-all` run 191: success.
         - `pr-description-lint` run 255: success.
         """
+
+    put_in(issue_with_origin_github_issue(), ["comments", "nodes"], [
+      %{
+        "id" => "comment-1",
+        "body" => body
       }
     ])
   end

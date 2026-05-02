@@ -178,7 +178,7 @@ Pause the flywheel by stopping new dispatch first, then letting active work land
 or park cleanly:
 
 1. Stop moving new issues from `Backlog` to `Todo`.
-2. If immediate pause is needed, remove `Todo` from `tracker.active_states` or
+2. If immediate pause is needed, remove `Todo` from `tracker.dispatch_states` or
    stop the Symphony process.
 3. Let active agents finish their current turn when possible.
 4. For unfinished active issues, update the Workpad with the current branch,

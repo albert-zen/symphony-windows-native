@@ -9,6 +9,10 @@ tracker:
   # Optional: uncomment only if this project is shared with unrelated work.
   # labels:
   #   - symphony-optimization
+  # Poll only release-ready work. Keep Backlog and In Progress out of dispatch_states.
+  dispatch_states:
+    - Todo
+  # Keep In Progress active so workers are not stopped after they claim a Todo issue.
   active_states:
     - Todo
     - In Progress
@@ -95,6 +99,13 @@ Operating model:
 10. Wait for required GitHub checks to complete before moving the Linear issue to `In Review`.
     If checks cannot be verified, record the exact reason in the workpad and PR, then keep the
     issue in `In Progress` or return it to `Todo`; only a manager may explicitly override this.
+    When checks are verified through GitHub CLI, connector, or another non-REST path, record this
+    exact machine-readable evidence in the `## Codex Workpad`:
+    `PR: https://github.com/albert-zen/symphony-windows-native/pull/<number>`
+    `Head \`<full-head-sha>\``
+    `- make-all run <run-id>: success.`
+    `- validate-pr-description run <run-id>: success.`
+    `- windows-native-test run <run-id>: success.`
 11. Do not move unrelated Backlog issues to Todo.
 12. If you discover an automation/system defect, create a GitHub issue with the configured optimization label and add a Linear mirror in the configured Linear project if the Linear tool is available.
 13. Leave problem breadcrumbs without spamming:

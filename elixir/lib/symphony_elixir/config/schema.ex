@@ -51,6 +51,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:project_slug, :string)
       field(:assignee, :string)
       field(:labels, {:array, :string}, default: [])
+      field(:dispatch_states, {:array, :string}, default: ["Todo"])
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
     end
@@ -60,7 +61,7 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:kind, :endpoint, :api_key, :project_slug, :assignee, :labels, :active_states, :terminal_states],
+        [:kind, :endpoint, :api_key, :project_slug, :assignee, :labels, :dispatch_states, :active_states, :terminal_states],
         empty_values: []
       )
     end
@@ -390,7 +391,10 @@ defmodule SymphonyElixir.Config.Schema do
       settings.tracker
       | api_key: resolve_secret_setting(settings.tracker.api_key, System.get_env("LINEAR_API_KEY")),
         assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE")),
-        labels: normalize_label_filter(settings.tracker.labels)
+        labels: normalize_label_filter(settings.tracker.labels),
+        dispatch_states: normalize_issue_states(settings.tracker.dispatch_states),
+        active_states: normalize_issue_states(settings.tracker.active_states),
+        terminal_states: normalize_issue_states(settings.tracker.terminal_states)
     }
 
     workspace = %{
@@ -432,6 +436,16 @@ defmodule SymphonyElixir.Config.Schema do
     |> Enum.reject(&(&1 == ""))
     |> Enum.uniq()
   end
+
+  defp normalize_issue_states(states) when is_list(states) do
+    states
+    |> Enum.map(&to_string/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
+
+  defp normalize_issue_states(_states), do: []
 
   defp normalize_repository(repository) when is_binary(repository) do
     repository
