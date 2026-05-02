@@ -937,6 +937,27 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "turn_id" => "turn-http"
                }
              ],
+             "conversation" => [
+               %{
+                 "type" => "user",
+                 "key" => "manager:2026-01-01T00:00:00Z:turn-http",
+                 "at" => "2026-01-01T00:00:00Z",
+                 "title" => "Manager",
+                 "excerpt" => "Keep the PR focused.",
+                 "raw" => [
+                   %{
+                     "label" => "manager_steer_delivered",
+                     "at" => "2026-01-01T00:00:00Z",
+                     "excerpt" => "%{\"id\" => 10123, \"result\" => %{\"turnId\" => \"turn-http\"}}",
+                     "truncated?" => false
+                   }
+                 ]
+               }
+             ],
+             "debug" => %{
+               "payload_excerpt" => issue_payload["debug"]["payload_excerpt"],
+               "payload_truncated?" => issue_payload["debug"]["payload_truncated?"]
+             },
              "last_error" => nil,
              "tracked" => %{}
            }
@@ -1154,7 +1175,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     refute html =~ "4m "
   end
 
-  test "worker detail liveview renders timeline and submits session-scoped steer messages" do
+  test "worker detail liveview renders chat panel and submits session-scoped steer messages" do
     orchestrator_name = Module.concat(__MODULE__, :WorkerDetailOrchestrator)
 
     {:ok, _pid} =
@@ -1168,9 +1189,14 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     {:ok, view, html} = live(build_conn(), "/workers/MT-HTTP")
     assert html =~ "Worker Detail"
+    assert html =~ "Conversation"
     assert html =~ "thread-http"
-    assert html =~ "manager steer delivered: Keep the PR focused."
-    assert html =~ "Raw JSON"
+    assert html =~ "Keep the PR focused."
+    assert html =~ "Debug JSON"
+    assert html =~ "Worker debug payload"
+    refute html =~ "Steer worker"
+    refute html =~ "Timeline"
+    refute html =~ "Raw worker payload"
 
     render_submit(view, "steer", %{
       "steer" => %{
@@ -1180,6 +1206,143 @@ defmodule SymphonyElixir.ExtensionsTest do
     })
 
     assert_received {:steer_worker_called, "MT-HTTP", "Use the narrower UI fix.", "thread-http"}
+  end
+
+  test "worker detail projection coalesces streaming deltas and truncates command output" do
+    hidden_marker = "TAIL_SHOULD_NOT_RENDER"
+    long_output = String.duplicate("a", 2_050) <> hidden_marker <> String.duplicate("b", 600)
+
+    snapshot =
+      static_snapshot()
+      |> put_in([:running, Access.at(0), :recent_codex_events], [
+        agent_delta_event("msg-1", "Hello ", ~U[2026-01-01 00:00:00Z]),
+        agent_delta_event("msg-1", "manager.", ~U[2026-01-01 00:00:01Z]),
+        command_event("item/started", %{"item" => %{"id" => "cmd-1", "type" => "commandExecution", "command" => "mix test"}}, ~U[2026-01-01 00:00:02Z]),
+        command_event("item/commandExecution/outputDelta", %{"itemId" => "cmd-1", "outputDelta" => long_output}, ~U[2026-01-01 00:00:03Z]),
+        command_event("item/completed", %{"item" => %{"id" => "cmd-1", "type" => "commandExecution", "exitCode" => 0}}, ~U[2026-01-01 00:00:04Z])
+      ])
+
+    orchestrator_name = Module.concat(__MODULE__, :WorkerDetailConversationOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    issue_payload = json_response(get(build_conn(), "/api/v1/MT-HTTP"), 200)
+    assert [%{"type" => "assistant", "excerpt" => "Hello manager."}, %{"type" => "tool"} = tool] = issue_payload["conversation"]
+    assert tool["command"] == "mix test"
+    assert tool["status"] == "completed"
+    assert tool["output_truncated?"] == true
+    assert String.length(tool["output_excerpt"]) == 2_000
+
+    {:ok, _view, html} = live(build_conn(), "/workers/MT-HTTP")
+    assert html =~ "Hello manager."
+    assert html =~ "mix test"
+    assert html =~ "[truncated]"
+    refute html =~ hidden_marker
+  end
+
+  test "worker detail projection reads parsed messages when raw app-server JSON is a string" do
+    snapshot =
+      static_snapshot()
+      |> put_in([:running, Access.at(0), :recent_codex_events], [
+        raw_json_event("item/agentMessage/delta", %{"itemId" => "msg-json", "delta" => "Production "}, ~U[2026-01-01 00:00:00Z]),
+        raw_json_event("item/agentMessage/delta", %{"itemId" => "msg-json", "delta" => "delta"}, ~U[2026-01-01 00:00:01Z]),
+        raw_json_event(
+          "item/started",
+          %{"item" => %{"id" => "cmd-json", "type" => "commandExecution", "command" => ["mix", "test"]}},
+          ~U[2026-01-01 00:00:02Z]
+        ),
+        raw_json_event("item/commandExecution/outputDelta", %{"itemId" => "cmd-json", "outputDelta" => "ok\n"}, ~U[2026-01-01 00:00:03Z]),
+        raw_json_event(
+          "item/completed",
+          %{"item" => %{"id" => "cmd-json", "type" => "commandExecution", "exitCode" => 0}},
+          ~U[2026-01-01 00:00:04Z]
+        )
+      ])
+
+    orchestrator_name = Module.concat(__MODULE__, :WorkerDetailRawJsonConversationOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    issue_payload = json_response(get(build_conn(), "/api/v1/MT-HTTP"), 200)
+    assert [%{"type" => "assistant", "excerpt" => "Production delta"}, %{"type" => "tool"} = tool] = issue_payload["conversation"]
+    assert tool["command"] == "mix test"
+    assert tool["output_excerpt"] == "ok\n"
+  end
+
+  test "worker detail projection handles content deltas and parsed command fields" do
+    snapshot =
+      static_snapshot()
+      |> put_in([:running, Access.at(0), :recent_codex_events], [
+        raw_json_event(
+          "codex/event/agent_message_content_delta",
+          %{"itemId" => "msg-content", "msg" => %{"content" => "Content delta"}},
+          ~U[2026-01-01 00:00:00Z]
+        ),
+        raw_json_event(
+          "item/started",
+          %{"item" => %{"id" => "cmd-parsed", "type" => "commandExecution", "parsedCmd" => "mix specs.check"}},
+          ~U[2026-01-01 00:00:01Z]
+        )
+      ])
+
+    orchestrator_name = Module.concat(__MODULE__, :WorkerDetailContentDeltaOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    issue_payload = json_response(get(build_conn(), "/api/v1/MT-HTTP"), 200)
+
+    assert [%{"type" => "assistant", "excerpt" => "Content delta"}, %{"type" => "tool", "command" => "mix specs.check"}] =
+             issue_payload["conversation"]
+  end
+
+  test "worker detail projection caps many display items" do
+    many_events =
+      1..160
+      |> Enum.map(fn index ->
+        %{
+          event: :notification,
+          message: "system event #{index}",
+          raw: %{"index" => index},
+          session_id: "thread-http",
+          thread_id: "thread-http",
+          turn_id: "turn-http",
+          timestamp: DateTime.add(~U[2026-01-01 00:00:00Z], index, :second)
+        }
+      end)
+
+    snapshot = put_in(static_snapshot(), [:running, Access.at(0), :recent_codex_events], many_events)
+    orchestrator_name = Module.concat(__MODULE__, :WorkerDetailManyEventsOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    issue_payload = json_response(get(build_conn(), "/api/v1/MT-HTTP"), 200)
+    assert length(issue_payload["conversation"]) == 120
+    refute Enum.any?(issue_payload["conversation"], &(&1["excerpt"] == "system event 1"))
+    assert List.last(issue_payload["conversation"])["excerpt"] == "system event 160"
   end
 
   test "worker detail liveview rejects missing or blank steer session ids" do
@@ -1447,6 +1610,44 @@ defmodule SymphonyElixir.ExtensionsTest do
       ],
       codex_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},
       rate_limits: %{"primary" => %{"remaining" => 11}}
+    }
+  end
+
+  defp agent_delta_event(item_id, delta, timestamp) do
+    %{
+      event: :notification,
+      message: %{"method" => "item/agentMessage/delta", "params" => %{"itemId" => item_id, "delta" => delta}},
+      raw: %{"method" => "item/agentMessage/delta", "params" => %{"itemId" => item_id, "delta" => delta}},
+      session_id: "thread-http",
+      thread_id: "thread-http",
+      turn_id: "turn-http",
+      timestamp: timestamp
+    }
+  end
+
+  defp command_event(method, params, timestamp) do
+    %{
+      event: :notification,
+      message: %{"method" => method, "params" => params},
+      raw: %{"method" => method, "params" => params},
+      session_id: "thread-http",
+      thread_id: "thread-http",
+      turn_id: "turn-http",
+      timestamp: timestamp
+    }
+  end
+
+  defp raw_json_event(method, params, timestamp) do
+    message = %{"method" => method, "params" => params}
+
+    %{
+      event: :notification,
+      message: message,
+      raw: Jason.encode!(message),
+      session_id: "thread-http",
+      thread_id: "thread-http",
+      turn_id: "turn-http",
+      timestamp: timestamp
     }
   end
 
