@@ -74,6 +74,8 @@ defmodule Mix.Tasks.PrBody.Check do
     end
   end
 
+  defp normalize_newlines(content) when is_binary(content), do: String.replace(content, "\r\n", "\n")
+
   defp extract_template_headings(template, template_path) do
     headings =
       Regex.scan(~r/^\#{4,6}\s+.+$/m, template)
@@ -85,8 +87,6 @@ defmodule Mix.Tasks.PrBody.Check do
       {:ok, headings}
     end
   end
-
-  defp normalize_newlines(content) when is_binary(content), do: String.replace(content, "\r\n", "\n")
 
   defp lint_and_print(template_path, template, body, headings) do
     errors = lint(template, body, headings)

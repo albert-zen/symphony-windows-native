@@ -61,30 +61,32 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
   end
 
   defp list_open_pull_request_numbers(repo, branch) do
-    case run_command("gh", [
-           "pr",
-           "list",
-           "--repo",
-           repo,
-           "--head",
-           branch,
-           "--state",
-           "open",
-           "--json",
-           "number",
-           "--jq",
-           ".[].number"
-         ]) do
-      {:ok, output} ->
-        output
-        |> String.split("\n", trim: true)
-        |> Enum.map(&String.trim/1)
-        |> Enum.reject(&(&1 == ""))
-
-      {:error, _reason} ->
-        []
-    end
+    "gh"
+    |> run_command([
+      "pr",
+      "list",
+      "--repo",
+      repo,
+      "--head",
+      branch,
+      "--state",
+      "open",
+      "--json",
+      "number",
+      "--jq",
+      ".[].number"
+    ])
+    |> pull_request_numbers_from_result()
   end
+
+  defp pull_request_numbers_from_result({:ok, output}) do
+    output
+    |> String.split("\n", trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp pull_request_numbers_from_result({:error, _reason}), do: []
 
   defp close_pull_request(repo, branch, pr_number) do
     case run_command("gh", [
@@ -132,80 +134,24 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
         {:error, {:enoent, ""}}
 
       path ->
-        {executable, executable_args} = executable_and_args(path, args)
+        {command, command_args} = windows_command_args(path, args)
 
-        case System.cmd(executable, executable_args, stderr_to_stdout: true) do
+        case System.cmd(command, command_args, stderr_to_stdout: true) do
           {output, 0} -> {:ok, output}
           {output, status} -> {:error, {status, output}}
         end
     end
   end
 
-  defp find_executable(command) do
-    windows_extensionless_executable(command) || System.find_executable(command)
-  end
-
-  defp windows_extensionless_executable(command) do
-    if windows?() do
-      "PATH"
-      |> System.get_env("")
-      |> String.split(";", trim: true)
-      |> Enum.map(&Path.join(&1, command))
-      |> Enum.find(&File.regular?/1)
-    end
-  end
-
-  defp executable_and_args(path, args) do
-    cond do
-      windows_command_script?(path) ->
-        {System.find_executable("cmd") || "cmd.exe", ["/d", "/c", path | args]}
-
-      shell = windows_shebang_shell(path) ->
-        {shell, [path | args]}
-
-      true ->
-        {path, args}
-    end
-  end
-
-  defp windows_command_script?(path) do
-    windows?() and String.downcase(Path.extname(path)) in [".bat", ".cmd"]
-  end
-
-  defp windows_shebang_shell(path) do
-    with true <- windows?(),
-         {:ok, "#!" <> shebang} <- first_line(path),
-         true <- String.contains?(shebang, ["sh", "bash"]) do
-      System.find_executable("sh") || System.find_executable("bash") || windows_git_shell()
+  defp windows_command_args(path, args) do
+    if String.downcase(Path.extname(path)) in [".bat", ".cmd"] and not is_nil(System.find_executable("cmd.exe")) do
+      {System.find_executable("cmd.exe"), ["/c", path | args]}
     else
-      _ -> nil
+      {path, args}
     end
   end
 
-  defp first_line(path) do
-    case File.open(path, [:read]) do
-      {:ok, file} ->
-        line = IO.read(file, :line)
-        File.close(file)
-
-        case line do
-          line when is_binary(line) -> {:ok, line |> String.trim_leading() |> String.trim_trailing()}
-          _ -> :error
-        end
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp windows?, do: match?({:win32, _}, :os.type())
-
-  defp windows_git_shell do
-    [
-      "C:/Program Files/Git/bin/sh.exe",
-      "C:/Program Files/Git/usr/bin/bash.exe",
-      "C:/Program Files/Git/bin/bash.exe"
-    ]
-    |> Enum.find(&File.regular?/1)
+  defp find_executable(command) do
+    Enum.find_value([command, command <> ".cmd", command <> ".bat"], &System.find_executable/1)
   end
 end

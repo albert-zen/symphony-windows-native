@@ -4,8 +4,8 @@ defmodule SymphonyElixir.SSH do
   @spec run(String.t(), String.t(), keyword()) :: {:ok, {String.t(), non_neg_integer()}} | {:error, term()}
   def run(host, command, opts \\ []) when is_binary(host) and is_binary(command) do
     with {:ok, executable} <- ssh_executable() do
-      {executable, args} = executable_and_args(executable, ssh_args(host, command))
-      {:ok, System.cmd(executable, args, opts)}
+      {command_executable, command_args} = windows_command_args(executable, ssh_args(host, command))
+      {:ok, System.cmd(command_executable, command_args, opts)}
     end
   end
 
@@ -13,18 +13,19 @@ defmodule SymphonyElixir.SSH do
   def start_port(host, command, opts \\ []) when is_binary(host) and is_binary(command) do
     with {:ok, executable} <- ssh_executable() do
       line_bytes = Keyword.get(opts, :line)
-      {executable, args} = executable_and_args(executable, ssh_args(host, command))
+
+      {command_executable, command_args} = windows_command_args(executable, ssh_args(host, command))
 
       port_opts =
         [
           :binary,
           :exit_status,
           :stderr_to_stdout,
-          args: Enum.map(args, &String.to_charlist/1)
+          args: Enum.map(command_args, &String.to_charlist/1)
         ]
         |> maybe_put_line_option(line_bytes)
 
-      {:ok, Port.open({:spawn_executable, String.to_charlist(executable)}, port_opts)}
+      {:ok, Port.open({:spawn_executable, String.to_charlist(command_executable)}, port_opts)}
     end
   end
 
@@ -34,65 +35,22 @@ defmodule SymphonyElixir.SSH do
   end
 
   defp ssh_executable do
-    case windows_extensionless_executable("ssh") || System.find_executable("ssh") do
+    case find_executable(["ssh", "ssh.cmd", "ssh.bat"]) do
       nil -> {:error, :ssh_not_found}
       executable -> {:ok, executable}
     end
   end
 
-  defp executable_and_args(executable, args) do
-    case windows_shebang_shell(executable) do
-      nil -> {executable, args}
-      shell -> {shell, [executable | args]}
-    end
-  end
-
-  defp windows_extensionless_executable(name) do
-    if windows?() do
-      "PATH"
-      |> System.get_env("")
-      |> String.split(";", trim: true)
-      |> Enum.map(&Path.join(&1, name))
-      |> Enum.find(&File.regular?/1)
-    end
-  end
-
-  defp windows_shebang_shell(executable) do
-    with true <- windows?(),
-         {:ok, "#!" <> shebang} <- first_line(executable),
-         true <- String.contains?(shebang, ["sh", "bash"]) do
-      System.find_executable("sh") || System.find_executable("bash") || windows_git_shell()
+  defp windows_command_args(executable, args) do
+    if String.downcase(Path.extname(executable)) in [".bat", ".cmd"] and
+         not is_nil(System.find_executable("cmd.exe")) do
+      {System.find_executable("cmd.exe"), ["/c", executable | args]}
     else
-      _ -> nil
+      {executable, args}
     end
   end
 
-  defp windows?, do: match?({:win32, _}, :os.type())
-
-  defp windows_git_shell do
-    [
-      "C:/Program Files/Git/bin/sh.exe",
-      "C:/Program Files/Git/usr/bin/bash.exe",
-      "C:/Program Files/Git/bin/bash.exe"
-    ]
-    |> Enum.find(&File.regular?/1)
-  end
-
-  defp first_line(path) do
-    case File.open(path, [:read]) do
-      {:ok, file} ->
-        line = IO.read(file, :line)
-        File.close(file)
-
-        case line do
-          line when is_binary(line) -> {:ok, line |> String.trim_leading() |> String.trim_trailing()}
-          _ -> :error
-        end
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
+  defp find_executable(names), do: Enum.find_value(names, &System.find_executable/1)
 
   defp ssh_args(host, command) do
     %{destination: destination, port: port} = parse_target(host)

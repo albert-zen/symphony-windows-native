@@ -233,6 +233,14 @@ submission is locked while read-only dashboard views remain available.
 make all
 ```
 
+On Windows checkouts without GNU Make installed, run the same targets from PowerShell or `cmd.exe`
+through the repository shim in this directory:
+
+```powershell
+make.cmd all
+make.cmd windows-native-test
+```
+
 For Windows shell, workspace/config, workflow, or path-handling changes, run the focused Windows
 profile as well:
 
