@@ -710,7 +710,11 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp inspect_bounded(value, limit) do
     {bounded, structurally_truncated?} = bound_debug_value(value, limit)
-    {excerpt, text_truncated?} = bounded |> inspect(pretty: true, limit: 50, printable_limit: limit) |> truncate_text(limit)
+
+    {excerpt, text_truncated?} =
+      bounded
+      |> inspect(pretty: true, limit: 50, printable_limit: limit)
+      |> truncate_text(limit)
 
     {excerpt, structurally_truncated? or text_truncated?}
   end
