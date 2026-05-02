@@ -385,7 +385,7 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
          {:ok, base_ref} <- required_string(pr, ["base", "ref"], :review_readiness_missing_pr_base_ref),
          :ok <- pull_request_file_count_fetchable?(pr),
          {:ok, pr_files} <- pull_request_files(owner, repo, number, github_client),
-         :ok <- coverage_ignore_ready?(pr_files),
+         :ok <- coverage_ignore_ready?(owner, repo, head_sha, pr_files, github_client),
          {:ok, merge_base_sha} <- merge_base_sha(owner, repo, base_ref, head_sha, github_client),
          :ok <- stale_base_ready?(owner, repo, base_ref, merge_base_sha, pr_files, github_client),
          {:ok, required_checks} <-
@@ -534,20 +534,22 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
 
   defp pull_request_file_count_fetchable?(_pr), do: :ok
 
-  defp coverage_ignore_ready?(files) do
+  defp coverage_ignore_ready?(owner, repo, head_sha, files, github_client) do
     changed_modules = changed_production_modules(files)
-    ignored_modules = added_coverage_ignore_modules(files)
-    changed_module_keys = normalized_module_set(changed_modules)
 
-    overlap =
-      ignored_modules
-      |> Enum.filter(&(normalize_module_name(&1) in changed_module_keys))
-      |> Enum.sort()
+    with {:ok, ignored_modules} <- added_coverage_ignore_modules(owner, repo, head_sha, files, github_client) do
+      changed_module_keys = normalized_module_set(changed_modules)
 
-    if overlap == [] do
-      :ok
-    else
-      {:error, {:review_readiness_coverage_ignore_changed_modules, overlap}}
+      overlap =
+        ignored_modules
+        |> Enum.filter(&changed_module_ignored?(&1, changed_module_keys))
+        |> Enum.sort()
+
+      if overlap == [] do
+        :ok
+      else
+        {:error, {:review_readiness_coverage_ignore_changed_modules, overlap}}
+      end
     end
   end
 
@@ -563,6 +565,14 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
     |> String.downcase()
   end
 
+  defp changed_module_ignored?(ignored_module, changed_module_keys) do
+    ignored_key = normalize_module_name(ignored_module)
+
+    Enum.any?(changed_module_keys, fn changed_key ->
+      ignored_key == changed_key or String.starts_with?(ignored_key, changed_key <> ".")
+    end)
+  end
+
   defp changed_production_modules(files) do
     Enum.reduce(files, MapSet.new(), fn file, acc ->
       filename = Map.get(file, "filename")
@@ -570,9 +580,11 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
       patch = Map.get(file, "patch")
 
       if production_elixir_file?(filename) and status != "removed" do
+        path_module = module_name_from_path(filename)
+
         patch
-        |> module_names_from_patch()
-        |> Enum.reduce(MapSet.put(acc, module_name_from_path(filename)), &MapSet.put(&2, &1))
+        |> module_names_from_patch(path_module)
+        |> Enum.reduce(MapSet.put(acc, path_module), &MapSet.put(&2, &1))
       else
         acc
       end
@@ -595,31 +607,210 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
     |> Enum.map_join(".", &Macro.camelize/1)
   end
 
-  defp module_names_from_patch(patch) when is_binary(patch) do
+  defp module_names_from_patch(patch, path_module) when is_binary(patch) do
     Regex.scan(~r/^[ +]\s*defmodule\s+([A-Z][A-Za-z0-9_.]*)\s+do/m, patch)
-    |> Enum.map(fn [_, module] -> module end)
+    |> Enum.flat_map(fn [_, module] -> changed_module_names(module, path_module) end)
   end
 
-  defp module_names_from_patch(_patch), do: []
+  defp module_names_from_patch(_patch, _path_module), do: []
 
-  defp added_coverage_ignore_modules(files) do
+  defp changed_module_names(module, path_module) do
+    if String.contains?(module, ".") do
+      [module]
+    else
+      [module, path_module <> "." <> module]
+    end
+  end
+
+  defp added_coverage_ignore_modules(owner, repo, head_sha, files, github_client) do
     files
     |> Enum.filter(&(Map.get(&1, "filename") == "mix.exs" or String.ends_with?(Map.get(&1, "filename") || "", "/mix.exs")))
-    |> Enum.reduce(MapSet.new(), fn file, acc ->
-      file
-      |> Map.get("patch", "")
-      |> added_elixir_module_lines()
-      |> MapSet.new()
-      |> MapSet.union(acc)
+    |> Enum.reduce_while({:ok, MapSet.new()}, fn file, {:ok, acc} ->
+      added_coverage_ignore_modules_for_file(owner, repo, head_sha, file, github_client, acc)
     end)
   end
 
-  defp added_elixir_module_lines(patch) when is_binary(patch) do
-    Regex.scan(~r/^\+\s*([A-Z][A-Za-z0-9_.]*)\s*,?\s*$/m, patch)
-    |> Enum.map(fn [_, module] -> module end)
+  defp added_coverage_ignore_modules_for_file(owner, repo, head_sha, file, github_client, acc) do
+    candidates =
+      file
+      |> Map.get("patch", "")
+      |> added_elixir_module_candidates()
+
+    case candidates do
+      [] ->
+        {:cont, {:ok, acc}}
+
+      candidates ->
+        add_coverage_ignore_candidates(owner, repo, head_sha, file, github_client, acc, candidates)
+    end
   end
 
-  defp added_elixir_module_lines(_patch), do: []
+  defp add_coverage_ignore_candidates(owner, repo, head_sha, file, github_client, acc, candidates) do
+    case github_file_lines(owner, repo, Map.fetch!(file, "filename"), head_sha, github_client) do
+      {:ok, lines} -> {:cont, {:ok, MapSet.union(acc, coverage_ignore_modules_at_lines(candidates, lines))}}
+      {:error, reason} -> {:halt, {:error, reason}}
+    end
+  end
+
+  defp coverage_ignore_modules_at_lines(candidates, lines) do
+    ranges = coverage_ignore_line_ranges(lines)
+
+    candidates
+    |> Enum.filter(fn {_module, line_number} -> line_in_ranges?(line_number, ranges) end)
+    |> Enum.map(fn {module, _line_number} -> module end)
+    |> MapSet.new()
+  end
+
+  defp added_elixir_module_candidates(patch) when is_binary(patch) do
+    patch
+    |> String.split("\n")
+    |> Enum.reduce(%{line_number: nil, modules: []}, &added_elixir_module_candidate/2)
+    |> Map.fetch!(:modules)
+    |> Enum.reverse()
+  end
+
+  defp added_elixir_module_candidates(_patch), do: []
+
+  defp added_elixir_module_candidate(line, state) do
+    cond do
+      hunk_start = hunk_new_start(line) ->
+        %{state | line_number: hunk_start - 1}
+
+      state.line_number == nil ->
+        state
+
+      deleted_line?(line) ->
+        state
+
+      added_line?(line) ->
+        state
+        |> increment_line_number()
+        |> maybe_add_candidate(line)
+
+      true ->
+        increment_line_number(state)
+    end
+  end
+
+  defp hunk_new_start(line) do
+    case Regex.run(~r/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/, line) do
+      [_, start] -> String.to_integer(start)
+      _ -> nil
+    end
+  end
+
+  defp increment_line_number(%{line_number: line_number} = state) when is_integer(line_number),
+    do: %{state | line_number: line_number + 1}
+
+  defp increment_line_number(state), do: state
+
+  defp maybe_add_candidate(%{line_number: line_number, modules: modules} = state, line) do
+    case added_module_from_line(line) do
+      nil -> state
+      module -> %{state | modules: [{module, line_number} | modules]}
+    end
+  end
+
+  defp github_file_lines(owner, repo, filename, ref, github_client) do
+    path = filename |> String.split("/") |> Enum.map_join("/", fn segment -> URI.encode(segment, &URI.char_unreserved?/1) end)
+    encoded_ref = URI.encode(ref, &URI.char_unreserved?/1)
+
+    with {:ok, content} <- github_json(github_client, "#{@github_api}/repos/#{owner}/#{repo}/contents/#{path}?ref=#{encoded_ref}"),
+         {:ok, decoded} <- decode_github_content(content) do
+      {:ok, String.split(decoded, ~r/\R/)}
+    end
+  end
+
+  defp decode_github_content(%{"encoding" => "base64", "content" => content}) when is_binary(content) do
+    content
+    |> String.replace(~r/\s+/, "")
+    |> Base.decode64()
+    |> case do
+      {:ok, decoded} -> {:ok, decoded}
+      :error -> {:error, :review_readiness_github_content_unreadable}
+    end
+  end
+
+  defp decode_github_content(_content), do: {:error, :review_readiness_github_content_unreadable}
+
+  defp coverage_ignore_line_ranges(lines) do
+    lines
+    |> Enum.with_index(1)
+    |> Enum.reduce(%{test_coverage_depth: 0, ignore_start: nil, ranges: []}, &coverage_ignore_line_range/2)
+    |> Map.fetch!(:ranges)
+    |> Enum.reverse()
+  end
+
+  defp coverage_ignore_line_range({line, line_number}, state) do
+    state =
+      if state.test_coverage_depth > 0 and state.ignore_start == nil and opens_ignore_modules?(line) do
+        %{state | ignore_start: line_number}
+      else
+        state
+      end
+
+    state = track_test_coverage_depth(state, line)
+
+    cond do
+      state.ignore_start != nil and closes_list?(line) ->
+        %{state | ignore_start: nil, ranges: [{state.ignore_start, line_number} | state.ranges]}
+
+      state.test_coverage_depth == 0 ->
+        %{state | ignore_start: nil}
+
+      true ->
+        state
+    end
+  end
+
+  defp track_test_coverage_depth(state, line) do
+    depth =
+      case state.test_coverage_depth do
+        0 ->
+          if String.match?(line, ~r/\btest_coverage:\s*\[/), do: bracket_delta(line), else: 0
+
+        depth ->
+          depth + bracket_delta(line)
+      end
+
+    %{state | test_coverage_depth: max(depth, 0)}
+  end
+
+  defp bracket_delta(content) do
+    uncommented = content |> String.split("#", parts: 2) |> hd()
+    length(Regex.scan(~r/\[/, uncommented)) - length(Regex.scan(~r/\]/, uncommented))
+  end
+
+  defp line_in_ranges?(line_number, ranges) do
+    Enum.any?(ranges, fn {first, last} -> line_number >= first and line_number <= last end)
+  end
+
+  defp added_line?(line), do: String.starts_with?(line, "+") and not String.starts_with?(line, "+++")
+  defp deleted_line?(line), do: String.starts_with?(line, "-")
+
+  defp opens_ignore_modules?(line) do
+    patch_line_content(line)
+    |> String.match?(~r/\bignore_modules:\s*\[/)
+  end
+
+  defp closes_list?(line) do
+    patch_line_content(line)
+    |> String.match?(~r/^\s*\]/)
+  end
+
+  defp added_module_from_line("+" <> rest) do
+    case Regex.run(~r/^\s*([A-Z][A-Za-z0-9_.]*)\s*,?\s*(?:#.*)?$/, rest) do
+      [_, module] -> module
+      _ -> nil
+    end
+  end
+
+  defp added_module_from_line(_line), do: nil
+
+  defp patch_line_content("+" <> rest), do: rest
+  defp patch_line_content("-" <> rest), do: rest
+  defp patch_line_content(" " <> rest), do: rest
+  defp patch_line_content(line), do: line
 
   defp merge_base_sha(owner, repo, base_ref, head_sha, github_client) do
     encoded_base_ref = URI.encode(base_ref, &URI.char_unreserved?/1)
@@ -938,6 +1129,7 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
   defp rejection_message(:review_readiness_missing_pr_head_sha), do: "the linked PR head SHA could not be verified."
   defp rejection_message(:review_readiness_missing_pr_base_ref), do: "the linked PR base branch could not be verified."
   defp rejection_message(:review_readiness_missing_pr_merge_base_sha), do: "the linked PR merge-base SHA could not be verified."
+  defp rejection_message(:review_readiness_github_content_unreadable), do: "GitHub file content could not be decoded for review readiness."
 
   defp rejection_message(:review_readiness_agent_override_not_allowed),
     do: "manager override cannot be authorized by an agent tool call; a manager must move the issue outside the agent session and leave an audit note."
