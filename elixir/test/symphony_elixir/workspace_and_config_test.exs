@@ -356,7 +356,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     workspace_root =
       Path.join(
         System.tmp_dir!(),
-        "symphony-elixir-workspace-hook-timeout-#{System.unique_integer([:positive])}"
+        "symphony-elixir-workspace-hook-timeout-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
       )
 
     try do
@@ -364,11 +364,11 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        hook_timeout_ms: 100,
+        hook_timeout_ms: 10,
         hook_after_create: hook_sleep_command()
       )
 
-      assert {:error, {:workspace_hook_timeout, "after_create", 100}} =
+      assert {:error, {:workspace_hook_timeout, "after_create", 10}} =
                Workspace.create_for_issue("MT-TIMEOUT")
     after
       if windows?(), do: Process.sleep(1_100)
