@@ -1000,6 +1000,412 @@ defmodule SymphonyElixir.ExtensionsTest do
              }
   end
 
+  test "agent worker status and timeline APIs return bounded coalesced redacted items" do
+    orchestrator_name = Module.concat(__MODULE__, :WorkerTimelineOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: worker_api_snapshot()
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    status_payload = json_response(get(build_conn(), "/api/v1/workers/MT-API/status"), 200)
+
+    assert status_payload["issue"] == %{
+             "id" => "issue-api",
+             "identifier" => "MT-API",
+             "state" => "In Progress",
+             "title" => "Worker API issue",
+             "url" => "https://example.org/issues/MT-API"
+           }
+
+    assert status_payload["session"] == %{
+             "session_id" => "session-api",
+             "thread_id" => "thread-api",
+             "turn_count" => 3,
+             "turn_id" => "turn-api"
+           }
+
+    assert status_payload["tokens"] == %{"input_tokens" => 10, "output_tokens" => 20, "total_tokens" => 30}
+    assert status_payload["rate_limits"]["worker"]["primary"]["remaining"] == 42
+
+    timeline_payload = json_response(get(build_conn(), "/api/v1/workers/MT-API/timeline?limit=2"), 200)
+
+    assert timeline_payload["limit"] == 2
+    assert timeline_payload["next_before"] == "3"
+    assert [%{"type" => "tool_output"}, %{"type" => "manager_steer"}] = timeline_payload["items"]
+
+    older_payload =
+      json_response(
+        get(build_conn(), "/api/v1/workers/MT-API/timeline?limit=5&before=#{timeline_payload["next_before"]}"),
+        200
+      )
+
+    assert [
+             %{
+               "type" => "assistant_message",
+               "body" => "Hello OPENAI_API_KEY=[REDACTED]",
+               "truncated" => false
+             }
+           ] = older_payload["items"]
+
+    debug_payload = json_response(get(build_conn(), "/api/v1/workers/MT-API/debug/events?limit=1"), 200)
+
+    assert debug_payload["debug_only"] == true
+    assert debug_payload["limit"] == 1
+    refute inspect(debug_payload) =~ "sk-live-secret"
+  end
+
+  test "agent worker debug events bound nested payload rendering before truncation" do
+    orchestrator_name = Module.concat(__MODULE__, :WorkerDebugBoundedOrchestrator)
+
+    huge_payload =
+      1..10
+      |> Map.new(fn index ->
+        {"key-#{index}", %{"nested" => List.duplicate("OPENAI_API_KEY=sk-live-secret", 100)}}
+      end)
+      |> Map.merge(%{
+        "numeric" => 42,
+        "flag" => true,
+        "deep" => %{"a" => %{"b" => %{"c" => %{"d" => %{"e" => "bottom"}}}}}
+      })
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot:
+          worker_api_snapshot(%{
+            recent_codex_events: [
+              %{
+                event: :notification,
+                message: huge_payload,
+                raw: huge_payload,
+                payload: huge_payload,
+                session_id: "session-api",
+                thread_id: "thread-api",
+                turn_id: "turn-api",
+                timestamp: ~U[2026-01-01 00:00:01Z]
+              }
+            ]
+          })
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    %{"events" => [%{"message" => message, "raw" => raw, "payload" => payload}]} =
+      json_response(get(build_conn(), "/api/v1/workers/MT-API/debug/events?limit=1"), 200)
+
+    assert message["truncated"] in [true, false]
+    assert byte_size(message["text"]) <= message["limit_bytes"]
+    assert byte_size(raw["text"]) <= raw["limit_bytes"]
+    assert byte_size(payload["text"]) <= payload["limit_bytes"]
+    refute inspect([message, raw, payload]) =~ "sk-live-secret"
+  end
+
+  test "agent worker APIs expose retry-only workers and stable missing worker errors" do
+    orchestrator_name = Module.concat(__MODULE__, :WorkerRetryOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: retry_worker_api_snapshot()
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    retry_status = json_response(get(build_conn(), "/api/v1/workers/MT-RETRY-API/status"), 200)
+
+    assert retry_status["status"] == "retrying"
+    assert retry_status["retry"]["attempt"] == 2
+    assert retry_status["workspace"]["branch"] == "codex/alb-42-worker-apis"
+
+    retry_timeline = json_response(get(build_conn(), "/api/v1/workers/MT-RETRY-API/timeline?limit=bad"), 200)
+    assert retry_timeline == %{"issue_identifier" => "MT-RETRY-API", "items" => [], "limit" => 100, "next_before" => nil, "status" => "retrying"}
+
+    assert json_response(get(build_conn(), "/api/v1/workers/MT-NOPE/status"), 404)["error"]["code"] ==
+             "worker_not_found"
+  end
+
+  test "agent worker APIs handle unavailable snapshots as missing workers" do
+    unavailable_orchestrator = Module.concat(__MODULE__, :WorkerUnavailableOrchestrator)
+    start_test_endpoint(orchestrator: unavailable_orchestrator, snapshot_timeout_ms: 5)
+
+    assert json_response(get(build_conn(), "/api/v1/workers/MT-API/status"), 404)["error"]["code"] ==
+             "worker_not_found"
+  end
+
+  test "agent worker timeline classifies supported event families" do
+    orchestrator_name = Module.concat(__MODULE__, :WorkerTimelineTypesOrchestrator)
+
+    snapshot =
+      worker_api_snapshot()
+      |> put_in([:running, Access.at(0), :recent_codex_events], timeline_type_events())
+
+    {:ok, _pid} = StaticOrchestrator.start_link(name: orchestrator_name, snapshot: snapshot)
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    payload = json_response(get(build_conn(), "/api/v1/workers/MT-API/timeline?limit=20"), 200)
+
+    assert Enum.map(payload["items"], & &1["type"]) == [
+             "system_warning",
+             "state_change",
+             "error",
+             "state_change",
+             "tool_call",
+             "tool_call",
+             "error",
+             "assistant_message",
+             "manager_steer"
+           ]
+
+    assert Enum.at(payload["items"], 7)["body"] =~ "agent message streaming"
+    assert Enum.at(payload["items"], 4)["metadata"]["command"] == "git status"
+  end
+
+  test "agent worker timeline covers defensive event projections" do
+    orchestrator_name = Module.concat(__MODULE__, :WorkerTimelineDefensiveTypesOrchestrator)
+
+    snapshot =
+      worker_api_snapshot(%{
+        command_watchdog: %{
+          command: "mix test",
+          status: :running,
+          last_progress_at: ~U[2026-01-01 00:00:10Z]
+        }
+      })
+      |> put_in([:running, Access.at(0), :recent_codex_events], defensive_timeline_events())
+      |> Map.put(:retrying, [
+        %{
+          issue_id: "issue-api",
+          identifier: "MT-API",
+          title: "Worker API issue",
+          url: "https://example.org/issues/MT-API",
+          state: "In Progress",
+          attempt: 1
+        }
+      ])
+
+    {:ok, _pid} = StaticOrchestrator.start_link(name: orchestrator_name, snapshot: snapshot)
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    status_payload = json_response(get(build_conn(), "/api/v1/workers/MT-API/status"), 200)
+    assert status_payload["status"] == "running"
+    assert status_payload["command_watchdog"]["last_progress_at"] == "2026-01-01T00:00:10Z"
+
+    timeline_payload = json_response(get(build_conn(), "/api/v1/workers/MT-API/timeline?before=bad"), 200)
+    assert timeline_payload["items"] == []
+
+    debug_payload = json_response(get(build_conn(), "/api/v1/workers/MT-API/debug/events?limit=20"), 200)
+    assert Enum.any?(debug_payload["events"], &(&1["event"] == "string_event"))
+
+    all_timeline_payload = json_response(get(build_conn(), "/api/v1/workers/MT-API/timeline?limit=20"), 200)
+    bodies = Enum.map(all_timeline_payload["items"], & &1["body"])
+    assert Enum.any?(bodies, &(&1 =~ "agent message streaming"))
+    assert Enum.any?(bodies, &(&1 =~ "manager"))
+    assert Enum.any?(bodies, &(&1 =~ "atom output"))
+  end
+
+  test "agent worker timeline truncates long streaming bodies" do
+    orchestrator_name = Module.concat(__MODULE__, :WorkerTimelineTruncateOrchestrator)
+    long_text = String.duplicate("x", 4_050)
+
+    snapshot =
+      worker_api_snapshot()
+      |> put_in([:running, Access.at(0), :recent_codex_events], [
+        notification_event("item/agentMessage/delta", %{"textDelta" => long_text}, 1)
+      ])
+
+    {:ok, _pid} = StaticOrchestrator.start_link(name: orchestrator_name, snapshot: snapshot)
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    %{"items" => [%{"body" => body, "truncated" => true}]} =
+      json_response(get(build_conn(), "/api/v1/workers/MT-API/timeline"), 200)
+
+    assert byte_size(body) == 4_000
+  end
+
+  test "agent worker timeline redacts secrets split across streaming deltas" do
+    orchestrator_name = Module.concat(__MODULE__, :WorkerTimelineSplitSecretOrchestrator)
+
+    snapshot =
+      worker_api_snapshot()
+      |> put_in([:running, Access.at(0), :recent_codex_events], [
+        notification_event("item/agentMessage/delta", %{"textDelta" => "token sk-"}, 1),
+        notification_event("item/agentMessage/delta", %{"textDelta" => "liveSecret123"}, 2)
+      ])
+
+    {:ok, _pid} = StaticOrchestrator.start_link(name: orchestrator_name, snapshot: snapshot)
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    %{"items" => [%{"body" => body}]} = json_response(get(build_conn(), "/api/v1/workers/MT-API/timeline"), 200)
+
+    assert body == "token [REDACTED]"
+    refute body =~ "sk-liveSecret123"
+  end
+
+  test "agent worker diff API returns stat, truncated patch, no diff, and workspace errors" do
+    workspace_root = Config.settings!().workspace.root
+    File.mkdir_p!(workspace_root)
+    workspace_path = Path.join(workspace_root, "MT-DIFF-#{System.unique_integer([:positive])}")
+    File.rm_rf!(workspace_path)
+    File.mkdir_p!(workspace_path)
+
+    git!(workspace_path, ["init"])
+    git!(workspace_path, ["config", "user.email", "codex@example.test"])
+    git!(workspace_path, ["config", "user.name", "Codex"])
+    File.write!(Path.join(workspace_path, "notes.txt"), "first\n")
+    git!(workspace_path, ["add", "notes.txt"])
+    git!(workspace_path, ["commit", "-m", "initial"])
+    File.write!(Path.join(workspace_path, "notes.txt"), "first\nOPENAI_API_KEY=sk-live-secret\n")
+
+    orchestrator_name = Module.concat(__MODULE__, :WorkerDiffOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: worker_api_snapshot(%{identifier: "MT-DIFF", workspace_path: workspace_path})
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    stat_payload = json_response(get(build_conn(), "/api/v1/workers/MT-DIFF/diff"), 200)
+
+    assert stat_payload["changed_files"] == ["notes.txt"]
+    assert stat_payload["format"] == "stat"
+    assert stat_payload["empty"] == false
+    assert stat_payload["patch"] == nil
+
+    patch_payload =
+      json_response(get(build_conn(), "/api/v1/workers/MT-DIFF/diff?format=patch&limit_bytes=20"), 200)
+
+    assert patch_payload["patch"]["truncated"] == true
+    refute patch_payload["patch"]["text"] =~ "sk-live-secret"
+
+    git!(workspace_path, ["checkout", "--", "notes.txt"])
+
+    assert %{"empty" => true, "changed_files" => []} =
+             json_response(get(build_conn(), "/api/v1/workers/MT-DIFF/diff"), 200)
+
+    File.write!(Path.join(workspace_path, "new_notes.txt"), "OPENAI_API_KEY=sk-live-secret\n")
+
+    untracked_stat_payload = json_response(get(build_conn(), "/api/v1/workers/MT-DIFF/diff"), 200)
+    assert "new_notes.txt" in untracked_stat_payload["changed_files"]
+    assert untracked_stat_payload["stat"]["text"] =~ "new_notes.txt"
+
+    untracked_patch_payload =
+      json_response(get(build_conn(), "/api/v1/workers/MT-DIFF/diff?format=patch&limit_bytes=400"), 200)
+
+    assert untracked_patch_payload["patch"]["text"] =~ "new file mode"
+    assert untracked_patch_payload["patch"]["text"] =~ "new_notes.txt"
+    refute untracked_patch_payload["patch"]["text"] =~ "sk-live-secret"
+  end
+
+  test "agent worker diff API bounds and classifies untracked non-regular entries" do
+    workspace_root = Config.settings!().workspace.root
+    workspace_path = Path.join(workspace_root, "MT-DIFF-EDGE-#{System.unique_integer([:positive])}")
+    outside_path = Path.join(workspace_root, "outside-secret-#{System.unique_integer([:positive])}.txt")
+    File.mkdir_p!(workspace_path)
+
+    git!(workspace_path, ["init"])
+    git!(workspace_path, ["config", "user.email", "codex@example.test"])
+    git!(workspace_path, ["config", "user.name", "Codex"])
+    File.write!(Path.join(workspace_path, "tracked.txt"), "first\n")
+    git!(workspace_path, ["add", "tracked.txt"])
+    git!(workspace_path, ["commit", "-m", "initial"])
+
+    File.mkdir_p!(Path.join(workspace_path, "adir"))
+    File.write!(Path.join([workspace_path, "adir", "nested.txt"]), "nested\n")
+    File.write!(Path.join(workspace_path, "large.bin"), :binary.copy(<<0, 255, 1, 2>>, 20_000))
+    File.write!(outside_path, "OPENAI_API_KEY=sk-live-secret\n")
+
+    if is_nil(SymphonyElixir.TestSupport.symlink_skip_reason()) do
+      :ok = File.ln_s(outside_path, Path.join(workspace_path, "outside-link.txt"))
+    end
+
+    orchestrator_name = Module.concat(__MODULE__, :WorkerDiffEdgeOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: worker_api_snapshot(%{identifier: "MT-DIFF-EDGE", workspace_path: workspace_path})
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    stat_payload = json_response(get(build_conn(), "/api/v1/workers/MT-DIFF-EDGE/diff"), 200)
+    assert "adir/" in stat_payload["changed_files"]
+    assert "large.bin" in stat_payload["changed_files"]
+    assert stat_payload["stat"]["text"] =~ "adir/"
+    assert stat_payload["stat"]["text"] =~ "directory"
+
+    patch_payload =
+      json_response(get(build_conn(), "/api/v1/workers/MT-DIFF-EDGE/diff?format=patch&limit_bytes=600"), 200)
+
+    assert byte_size(patch_payload["patch"]["text"]) <= patch_payload["patch"]["limit_bytes"]
+    assert patch_payload["patch"]["text"] =~ "adir/"
+    assert patch_payload["patch"]["text"] =~ "large.bin"
+    refute patch_payload["patch"]["text"] =~ "sk-live-secret"
+  end
+
+  test "agent worker diff API has stable missing workspace semantics" do
+    workspace_root = Config.settings!().workspace.root
+    missing_snapshot = worker_api_snapshot(%{identifier: "MT-MISSING-WS", workspace_path: Path.join(workspace_root, "missing")})
+    orchestrator_name = Module.concat(__MODULE__, :WorkerDiffMissingOrchestrator)
+
+    {:ok, _pid} = StaticOrchestrator.start_link(name: orchestrator_name, snapshot: missing_snapshot)
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    assert json_response(get(build_conn(), "/api/v1/workers/MT-MISSING-WS/diff"), 404)["error"]["code"] ==
+             "workspace_missing"
+  end
+
+  test "agent worker diff API has stable non-git workspace semantics" do
+    workspace_root = Config.settings!().workspace.root
+    workspace_path = Path.join(workspace_root, "MT-NOGIT-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(workspace_path)
+
+    orchestrator_name = Module.concat(__MODULE__, :WorkerDiffNoGitOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: worker_api_snapshot(%{identifier: "MT-NOGIT", workspace_path: workspace_path})
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    assert json_response(get(build_conn(), "/api/v1/workers/MT-NOGIT/diff"), 409)["error"]["code"] ==
+             "not_git_repo"
+  end
+
+  test "agent worker diff API rejects workspaces outside the configured root" do
+    outside_path = Path.join(System.tmp_dir!(), "symphony-outside-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(outside_path)
+
+    orchestrator_name = Module.concat(__MODULE__, :WorkerDiffUnsafeOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: worker_api_snapshot(%{identifier: "MT-UNSAFE", workspace_path: outside_path})
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    assert json_response(get(build_conn(), "/api/v1/workers/MT-UNSAFE/diff"), 403) == %{
+             "error" => %{
+               "code" => "workspace_outside_root",
+               "message" => "Worker workspace is outside the configured workspace root"
+             }
+           }
+  end
+
   test "phoenix observability api preserves snapshot timeout behavior" do
     timeout_orchestrator = Module.concat(__MODULE__, :TimeoutOrchestrator)
     {:ok, _pid} = SlowOrchestrator.start_link(name: timeout_orchestrator)
@@ -1448,6 +1854,163 @@ defmodule SymphonyElixir.ExtensionsTest do
       codex_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},
       rate_limits: %{"primary" => %{"remaining" => 11}}
     }
+  end
+
+  defp worker_api_snapshot(overrides \\ %{}) do
+    running =
+      %{
+        issue_id: "issue-api",
+        identifier: "MT-API",
+        title: "Worker API issue",
+        url: "https://example.org/issues/MT-API",
+        state: "In Progress",
+        session_id: "session-api",
+        thread_id: "thread-api",
+        turn_id: "turn-api",
+        turn_count: 3,
+        codex_input_tokens: 10,
+        codex_output_tokens: 20,
+        codex_total_tokens: 30,
+        codex_rate_limits: %{"primary" => %{"remaining" => 42}},
+        codex_rate_limits_updated_at: ~U[2026-01-01 00:00:05Z],
+        last_codex_message: "rendered",
+        last_codex_timestamp: ~U[2026-01-01 00:00:05Z],
+        last_codex_event: :notification,
+        recent_codex_events: [
+          notification_event("item/agentMessage/delta", %{"textDelta" => "Hello "}, 1),
+          notification_event("item/agentMessage/delta", %{"textDelta" => "OPENAI_API_KEY=sk-live-secret"}, 2),
+          %{
+            event: :manager_steer_delivered,
+            message: "Keep going",
+            raw: %{"result" => %{"turnId" => "turn-api"}},
+            session_id: "session-api",
+            thread_id: "thread-api",
+            turn_id: "turn-api",
+            timestamp: ~U[2026-01-01 00:00:03Z]
+          },
+          notification_event("item/commandExecution/outputDelta", %{"outputDelta" => "mix test\n"}, 4)
+        ],
+        started_at: ~U[2026-01-01 00:00:00Z]
+      }
+      |> Map.merge(overrides)
+
+    %{
+      running: [running],
+      retrying: [],
+      codex_totals: %{input_tokens: 10, output_tokens: 20, total_tokens: 30, seconds_running: 5.0},
+      rate_limits: %{"primary" => %{"remaining" => 99}}
+    }
+  end
+
+  defp retry_worker_api_snapshot do
+    %{
+      running: [],
+      retrying: [
+        %{
+          issue_id: "issue-retry-api",
+          identifier: "MT-RETRY-API",
+          title: "Retry worker API issue",
+          url: "https://example.org/issues/MT-RETRY-API",
+          state: "In Progress",
+          branch_name: "codex/alb-42-worker-apis",
+          workspace_path: Path.join(Config.settings!().workspace.root, "MT-RETRY-API"),
+          attempt: 2,
+          due_in_ms: 1_500,
+          error: "OPENAI_API_KEY=sk-live-secret",
+          error_kind: "codex_exit"
+        }
+      ],
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0.0},
+      rate_limits: %{}
+    }
+  end
+
+  defp timeline_type_events do
+    [
+      %{
+        event: :manager_steer_delivered,
+        message: "Keep going",
+        raw: %{"result" => %{"turnId" => "turn-api"}},
+        session_id: "session-api",
+        thread_id: "thread-api",
+        turn_id: "turn-api",
+        timestamp: ~U[2026-01-01 00:00:01Z]
+      },
+      notification_event("item/agentMessage/delta", %{"textDelta" => "agent message streaming"}, 2),
+      notification_event("turn/failed", %{"reason" => "tool failed"}, 3),
+      notification_event("item/tool/call", %{"tool" => "shell_command"}, 4),
+      notification_event("item/commandExecution/requestApproval", %{"parsedCmd" => "git status"}, 5),
+      notification_event("turn/diff/updated", %{"files" => ["notes.txt"]}, 6),
+      %{event: :manager_steer_failed, message: "steer failed", raw: %{}, timestamp: ~U[2026-01-01 00:00:07Z]},
+      notification_event("turn/completed", %{"usage" => %{"total_tokens" => 10}}, 8),
+      %{event: :unexpected_worker_event, message: "unknown", raw: %{}, timestamp: ~U[2026-01-01 00:00:09Z]}
+    ]
+  end
+
+  defp defensive_timeline_events do
+    [
+      %{
+        event: :tool_call_completed,
+        message: "tool finished",
+        timestamp: ~U[2026-01-01 00:00:01Z]
+      },
+      notification_event("item/agentMessage/delta", %{}, 2),
+      %{
+        event: :manager_steer_delivered,
+        message: "",
+        raw: %{"manager" => "empty"},
+        timestamp: ~U[2026-01-01 00:00:03Z]
+      },
+      %{
+        event: :manager_steer_delivered,
+        message: %{"manager" => "map message"},
+        raw: %{},
+        timestamp: ~U[2026-01-01 00:00:04Z]
+      },
+      %{
+        event: :manager_steer_delivered,
+        message: nil,
+        raw: nil,
+        timestamp: ~U[2026-01-01 00:00:05Z]
+      },
+      %{
+        event: :notification,
+        message: %{method: "item/commandExecution/outputDelta", params: %{msg: %{outputDelta: "atom output"}}},
+        raw: nil,
+        timestamp: ~U[2026-01-01 00:00:06Z]
+      },
+      %{
+        event: :notification,
+        message: %{"method" => "item/commandExecution/outputDelta", "params" => "bad params"},
+        raw: nil,
+        timestamp: ~U[2026-01-01 00:00:07Z]
+      },
+      %{
+        event: "string_event",
+        message: nil,
+        raw: nil,
+        timestamp: ~U[2026-01-01 00:00:08Z]
+      }
+    ]
+  end
+
+  defp notification_event(method, params, sequence) do
+    %{
+      event: :notification,
+      message: %{"method" => method, "params" => Map.put(params, "itemId", "item-#{method}")},
+      raw: Jason.encode!(%{"method" => method, "params" => Map.put(params, "itemId", "item-#{method}")}),
+      session_id: "session-api",
+      thread_id: "thread-api",
+      turn_id: "turn-api",
+      timestamp: DateTime.add(~U[2026-01-01 00:00:00Z], sequence, :second)
+    }
+  end
+
+  defp git!(workspace_path, args) do
+    case System.cmd("git", ["-C", workspace_path | args], stderr_to_stdout: true) do
+      {_output, 0} -> :ok
+      {output, status} -> flunk("git #{Enum.join(args, " ")} failed with #{status}: #{output}")
+    end
   end
 
   defp secret_snapshot do

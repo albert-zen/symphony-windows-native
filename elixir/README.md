@@ -203,7 +203,8 @@ codex:
 - If a later reload fails, Symphony keeps running with the last known good workflow and logs the
   reload error until the file is fixed.
 - `server.port` or CLI `--port` enables the optional Phoenix LiveView dashboard and JSON API at
-  `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
+  `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, `/api/v1/refresh`, and the
+  agent-facing `/api/v1/workers/<issue_identifier>/*` worker endpoints.
 
 ## Web dashboard
 
@@ -215,6 +216,10 @@ The observability UI now runs on a minimal Phoenix stack:
 - Phoenix dependency static assets for the LiveView client bootstrap
 - Worker detail pages at `/workers/<issue_identifier>` with sanitized Codex
   timelines and session-scoped manager steering.
+- The human dashboard consumes LiveView assignments and the legacy JSON detail
+  endpoint. Agent and manager automation should use the bounded worker endpoints:
+  `/status`, `/timeline`, and `/diff`; `/debug/events` is capped diagnostic data
+  and should not be treated as the primary GUI contract.
 
 When binding the server to a non-loopback host, configure
 `observability.steer_token` or `SYMPHONY_STEER_TOKEN`; otherwise steer
