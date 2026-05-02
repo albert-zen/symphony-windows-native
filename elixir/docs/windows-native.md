@@ -76,12 +76,30 @@ Symphony:
 gh auth login
 ```
 
-For the open-source Windows-native distribution, treat
-`https://github.com/albert-zen/symphony-windows-native.git` as the canonical
-repository and `origin/main` as the canonical base ref unless your workflow
-explicitly configures another trusted remote. Manager-side stale-base checks
-should compare PR branches to `origin/main` directly instead of assuming the
-local `main` branch tracks the canonical remote.
+For day-to-day Windows-native work, `origin` should point at the repository you
+intend agents to push branches and PRs to. If you also want to compare against
+OpenAI's original prototype, keep that remote as `upstream`, not `origin`:
+
+```powershell
+git remote -v
+git remote add upstream https://github.com/openai/symphony.git
+git remote set-url --push upstream DISABLED
+```
+
+If you started from an OpenAI upstream clone and later moved to a Windows-native
+fork, rename the remotes instead of leaving `origin` pointed at the upstream
+prototype:
+
+```powershell
+git remote rename origin upstream
+git remote add origin https://github.com/YOUR_GITHUB_OWNER/YOUR_REPO.git
+git remote set-url --push upstream DISABLED
+git fetch origin main
+```
+
+Manager-side stale-base checks should compare PR branches to `origin/main`
+directly instead of assuming the local `main` branch tracks the canonical
+remote.
 
 ## Configure a workflow
 
@@ -186,8 +204,7 @@ not fail preflight. It verifies:
 - `git`, `gh`, `node`, and the configured Codex app-server command resolve on `PATH`.
 - `gh auth status` succeeds for GitHub operations.
 - After refreshing `origin/main`, the local checkout's `main` branch does not
-  hide a newer canonical base behind a stale noncanonical upstream such as
-  `windows/main`.
+  hide a newer canonical base behind a stale noncanonical remote.
 - `codex app-server` can start without non-JSON startup output on stdio.
 - The repository URL in `hooks.after_create` can be cloned by Git.
 - `workspace.root` is writable.
@@ -208,14 +225,21 @@ git branch --set-upstream-to=origin/main main
 git status --short --branch
 ```
 
-When intentionally using a fork or mirror, keep the workflow and manager runbook
-explicit about that remote and compare against its fully qualified remote ref.
+When intentionally using a fork or mirror, make that repository `origin` for the
+automation checkout. Keep other comparison sources as named remotes such as
+`upstream`, and compare against their fully qualified refs only when that is the
+explicit review target.
 
 ### Optimization flywheel routing
 
-The optimization example targets the `YOUR_LINEAR_PROJECT_NAME` Linear project by slug
-`YOUR_LINEAR_PROJECT_SLUG`. Keep `Backlog` out of `tracker.active_states`; parked issues
+The optimization example is a fixed-project routing template. Replace
+`YOUR_LINEAR_PROJECT_SLUG` with the slug for the Linear project you want
+Symphony to poll. Keep `Backlog` out of `tracker.active_states`; parked issues
 remain invisible to Symphony until a human moves one issue at a time to `Todo`.
+
+Keep the public example generic. Operator-specific project names, workspace
+paths, and repository owners should live in a local workflow file such as
+`WORKFLOW.optimization.windows.md`, which is ignored by git.
 
 Use this fixed-project route as the default boundary. If the same Linear project
 must later hold unrelated work, add `tracker.labels` to route only issues with
@@ -234,6 +258,17 @@ tracker:
 The label match is case-insensitive and applies only to candidate dispatch.
 Already-running issues are still reconciled by their tracker state so Symphony
 can stop them cleanly when they move to a terminal state.
+
+To find the right Linear values, use the Linear UI for the project slug when
+possible, or query Linear GraphQL with your own API key. Do not commit API keys,
+project-specific workflow files, or local runtime logs. When preparing a public
+release, scan tracked files for obvious secrets and local markers before
+pushing:
+
+```powershell
+$patterns = @('lin' + '_api_', 'github' + '_pat_', 'ghp_', 'YOUR_PRIVATE_WORKSPACE_MARKER')
+git ls-files | ForEach-Object { Select-String -Path $_ -Pattern $patterns }
+```
 
 ## Start Symphony
 
