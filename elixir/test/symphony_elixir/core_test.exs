@@ -114,8 +114,6 @@ defmodule SymphonyElixir.CoreTest do
   end
 
   test "current WORKFLOW.md file is valid and complete" do
-    original_workflow_path = Workflow.workflow_file_path()
-    on_exit(fn -> Workflow.set_workflow_file_path(original_workflow_path) end)
     Workflow.clear_workflow_file_path()
 
     assert {:ok, %{config: config, prompt: prompt}} = Workflow.load()
@@ -193,12 +191,6 @@ defmodule SymphonyElixir.CoreTest do
   end
 
   test "workflow file path defaults to WORKFLOW.md in the current working directory when app env is unset" do
-    original_workflow_path = Workflow.workflow_file_path()
-
-    on_exit(fn ->
-      Workflow.set_workflow_file_path(original_workflow_path)
-    end)
-
     Workflow.clear_workflow_file_path()
 
     assert Workflow.workflow_file_path() == Path.join(File.cwd!(), "WORKFLOW.md")
@@ -1191,11 +1183,10 @@ defmodule SymphonyElixir.CoreTest do
   end
 
   test "prompt builder reports workflow load failures separately from template parse errors" do
-    original_workflow_path = Workflow.workflow_file_path()
     workflow_store_pid = Process.whereis(SymphonyElixir.WorkflowStore)
 
     on_exit(fn ->
-      Workflow.set_workflow_file_path(original_workflow_path)
+      Workflow.clear_workflow_file_path()
 
       if is_pid(workflow_store_pid) and is_nil(Process.whereis(SymphonyElixir.WorkflowStore)) do
         Supervisor.restart_child(SymphonyElixir.Supervisor, SymphonyElixir.WorkflowStore)
@@ -1221,7 +1212,6 @@ defmodule SymphonyElixir.CoreTest do
   end
 
   test "in-repo WORKFLOW.md renders correctly" do
-    workflow_path = Workflow.workflow_file_path()
     Workflow.set_workflow_file_path(Path.expand("WORKFLOW.md", File.cwd!()))
 
     issue = %Issue{
@@ -1233,7 +1223,7 @@ defmodule SymphonyElixir.CoreTest do
       labels: ["templating", "workflow"]
     }
 
-    on_exit(fn -> Workflow.set_workflow_file_path(workflow_path) end)
+    on_exit(fn -> Workflow.clear_workflow_file_path() end)
 
     prompt =
       PromptBuilder.build_prompt(issue,
