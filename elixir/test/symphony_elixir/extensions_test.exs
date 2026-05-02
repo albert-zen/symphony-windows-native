@@ -644,6 +644,13 @@ defmodule SymphonyElixir.ExtensionsTest do
   end
 
   test "linear adapter can sign test lease bodies without a configured api token" do
+    previous_linear_api_key = System.get_env("LINEAR_API_KEY")
+
+    on_exit(fn ->
+      restore_env("LINEAR_API_KEY", previous_linear_api_key)
+    end)
+
+    System.delete_env("LINEAR_API_KEY")
     write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil)
 
     body =

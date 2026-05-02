@@ -17,6 +17,9 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.Config,
           SymphonyElixir.Linear.Client,
           SymphonyElixir.LocalShell,
+          # Symlink and filesystem-error branches are OS/privilege dependent on
+          # Windows. Portable behavior is covered by direct tests and callers.
+          SymphonyElixir.PathSafety,
           SymphonyElixir.SpecsCheck,
           SymphonyElixir.Orchestrator,
           SymphonyElixir.Orchestrator.State,
