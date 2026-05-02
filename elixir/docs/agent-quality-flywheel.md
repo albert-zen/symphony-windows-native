@@ -37,6 +37,10 @@ current base, resolve the overlap, and rerun validation before handoff.
 
 ## Review loop
 
+Workers should start from the repository-level
+[agent entrypoint playbook](../../AGENTS.md), which summarizes this policy for
+every run.
+
 Request an independent SubAgent review pass for meaningful changes before handoff. A change is
 meaningful when it touches runtime orchestration, worker startup, Linear state transitions, Codex
 app-server protocol handling, CI, release/merge policy, more than one subsystem, or docs that encode

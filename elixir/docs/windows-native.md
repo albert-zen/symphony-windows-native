@@ -474,6 +474,10 @@ The important production path for local Windows workers is:
 
 ## Quality gates for Windows changes
 
+Windows-native workers should start from the repository-level
+[agent entrypoint playbook](../../AGENTS.md), then use this guide for detailed
+runtime setup and troubleshooting.
+
 Windows shell, workspace/config, workflow, or path-handling changes should run the focused native
 profile:
 
