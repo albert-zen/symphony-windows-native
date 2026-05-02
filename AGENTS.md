@@ -93,9 +93,14 @@ Workpad. Blocking findings keep the issue in `In Progress` or return it to
   the evidence and hand it to the manager as a system defect.
 - Move the issue to `Blocked` when that state exists. If it does not, record
   `Blocked state missing` and keep the issue active for manager triage.
-- If you discover a Symphony automation/system defect, create a GitHub issue
-  labeled `symphony-optimization` and mirror it into the Linear project when the
-  Linear tool is available.
+- If you discover a Symphony automation/system defect, search existing open and
+  recently closed GitHub issues plus Linear mirrors for the same root cause
+  before creating anything new. If a canonical issue exists, add the new
+  evidence there instead of creating a duplicate. If no canonical issue exists,
+  create a GitHub issue labeled `symphony-optimization` and mirror it into the
+  Linear project when the Linear tool is available. If duplicates already exist,
+  link them back to the canonical issue and let the manager move redundant
+  mirrors to `Duplicate`.
 
 ## Known Pitfalls
 
