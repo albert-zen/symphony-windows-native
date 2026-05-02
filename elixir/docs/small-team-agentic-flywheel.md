@@ -107,6 +107,9 @@ handoffs than from maximum parallelism.
 Generated work compounds quickly when low-quality PRs are allowed to become the
 base for later agents. These guardrails are the minimum bar:
 
+- Workers should start from the repository-level
+  [agent entrypoint playbook](../../AGENTS.md) so recurring Windows and
+  flywheel facts are not rediscovered every run.
 - One issue, one branch, one PR.
 - Branches use `codex/<linear-identifier>-<short-topic>`.
 - Commits use lightweight Conventional Commits.

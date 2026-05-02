@@ -9,6 +9,7 @@ PowerShell hooks and clean Codex app-server stdio startup.
 
 If you are trying to run Symphony directly on Windows, start here:
 
+- [Agent worker entrypoint playbook](AGENTS.md)
 - [Windows native setup guide](elixir/docs/windows-native.md)
 - [Windows workflow example](elixir/WORKFLOW.windows.example.md)
 - [Windows optimization workflow example](elixir/WORKFLOW.optimization.windows.example.md)
