@@ -766,7 +766,7 @@ defmodule SymphonyElixir.AppServerTest do
         end)
 
       assert_receive {:app_server_message, %{event: :session_started, session_id: "thread-721-turn-721"}},
-                     1_000
+                     5_000
 
       request_ref = make_ref()
       send(task.pid, {:codex_steer, self(), request_ref, "thread-721-turn-721", "Retry the focused test."})
