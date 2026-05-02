@@ -23,6 +23,8 @@ hooks:
   after_create: |
     $ErrorActionPreference = "Stop"
     git clone --depth 1 https://github.com/albert-zen/symphony-windows-native.git .
+    git remote set-url origin https://github.com/albert-zen/symphony-windows-native.git
+    git fetch origin main
     git config user.email "codex-symphony@example.invalid"
     git config user.name "Codex Symphony"
     Set-Location elixir
@@ -103,6 +105,9 @@ Operating model:
 Quality bar:
 
 - Prefer small, reviewable changes.
+- Treat `origin/main` in `albert-zen/symphony-windows-native` as the canonical
+  GitHub base ref for manager-side stale-base checks unless the workflow
+  explicitly configures another trusted remote.
 - Run `mix format` for touched Elixir files.
 - Follow `docs/agent-quality-flywheel.md` for PR quality gates, review loop rules, and defect
   protocol.
