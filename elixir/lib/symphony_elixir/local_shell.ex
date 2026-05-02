@@ -132,23 +132,35 @@ defmodule SymphonyElixir.LocalShell do
   defp windows_shebang_args(executable, args) do
     case windows_shebang_line(executable) do
       {:ok, "#!" <> shebang} ->
-        cond do
-          String.contains?(shebang, "node") ->
-            with {:ok, node} <- windows_node_executable(Path.dirname(executable)) do
-              {:ok, node, [executable | args]}
-            end
-
-          String.contains?(shebang, "sh") or String.contains?(shebang, "bash") ->
-            with {:ok, shell} <- windows_unix_shell_executable() do
-              {:ok, shell, [executable | args]}
-            end
-
-          true ->
-            {:error, {:unsupported_windows_port_command, executable}}
-        end
+        windows_shebang_interpreter_args(shebang, executable, args)
 
       _ ->
         {:ok, executable, args}
+    end
+  end
+
+  defp windows_shebang_interpreter_args(shebang, executable, args) do
+    cond do
+      String.contains?(shebang, "node") ->
+        windows_shebang_node_args(executable, args)
+
+      String.contains?(shebang, "sh") or String.contains?(shebang, "bash") ->
+        windows_shebang_shell_args(executable, args)
+
+      true ->
+        {:error, {:unsupported_windows_port_command, executable}}
+    end
+  end
+
+  defp windows_shebang_node_args(executable, args) do
+    with {:ok, node} <- windows_node_executable(Path.dirname(executable)) do
+      {:ok, node, [executable | args]}
+    end
+  end
+
+  defp windows_shebang_shell_args(executable, args) do
+    with {:ok, shell} <- windows_unix_shell_executable() do
+      {:ok, shell, [executable | args]}
     end
   end
 
