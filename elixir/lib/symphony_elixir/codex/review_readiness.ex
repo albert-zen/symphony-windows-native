@@ -1222,10 +1222,52 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
   defp summarize_body(body), do: body |> inspect(limit: 20, printable_limit: 200)
 
   defp maybe_add_github_token(headers) do
-    case System.get_env("GITHUB_TOKEN") || System.get_env("GH_TOKEN") do
+    case github_token() do
       token when is_binary(token) and token != "" -> [{"Authorization", "Bearer #{token}"} | headers]
       _ -> headers
     end
+  end
+
+  defp github_token do
+    env_github_token() || gh_auth_token()
+  end
+
+  defp env_github_token do
+    ["GITHUB_TOKEN", "GH_TOKEN"]
+    |> Enum.map(&System.get_env/1)
+    |> Enum.find_value(&normalize_github_token/1)
+  end
+
+  defp normalize_github_token(token) when is_binary(token) do
+    case String.trim(token) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp normalize_github_token(_token), do: nil
+
+  defp gh_auth_token do
+    with gh when is_binary(gh) <- System.find_executable("gh"),
+         {token, 0} <- run_gh_auth_token(gh),
+         token <- String.trim(token),
+         false <- token == "" do
+      token
+    else
+      _ -> nil
+    end
+  end
+
+  defp run_gh_auth_token(gh) do
+    if windows_batch?(gh) do
+      System.cmd("cmd", ["/c", gh, "auth", "token"], stderr_to_stdout: true)
+    else
+      System.cmd(gh, ["auth", "token"], stderr_to_stdout: true)
+    end
+  end
+
+  defp windows_batch?(path) do
+    match?({:win32, _}, :os.type()) and String.downcase(Path.extname(path)) in [".bat", ".cmd"]
   end
 
   defp normalize(value) do
