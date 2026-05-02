@@ -107,6 +107,9 @@ handoffs than from maximum parallelism.
 Generated work compounds quickly when low-quality PRs are allowed to become the
 base for later agents. These guardrails are the minimum bar:
 
+- Workers should start from the repository-level
+  [agent entrypoint playbook](../../AGENTS.md) so recurring Windows and
+  flywheel facts are not rediscovered every run.
 - One issue, one branch, one PR.
 - Branches use `codex/<linear-identifier>-<short-topic>`.
 - Commits use lightweight Conventional Commits.
@@ -114,6 +117,8 @@ base for later agents. These guardrails are the minimum bar:
   status, and any CI/runtime failures.
 - The PR body follows the repository template and includes concrete validation
   evidence.
+- PRs for Linear issues with one unambiguous origin GitHub issue include a closing
+  keyword such as `Fixes #NN` in the PR body.
 - `make all` is the repository gate when the local environment supports it.
 - `windows-native-test` runs for Windows shell, workspace/config, workflow, or
   path-handling changes.

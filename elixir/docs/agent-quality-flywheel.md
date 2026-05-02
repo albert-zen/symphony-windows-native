@@ -9,6 +9,8 @@ leave active work.
 Every agent PR must record these checks in the PR body and the Linear `## Codex Workpad`:
 
 - `validate-pr-description`: the PR body follows `.github/pull_request_template.md`.
+- `linked-issue-close`: when the Linear issue has one unambiguous origin GitHub issue in the
+  trusted repository, the PR body includes a GitHub closing keyword such as `Fixes #NN`.
 - `make-all`: the repository gate runs `make all` from `elixir/`.
 - `diff-check`: the repository gate runs `git diff --check` through `make all`. In CI it
   must check the committed PR diff with `DIFF_RANGE=<base>...HEAD`; locally, set
@@ -36,6 +38,10 @@ base branch and files changed on current base overlap files changed in the PR, t
 current base, resolve the overlap, and rerun validation before handoff.
 
 ## Review loop
+
+Workers should start from the repository-level
+[agent entrypoint playbook](../../AGENTS.md), which summarizes this policy for
+every run.
 
 Request an independent SubAgent review pass for meaningful changes before handoff. A change is
 meaningful when it touches runtime orchestration, worker startup, Linear state transitions, Codex
@@ -69,6 +75,12 @@ Agents must not move a Linear issue to `In Review` solely because a branch was p
 means a PR exists, required checks have completed and passed, and required manager/subagent review
 findings have been addressed, unless a manager explicitly moves the issue there.
 
+When a Linear issue has one unambiguous origin GitHub issue in the trusted repository, the linked PR
+must close that GitHub issue through the PR body before review handoff. Use a supported closing
+keyword such as `Fixes #NN`, `Closes #NN`, or `Resolves #NN`. Do not infer origins from reference-only
+links, unrelated attachments, or multiple trusted issue URLs. Do not use a closing keyword for an
+unrelated or still-active GitHub issue.
+
 Pending, failing, or unverifiable required checks are not review-ready. The agent must write the
 failure or blocker to the workpad and/or linked GitHub issue or PR, then keep the issue in
 `In Progress` or return it to `Todo`. If a true blocker prevents completion, the agent should move
@@ -90,6 +102,20 @@ If a required gate fails, the agent must summarize the failure in the workpad or
 and keep the Linear issue in `In Progress` or return it to `Todo` for repair. Failures discovered by
 automation should create a GitHub issue with the `symphony-optimization` label when they describe a
 system defect outside the current PR.
+
+## GitHub issue reconciliation
+
+Use this manager-run path only for already completed work:
+
+1. Query Done Linear issues and inspect each issue's linked GitHub issue and merged PR.
+2. Confirm the Linear issue is terminal `Done`, the PR is merged, and the PR or Workpad clearly
+   matches exactly one GitHub issue.
+3. Close the GitHub issue with a comment linking the merged PR and Linear issue.
+4. Skip any item whose Linear issue is not Done, whose PR is unmerged, or whose mapping is ambiguous.
+5. Record permission failures in the Linear Workpad or manager notes instead of guessing.
+
+This reconciliation is intentionally explicit. Agents should prevent new stale issues with PR closing
+keywords; they should not bulk-close GitHub issues for active or ambiguous Linear work.
 
 ## Problem comment scope
 

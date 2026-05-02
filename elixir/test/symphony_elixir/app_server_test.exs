@@ -41,6 +41,51 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server setup replaces stale global workflow env with the test-local workflow path" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-stale-global-workflow-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workflow_file = Workflow.workflow_file_path()
+      workspace_root = Path.join(test_root, "workspaces")
+      outside_workspace = Path.join(test_root, "outside")
+      stale_workflow_file = Path.join([test_root, "removed", "WORKFLOW.md"])
+
+      File.mkdir_p!(workspace_root)
+      File.mkdir_p!(outside_workspace)
+
+      Application.put_env(:symphony_elixir, :workflow_file_path, stale_workflow_file)
+      Workflow.set_workflow_file_path(workflow_file)
+
+      write_workflow_file!(workflow_file,
+        workspace_root: workspace_root
+      )
+
+      assert Application.get_env(:symphony_elixir, :workflow_file_path) == workflow_file
+      assert Config.settings!().workspace.root == workspace_root
+
+      issue = %Issue{
+        id: "issue-stale-workflow-guard",
+        identifier: "MT-998",
+        title: "Validate stale workflow isolation",
+        description: "Ensure app-server uses the test-local workspace root",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-998",
+        labels: ["backend"]
+      }
+
+      assert {:error, {:invalid_workspace_cwd, :outside_workspace_root, _path, root}} =
+               AppServer.run(outside_workspace, "guard", issue)
+
+      assert root == Path.expand(workspace_root)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   if @symlink_skip_reason, do: @tag(skip: @symlink_skip_reason)
 
   test "app server rejects symlink escape cwd paths under the workspace root" do

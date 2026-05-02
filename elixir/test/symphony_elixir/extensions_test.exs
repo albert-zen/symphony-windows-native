@@ -366,7 +366,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   test "linear adapter acquires visible claim when this worker owns the oldest active lease" do
     Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
-    now = DateTime.utc_now()
+    now = DateTime.add(DateTime.utc_now(), -60, :second)
 
     Process.put({FakeLinearClient, :graphql_result}, fn query, variables ->
       cond do
@@ -1159,6 +1159,98 @@ defmodule SymphonyElixir.ExtensionsTest do
     {:ok, _view, html} = live(build_conn(), "/")
     assert html =~ "2m "
     refute html =~ "4m "
+  end
+
+  test "dashboard liveview renders populated rate limits as readable status" do
+    orchestrator_name = Module.concat(__MODULE__, :DashboardRateLimitOrchestrator)
+
+    snapshot =
+      static_snapshot()
+      |> Map.put(:rate_limits, %{
+        "limitId" => "codex",
+        "planType" => "prolite",
+        "primary" => %{
+          "usedPercent" => 57,
+          "windowDurationMins" => 300,
+          "resetAt" => "2099-05-02T07:05:00Z"
+        },
+        "secondary" => %{
+          "usedPercent" => 92,
+          "windowDurationMins" => 10_080,
+          "resetInSeconds" => 250
+        }
+      })
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, html} = live(build_conn(), "/")
+    assert html =~ "Latest upstream rate-limit snapshot for codex · prolite."
+    assert html =~ "Primary"
+    assert html =~ "57% used"
+    assert html =~ "5h window"
+    assert html =~ "2099-05-02 07:05:00 UTC"
+    assert html =~ "Secondary"
+    assert html =~ "92% used"
+    assert html =~ "7d window"
+    assert html =~ "resets in 4m 10s"
+    assert html =~ "Raw rate-limit payload"
+  end
+
+  test "dashboard liveview renders partial rate limits without raw map as the main view" do
+    orchestrator_name = Module.concat(__MODULE__, :DashboardPartialRateLimitOrchestrator)
+
+    snapshot =
+      static_snapshot()
+      |> Map.put(:rate_limits, %{
+        limit_name: "codex-lite",
+        primary: %{usedPercent: 40, windowDurationMins: nil},
+        secondary: %{usedPercent: nil, resetsAt: 4_081_392_600}
+      })
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, html} = live(build_conn(), "/")
+    assert html =~ "Latest upstream rate-limit snapshot for codex-lite."
+    assert html =~ "Primary"
+    assert html =~ "40% used"
+    assert html =~ "window n/a"
+    assert html =~ "Secondary"
+    assert html =~ "n/a"
+    assert html =~ "2099-05-02 08:10:00 UTC"
+    assert html =~ "Raw rate-limit payload"
+    refute html =~ "Latest upstream rate-limit snapshot, when available."
+  end
+
+  test "dashboard liveview renders absent rate limits as an empty state" do
+    orchestrator_name = Module.concat(__MODULE__, :DashboardAbsentRateLimitOrchestrator)
+
+    snapshot =
+      static_snapshot()
+      |> Map.put(:rate_limits, nil)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, html} = live(build_conn(), "/")
+    assert html =~ "No upstream rate-limit snapshot is available yet."
+    refute html =~ "Raw rate-limit payload"
   end
 
   test "worker detail liveview renders timeline and submits session-scoped steer messages" do
