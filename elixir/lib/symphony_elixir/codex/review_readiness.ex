@@ -610,8 +610,6 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
     end)
   end
 
-  defp trusted_repo_closing_keyword_numbers(_body, _owner, _repo), do: []
-
   defp normalize_repo_name(nil), do: nil
 
   defp normalize_repo_name(repo) when is_binary(repo) do
