@@ -138,12 +138,34 @@ manager should ensure the public GitHub issue includes:
 
 - Problem statement and user-facing intent.
 - Scope boundaries and explicit non-goals.
+- Dependencies, unresolved blockers, and the exact unblock condition.
 - Implementation hints only when they reduce ambiguity without over-prescribing
   the solution.
 - Testing intent: focused local checks, broad gates, and Windows-specific checks
   when relevant.
 - Acceptance criteria that a reviewer can verify from the final behavior.
 - Links to related issues, PRs, prior failures, and Linear mirror.
+
+Use a `## Dependencies` section or an explicit `Depends on:` line in the GitHub
+issue when the work must wait for another issue, PR, deployment, credential, or
+system capability. Do not move that issue to `Todo` while the dependency is
+active, unmerged, blocked, or merged-but-not-deployed when deployment matters.
+After the dependency is resolved, mark it with `[x]`, `resolved by`, `merged in`,
+or `deployed in`, then record the dependency resolution in the Workpad when
+releasing the issue.
+
+Before release, run the local dry-run guard against the shaped GitHub issue text
+or an exported copy of it:
+
+```powershell
+cd elixir
+mise exec -- mix symphony.manager.release_check --file ..\issue-body.md
+```
+
+The guard intentionally fails on unresolved dependency declarations. It is not a
+substitute for manager judgment across Dashboard, GitHub, and Linear; it is a
+tripwire that prevents known dependency chains from being released as if they
+were independent work.
 
 After the worker claims the issue, avoid changing the task underneath it. If the
 intent changes, update the GitHub issue and Workpad, then decide whether to let
