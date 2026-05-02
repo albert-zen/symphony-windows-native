@@ -586,6 +586,53 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     refute_received {:linear_mutation_allowed, _, _}
   end
 
+  test "linear_graphql rejects quoted Elixir module atoms in coverage ignore additions" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{"head" => %{"sha" => "abc123"}, "base" => %{"ref" => "main"}},
+            "pulls/42/files?per_page=100" => [
+              %{
+                "filename" => "elixir/lib/symphony_elixir/codex/review_readiness.ex",
+                "status" => "modified",
+                "patch" => "@@ -22,6 +22,7 @@\n+  def hardened?, do: true"
+              },
+              %{
+                "filename" => "elixir/mix.exs",
+                "status" => "modified",
+                "patch" => """
+                @@ -14,6 +14,7 @@
+                 test_coverage: [
+                   ignore_modules: [
+                     SymphonyElixir.Codex.AppServer,
+                +    :"Elixir.SymphonyElixir.Codex.ReviewReadiness",
+                     SymphonyElixir.Codex.DynamicTool
+                   ]
+                """
+              }
+            ],
+            "compare/base123...main" => %{"ahead_by" => 0, "files" => []},
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{
+              "check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]
+            }
+          })
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "Elixir.SymphonyElixir.Codex.ReviewReadiness"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "Elixir.SymphonyElixir.Codex.ReviewReadiness"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
   test "linear_graphql rejects inline coverage ignore additions" do
     test_pid = self()
 
@@ -750,6 +797,42 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert Jason.decode!(response["output"])["error"]["message"] =~ "PR base is stale"
     assert_received {:workpad_recorded, body}
     assert body =~ "lib/symphony_elixir/codex/app_server.ex"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql rejects stale PR bases when base compare file list may be capped" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{"head" => %{"sha" => "abc123"}, "base" => %{"ref" => "main", "sha" => "base123"}},
+            "pulls/42/files?per_page=100" => [
+              %{"filename" => "lib/symphony_elixir/codex/app_server.ex", "status" => "modified", "patch" => ""}
+            ],
+            "compare/base123...main" => %{
+              "ahead_by" => 12,
+              "files" =>
+                Enum.map(1..300, fn index ->
+                  %{"filename" => "lib/current_main/file_#{index}.ex", "status" => "modified"}
+                end)
+            },
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{
+              "check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]
+            }
+          })
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "capped GitHub compare file list"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "current base branch compare returns 300 files"
     refute_received {:linear_mutation_allowed, _, _}
   end
 

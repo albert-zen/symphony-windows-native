@@ -562,6 +562,7 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
   defp normalize_module_name(module) do
     module
     |> String.trim()
+    |> String.trim_leading("Elixir.")
     |> String.downcase()
   end
 
@@ -862,18 +863,26 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
 
   defp stale_base_overlap(%{"ahead_by" => ahead_by, "files" => base_files}, pr_files)
        when is_integer(ahead_by) and ahead_by > 0 and is_list(base_files) do
-    pr_filenames = changed_filenames(pr_files)
-    base_filenames = changed_filenames(base_files)
-    overlap = MapSet.intersection(pr_filenames, base_filenames)
+    with :ok <- stale_base_file_list_fetchable?(base_files) do
+      pr_filenames = changed_filenames(pr_files)
+      base_filenames = changed_filenames(base_files)
+      overlap = MapSet.intersection(pr_filenames, base_filenames)
 
-    if MapSet.size(overlap) == 0 do
-      :ok
-    else
-      {:error, {:review_readiness_stale_base_overlap, Enum.sort(overlap)}}
+      if MapSet.size(overlap) == 0 do
+        :ok
+      else
+        {:error, {:review_readiness_stale_base_overlap, Enum.sort(overlap)}}
+      end
     end
   end
 
   defp stale_base_overlap(_comparison, _pr_files), do: :ok
+
+  defp stale_base_file_list_fetchable?(base_files) when length(base_files) >= 300 do
+    {:error, {:review_readiness_stale_base_file_list_too_large, length(base_files)}}
+  end
+
+  defp stale_base_file_list_fetchable?(_base_files), do: :ok
 
   defp changed_filenames(files) do
     Enum.reduce(files, MapSet.new(), fn file, acc ->
@@ -1197,6 +1206,10 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
 
   defp rejection_message({:review_readiness_stale_base_overlap, filenames}),
     do: "the PR base is stale and current base branch changes overlap PR files: #{Enum.join(filenames, ", ")}. Merge current base, resolve the overlap, and rerun validation."
+
+  defp rejection_message({:review_readiness_stale_base_file_list_too_large, changed_files}),
+    do:
+      "the PR base is stale and current base branch compare returns #{changed_files} files; review readiness cannot verify stale-base overlap from a capped GitHub compare file list. Merge current base and rerun validation."
 
   defp format_failures(failures) do
     Enum.map_join(failures, ", ", fn
