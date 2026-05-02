@@ -705,10 +705,12 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
   defp increment_line_number(state), do: state
 
   defp maybe_add_candidate(%{line_number: line_number, modules: modules} = state, line) do
-    case added_module_from_line(line) do
-      nil -> state
-      module -> %{state | modules: [{module, line_number} | modules]}
-    end
+    line_modules =
+      line
+      |> added_modules_from_line()
+      |> Enum.map(&{&1, line_number})
+
+    %{state | modules: line_modules ++ modules}
   end
 
   defp github_file_lines(owner, repo, filename, ref, github_client) do
@@ -736,32 +738,55 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
   defp coverage_ignore_line_ranges(lines) do
     lines
     |> Enum.with_index(1)
-    |> Enum.reduce(%{test_coverage_depth: 0, ignore_start: nil, ranges: []}, &coverage_ignore_line_range/2)
+    |> Enum.reduce(
+      %{test_coverage_depth: 0, ignore_start: nil, ignore_depth: 0, ranges: []},
+      &coverage_ignore_line_range/2
+    )
     |> Map.fetch!(:ranges)
     |> Enum.reverse()
   end
 
   defp coverage_ignore_line_range({line, line_number}, state) do
-    state =
-      if state.test_coverage_depth > 0 and state.ignore_start == nil and opens_ignore_modules?(line) do
-        %{state | ignore_start: line_number}
-      else
-        state
-      end
-
+    state = maybe_open_coverage_ignore_range(state, line, line_number)
+    state = track_coverage_ignore_depth(state, line, line_number)
     state = track_test_coverage_depth(state, line)
 
-    cond do
-      state.ignore_start != nil and closes_list?(line) ->
-        %{state | ignore_start: nil, ranges: [{state.ignore_start, line_number} | state.ranges]}
-
-      state.test_coverage_depth == 0 ->
-        %{state | ignore_start: nil}
-
-      true ->
-        state
+    if state.test_coverage_depth == 0 and state.ignore_start != nil do
+      %{state | ignore_start: nil, ignore_depth: 0}
+    else
+      state
     end
   end
+
+  defp maybe_open_coverage_ignore_range(%{ignore_start: nil} = state, line, line_number) do
+    if in_test_coverage?(state, line) and opens_ignore_modules?(line) do
+      %{state | ignore_start: line_number, ignore_depth: ignore_modules_bracket_delta(line)}
+    else
+      state
+    end
+  end
+
+  defp maybe_open_coverage_ignore_range(state, _line, _line_number), do: state
+
+  defp track_coverage_ignore_depth(%{ignore_start: nil} = state, _line, _line_number), do: state
+
+  defp track_coverage_ignore_depth(state, line, line_number) do
+    ignore_depth =
+      if state.ignore_start == line_number do
+        state.ignore_depth
+      else
+        state.ignore_depth + bracket_delta(line)
+      end
+
+    if ignore_depth <= 0 do
+      %{state | ignore_start: nil, ignore_depth: 0, ranges: [{state.ignore_start, line_number} | state.ranges]}
+    else
+      %{state | ignore_depth: ignore_depth}
+    end
+  end
+
+  defp in_test_coverage?(%{test_coverage_depth: depth}, _line) when depth > 0, do: true
+  defp in_test_coverage?(_state, line), do: String.match?(line, ~r/\btest_coverage:\s*\[/)
 
   defp track_test_coverage_depth(state, line) do
     depth =
@@ -793,19 +818,25 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
     |> String.match?(~r/\bignore_modules:\s*\[/)
   end
 
-  defp closes_list?(line) do
-    patch_line_content(line)
-    |> String.match?(~r/^\s*\]/)
+  defp added_modules_from_line("+" <> rest) do
+    rest
+    |> String.split("#", parts: 2)
+    |> hd()
+    |> then(&Regex.scan(~r/\b([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*)\b/, &1))
+    |> Enum.map(fn [_, module] -> module end)
   end
 
-  defp added_module_from_line("+" <> rest) do
-    case Regex.run(~r/^\s*([A-Z][A-Za-z0-9_.]*)\s*,?\s*(?:#.*)?$/, rest) do
-      [_, module] -> module
-      _ -> nil
+  defp added_modules_from_line(_line), do: []
+
+  defp ignore_modules_bracket_delta(line) do
+    line
+    |> patch_line_content()
+    |> String.split(~r/\bignore_modules:\s*/, parts: 2)
+    |> case do
+      [_before, ignore_modules] -> bracket_delta(ignore_modules)
+      _ -> 0
     end
   end
-
-  defp added_module_from_line(_line), do: nil
 
   defp patch_line_content("+" <> rest), do: rest
   defp patch_line_content("-" <> rest), do: rest
