@@ -117,6 +117,22 @@ defmodule SymphonyElixir.Linear.Adapter do
     end
   end
 
+  @spec recover_stale_issue_claim(term()) :: :ok | {:error, term()}
+  def recover_stale_issue_claim(%{id: issue_id}) when is_binary(issue_id) do
+    case fetch_claim_comments(issue_id) do
+      {:ok, claims} ->
+        case winning_claim(claims, DateTime.utc_now()) do
+          {:ok, claim} -> recover_claim_if_stale(issue_id, claim)
+          {:error, :claim_not_visible} -> :ok
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  def recover_stale_issue_claim(_issue), do: {:error, :invalid_issue_claim}
+
   @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}
   def create_comment(issue_id, body) when is_binary(issue_id) and is_binary(body) do
     with {:ok, response} <- client_module().graphql(@create_comment_mutation, %{issueId: issue_id, body: body}),
@@ -449,6 +465,84 @@ defmodule SymphonyElixir.Linear.Adapter do
 
   defp secure_compare(left, right) when is_binary(left) and is_binary(right) do
     byte_size(left) == byte_size(right) and :crypto.hash_equals(left, right)
+  end
+
+  defp recover_claim_if_stale(issue_id, %{owner: owner} = claim) do
+    case local_owner_process_status(owner) do
+      :dead ->
+        release_issue_claim(issue_id, claim)
+
+      :alive ->
+        :ok
+
+      :external ->
+        :ok
+    end
+  end
+
+  defp local_owner_process_status(owner) when is_binary(owner) do
+    with {:ok, owner_host, owner_pid} <- parse_claim_owner(owner),
+         true <- same_hostname?(owner_host) do
+      if local_os_pid_alive?(owner_pid), do: :alive, else: :dead
+    else
+      _ -> :external
+    end
+  end
+
+  defp parse_claim_owner(owner) when is_binary(owner) do
+    case String.split(owner, ":", parts: 3) do
+      [owner_host, pid, _rest] when owner_host != "" ->
+        case Integer.parse(pid) do
+          {parsed_pid, ""} when parsed_pid > 0 -> {:ok, owner_host, pid}
+          _ -> :error
+        end
+
+      _ ->
+        :error
+    end
+  end
+
+  defp same_hostname?(owner_host) when is_binary(owner_host) do
+    String.downcase(owner_host) == String.downcase(hostname())
+  end
+
+  defp local_os_pid_alive?(pid) when is_binary(pid) do
+    process_alive_fun = Application.get_env(:symphony_elixir, :local_os_pid_alive?, &default_local_os_pid_alive?/1)
+    process_alive_fun.(pid)
+  end
+
+  defp default_local_os_pid_alive?(pid) when is_binary(pid) do
+    pid
+    |> tasklist_output()
+    |> tasklist_pid_present?(pid)
+  end
+
+  defp tasklist_output(pid) do
+    lookup_fun = Application.get_env(:symphony_elixir, :tasklist_lookup, &System.find_executable/1)
+    cmd_fun = Application.get_env(:symphony_elixir, :tasklist_cmd, &System.cmd/3)
+
+    case lookup_fun.("tasklist") do
+      nil ->
+        ""
+
+      tasklist ->
+        case cmd_fun.(tasklist, ["/FI", "PID eq #{pid}", "/FO", "CSV", "/NH"], stderr_to_stdout: true) do
+          {output, 0} -> output
+          _ -> ""
+        end
+    end
+  end
+
+  defp tasklist_pid_present?(output, pid) when is_binary(output) do
+    output
+    |> String.split("\n")
+    |> Enum.any?(&csv_pid_row?(&1, pid))
+  end
+
+  defp csv_pid_row?(row, pid) do
+    row
+    |> String.trim()
+    |> String.contains?(~s(","#{pid}","))
   end
 
   @doc false

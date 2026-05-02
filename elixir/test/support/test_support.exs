@@ -65,6 +65,12 @@ defmodule SymphonyElixir.TestSupport do
           Application.delete_env(:symphony_elixir, :server_port_override)
           Application.delete_env(:symphony_elixir, :memory_tracker_issues)
           Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
+          Application.delete_env(:symphony_elixir, :local_os_pid_alive?)
+          Application.delete_env(:symphony_elixir, :linear_client_module)
+          Application.delete_env(:symphony_elixir, :task_supervisor_start_child)
+          Application.delete_env(:symphony_elixir, :orchestrator_status_fake_linear)
+          Application.delete_env(:symphony_elixir, :tasklist_lookup)
+          Application.delete_env(:symphony_elixir, :tasklist_cmd)
           File.rm_rf(workflow_root)
         end)
 
@@ -336,6 +342,7 @@ defmodule SymphonyElixir.TestSupport do
           tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
           poll_interval_ms: 30_000,
           workspace_root: Path.join(System.tmp_dir!(), "symphony_workspaces"),
+          workspace_startup_cleanup_ttl_ms: 7 * 24 * 60 * 60 * 1_000,
           worker_ssh_hosts: [],
           worker_max_concurrent_agents_per_host: nil,
           max_concurrent_agents: 10,
@@ -382,6 +389,7 @@ defmodule SymphonyElixir.TestSupport do
     tracker_terminal_states = Keyword.get(config, :tracker_terminal_states)
     poll_interval_ms = Keyword.get(config, :poll_interval_ms)
     workspace_root = Keyword.get(config, :workspace_root)
+    workspace_startup_cleanup_ttl_ms = Keyword.get(config, :workspace_startup_cleanup_ttl_ms)
     worker_ssh_hosts = Keyword.get(config, :worker_ssh_hosts)
     worker_max_concurrent_agents_per_host = Keyword.get(config, :worker_max_concurrent_agents_per_host)
     max_concurrent_agents = Keyword.get(config, :max_concurrent_agents)
@@ -431,6 +439,7 @@ defmodule SymphonyElixir.TestSupport do
         "  interval_ms: #{yaml_value(poll_interval_ms)}",
         "workspace:",
         "  root: #{yaml_value(workspace_root)}",
+        "  startup_cleanup_ttl_ms: #{yaml_value(workspace_startup_cleanup_ttl_ms)}",
         worker_yaml(worker_ssh_hosts, worker_max_concurrent_agents_per_host),
         "agent:",
         "  max_concurrent_agents: #{yaml_value(max_concurrent_agents)}",

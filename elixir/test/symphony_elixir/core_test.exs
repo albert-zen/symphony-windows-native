@@ -389,6 +389,210 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "startup terminal workspace cleanup runs after init and honors retention ttl" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-startup-cleanup-#{System.unique_integer([:positive])}"
+      )
+
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+
+    stale_workspace = Path.join(test_root, "MT-OLD")
+    recent_workspace = Path.join(test_root, "MT-RECENT")
+    active_workspace = Path.join(test_root, "MT-ACTIVE")
+    now = DateTime.utc_now()
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: test_root,
+        workspace_startup_cleanup_ttl_ms: 60_000,
+        tracker_active_states: ["Todo", "In Progress", "In Review", "Blocked"],
+        tracker_terminal_states: ["Done", "Canceled"],
+        poll_interval_ms: 30_000
+      )
+
+      File.mkdir_p!(stale_workspace)
+      File.mkdir_p!(recent_workspace)
+      File.mkdir_p!(active_workspace)
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [
+        %Issue{
+          id: "issue-old",
+          identifier: "MT-OLD",
+          state: "Done",
+          updated_at: DateTime.add(now, -120_000, :millisecond)
+        },
+        %Issue{
+          id: "issue-recent",
+          identifier: "MT-RECENT",
+          state: "Done",
+          updated_at: DateTime.add(now, -1_000, :millisecond)
+        },
+        %Issue{
+          id: "issue-active",
+          identifier: "MT-ACTIVE",
+          state: "In Review",
+          updated_at: DateTime.add(now, -120_000, :millisecond)
+        }
+      ])
+
+      orchestrator_name = Module.concat(__MODULE__, :StartupCleanupOrchestrator)
+      assert {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        restore_app_env(:memory_tracker_issues, previous_memory_issues)
+
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      assert is_pid(pid)
+      assert_receive_cleanup_snapshot(orchestrator_name)
+
+      refute File.exists?(stale_workspace)
+      assert File.exists?(recent_workspace)
+      assert File.exists?(active_workspace)
+
+      snapshot = Orchestrator.snapshot(orchestrator_name, 1_000)
+      assert snapshot.workspace_cleanup.status == :completed
+      assert snapshot.workspace_cleanup.cleaned == 1
+      assert snapshot.workspace_cleanup.preserved == 2
+      assert snapshot.workspace_cleanup.ttl_ms == 60_000
+    after
+      File.rm_rf(test_root)
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+    end
+  end
+
+  test "startup terminal workspace cleanup exposes running status without blocking snapshots" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-startup-cleanup-running-#{System.unique_integer([:positive])}"
+      )
+
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    previous_remove = Application.get_env(:symphony_elixir, :workspace_remove_issue_workspaces)
+    blocker = Path.join(test_root, "block-cleanup")
+    workspace = Path.join(test_root, "MT-SLOW")
+    now = DateTime.utc_now()
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: test_root,
+        workspace_startup_cleanup_ttl_ms: 0,
+        tracker_terminal_states: ["Done"],
+        poll_interval_ms: 30_000
+      )
+
+      File.mkdir_p!(workspace)
+      File.write!(blocker, "block")
+
+      Application.put_env(:symphony_elixir, :workspace_remove_issue_workspaces, fn identifier ->
+        wait_until_missing(blocker)
+        Workspace.remove_issue_workspaces_with_result(identifier)
+      end)
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [
+        %Issue{
+          id: "issue-slow",
+          identifier: "MT-SLOW",
+          state: "Done",
+          updated_at: DateTime.add(now, -120_000, :millisecond)
+        }
+      ])
+
+      orchestrator_name = Module.concat(__MODULE__, :StartupCleanupRunningOrchestrator)
+      assert {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        restore_app_env(:memory_tracker_issues, previous_memory_issues)
+        restore_app_env(:workspace_remove_issue_workspaces, previous_remove)
+
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      snapshot = assert_receive_running_cleanup_snapshot(orchestrator_name)
+      assert snapshot.workspace_cleanup.status == :running
+
+      File.rm!(blocker)
+      snapshot = assert_receive_cleanup_snapshot(orchestrator_name)
+      assert snapshot.workspace_cleanup.status == :completed
+      assert snapshot.workspace_cleanup.cleaned == 1
+      refute File.exists?(workspace)
+    after
+      File.rm_rf(test_root)
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      restore_app_env(:workspace_remove_issue_workspaces, previous_remove)
+    end
+  end
+
+  test "startup terminal workspace cleanup reports failed removals without counting them cleaned" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-startup-cleanup-failure-#{System.unique_integer([:positive])}"
+      )
+
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    previous_remove = Application.get_env(:symphony_elixir, :workspace_remove_issue_workspaces)
+    workspace = Path.join(test_root, "MT-STUCK")
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: test_root,
+        workspace_startup_cleanup_ttl_ms: 0,
+        tracker_terminal_states: ["Done"],
+        poll_interval_ms: 30_000
+      )
+
+      File.mkdir_p!(workspace)
+      File.write!(Path.join(workspace, "marker.txt"), "stuck")
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [
+        %Issue{
+          id: "issue-stuck",
+          identifier: "MT-STUCK",
+          state: "Done",
+          updated_at: DateTime.add(DateTime.utc_now(), -120_000, :millisecond)
+        }
+      ])
+
+      Application.put_env(:symphony_elixir, :workspace_remove_issue_workspaces, fn _identifier ->
+        {:error, :remove_failed}
+      end)
+
+      orchestrator_name = Module.concat(__MODULE__, :StartupCleanupFailureOrchestrator)
+      assert {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        restore_app_env(:memory_tracker_issues, previous_memory_issues)
+        restore_app_env(:workspace_remove_issue_workspaces, previous_remove)
+
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      snapshot = assert_receive_cleanup_snapshot(orchestrator_name)
+      assert snapshot.workspace_cleanup.status == :completed
+      assert snapshot.workspace_cleanup.cleaned == 0
+      assert snapshot.workspace_cleanup.skipped == 1
+      assert snapshot.workspace_cleanup.error =~ "remove_failed"
+    after
+      File.rm_rf(test_root)
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      restore_app_env(:workspace_remove_issue_workspaces, previous_remove)
+    end
+  end
+
   test "missing running issues stop active agents without cleaning the workspace" do
     test_root =
       Path.join(
@@ -1036,6 +1240,53 @@ defmodule SymphonyElixir.CoreTest do
 
   defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
   defp restore_app_env(key, value), do: Application.put_env(:symphony_elixir, key, value)
+
+  defp wait_until_missing(path) do
+    if File.exists?(path) do
+      Process.sleep(10)
+      wait_until_missing(path)
+    end
+  end
+
+  defp assert_receive_cleanup_snapshot(orchestrator_name) do
+    deadline = System.monotonic_time(:millisecond) + 1_000
+    assert_receive_cleanup_snapshot(orchestrator_name, deadline)
+  end
+
+  defp assert_receive_running_cleanup_snapshot(orchestrator_name) do
+    deadline = System.monotonic_time(:millisecond) + 1_000
+    assert_receive_running_cleanup_snapshot(orchestrator_name, deadline)
+  end
+
+  defp assert_receive_cleanup_snapshot(orchestrator_name, deadline_ms) do
+    case Orchestrator.snapshot(orchestrator_name, 1_000) do
+      %{workspace_cleanup: %{status: :completed}} = snapshot ->
+        snapshot
+
+      other ->
+        if System.monotonic_time(:millisecond) < deadline_ms do
+          Process.sleep(10)
+          assert_receive_cleanup_snapshot(orchestrator_name, deadline_ms)
+        else
+          flunk("expected startup workspace cleanup to complete, got: #{inspect(other)}")
+        end
+    end
+  end
+
+  defp assert_receive_running_cleanup_snapshot(orchestrator_name, deadline_ms) do
+    case Orchestrator.snapshot(orchestrator_name, 1_000) do
+      %{workspace_cleanup: %{status: :running}} = snapshot ->
+        snapshot
+
+      other ->
+        if System.monotonic_time(:millisecond) < deadline_ms do
+          Process.sleep(10)
+          assert_receive_running_cleanup_snapshot(orchestrator_name, deadline_ms)
+        else
+          flunk("expected startup workspace cleanup to be running, got: #{inspect(other)}")
+        end
+    end
+  end
 
   test "fetch issues by states with empty state set is a no-op" do
     assert {:ok, []} = Client.fetch_issues_by_states([])

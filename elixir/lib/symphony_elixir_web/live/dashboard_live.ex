@@ -293,6 +293,38 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <section class="section-card">
           <div class="section-header">
             <div>
+              <h2 class="section-title">Workspace cleanup</h2>
+              <p class="section-copy"><%= workspace_cleanup_summary(@payload.workspace_cleanup) %></p>
+            </div>
+          </div>
+
+          <div class="metric-grid">
+            <article class="metric-card">
+              <p class="metric-label">Status</p>
+              <p class="metric-value"><%= workspace_cleanup_value(@payload.workspace_cleanup, :status) %></p>
+              <p class="metric-detail">Startup cleanup runs after the app is ready.</p>
+            </article>
+            <article class="metric-card">
+              <p class="metric-label">Cleaned</p>
+              <p class="metric-value numeric"><%= format_int(workspace_cleanup_value(@payload.workspace_cleanup, :cleaned)) %></p>
+              <p class="metric-detail">Terminal workspaces past retention.</p>
+            </article>
+            <article class="metric-card">
+              <p class="metric-label">Preserved</p>
+              <p class="metric-value numeric"><%= format_int(workspace_cleanup_value(@payload.workspace_cleanup, :preserved)) %></p>
+              <p class="metric-detail">Active, protected, or recent entries.</p>
+            </article>
+            <article class="metric-card">
+              <p class="metric-label">TTL</p>
+              <p class="metric-value numeric"><%= workspace_cleanup_ttl(@payload.workspace_cleanup) %></p>
+              <p class="metric-detail">Configured terminal workspace retention.</p>
+            </article>
+          </div>
+        </section>
+
+        <section class="section-card">
+          <div class="section-header">
+            <div>
               <h2 class="section-title">Rate limits</h2>
               <p class="section-copy"><%= rate_limit_metadata(@payload.rate_limits) %></p>
             </div>
@@ -611,6 +643,35 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp format_int(_value), do: "n/a"
+
+  defp workspace_cleanup_summary(%{} = cleanup) do
+    completed_at = field_value(cleanup, [:completed_at, "completed_at"])
+    error = field_value(cleanup, [:error, "error"])
+
+    cond do
+      is_binary(error) and error != "" -> "Last cleanup failed: #{error}"
+      is_binary(completed_at) -> "Last cleanup completed at #{completed_at}."
+      true -> "Cleanup has started and is reporting progress."
+    end
+  end
+
+  defp workspace_cleanup_summary(_cleanup), do: "Cleanup has not reported status yet."
+
+  defp workspace_cleanup_value(%{} = cleanup, key) do
+    field_value(cleanup, [key, Atom.to_string(key)])
+  end
+
+  defp workspace_cleanup_value(_cleanup, :status), do: "pending"
+  defp workspace_cleanup_value(_cleanup, _key), do: nil
+
+  defp workspace_cleanup_ttl(%{} = cleanup), do: cleanup |> workspace_cleanup_value(:ttl_ms) |> duration_label_from_ms()
+  defp workspace_cleanup_ttl(_cleanup), do: "n/a"
+
+  defp duration_label_from_ms(ms) when is_integer(ms) and ms >= 86_400_000, do: "#{div(ms, 86_400_000)}d"
+  defp duration_label_from_ms(ms) when is_integer(ms) and ms >= 3_600_000, do: "#{div(ms, 3_600_000)}h"
+  defp duration_label_from_ms(ms) when is_integer(ms) and ms >= 60_000, do: "#{div(ms, 60_000)}m"
+  defp duration_label_from_ms(ms) when is_integer(ms), do: "#{ms}ms"
+  defp duration_label_from_ms(_ms), do: "n/a"
 
   defp rate_limit_snapshot?(%{} = snapshot), do: map_size(snapshot) > 0
   defp rate_limit_snapshot?(_snapshot), do: false
