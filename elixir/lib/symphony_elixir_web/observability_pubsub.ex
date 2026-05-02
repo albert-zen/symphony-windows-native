@@ -9,7 +9,10 @@ defmodule SymphonyElixirWeb.ObservabilityPubSub do
 
   @spec subscribe() :: :ok | {:error, term()}
   def subscribe do
-    Phoenix.PubSub.subscribe(@pubsub, @topic)
+    case Process.whereis(@pubsub) do
+      pid when is_pid(pid) -> Phoenix.PubSub.subscribe(@pubsub, @topic)
+      _ -> :ok
+    end
   end
 
   @spec broadcast_update() :: :ok

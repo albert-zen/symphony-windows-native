@@ -488,7 +488,7 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
     with [_ | _] <- required_contexts,
          {:ok, workpad} <- workpad_body(issue),
          true <- workpad_references_pr?(workpad, owner, repo, number),
-         {:ok, ^head_sha} <- workpad_head_sha(workpad) do
+         true <- workpad_references_head_sha?(workpad, head_sha) do
       successful_checks = MapSet.new(workpad_successful_checks(workpad))
 
       required_contexts
@@ -503,7 +503,7 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
     with true <- github_auth_unavailable?(reason),
          {:ok, workpad} <- workpad_body(issue),
          true <- workpad_references_pr?(workpad, owner, repo, number),
-         {:ok, ^head_sha} <- workpad_head_sha(workpad),
+         true <- workpad_references_head_sha?(workpad, head_sha),
          [_ | _] = checks <- workpad_successful_checks(workpad) do
       {:ok, Enum.map(checks, &%{context: &1, app_id: nil})}
     else
@@ -532,15 +532,29 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
     String.contains?(workpad, "https://github.com/#{owner}/#{repo}/pull/#{number}")
   end
 
-  defp workpad_head_sha(workpad) do
-    case Regex.run(~r/head\s+`?([a-f0-9]{6,40})`?/i, workpad) do
-      [_, sha] -> {:ok, sha}
-      _ -> :error
-    end
+  defp workpad_references_head_sha?(workpad, head_sha) do
+    normalized_head_sha = String.downcase(head_sha)
+
+    workpad
+    |> workpad_head_sha_candidates()
+    |> Enum.any?(fn candidate ->
+      String.starts_with?(normalized_head_sha, candidate)
+    end)
+  end
+
+  defp workpad_head_sha_candidates(workpad) do
+    [
+      ~r/\b(?:current\s+head|final\s+head|head)\s+`?([a-f0-9]{6,40})`?/i,
+      ~r/\bgithub\s+checks\s+on\s+`?([a-f0-9]{6,40})`?/i,
+      ~r/\bverified\s+checks\s+for\s+`?([a-f0-9]{6,40})`?/i
+    ]
+    |> Enum.flat_map(fn regex -> Regex.scan(regex, workpad) end)
+    |> Enum.map(fn [_, sha] -> String.downcase(sha) end)
+    |> Enum.uniq()
   end
 
   defp workpad_successful_checks(workpad) do
-    ~r/^\s*-\s*`?([^`:\r\n]+)`?\s+(?:run\s+\d+\s*)?:\s*success\s*\.?\s*$/im
+    ~r/^\s*-\s*`?([^`:\r\n]+?)`?\s*(?:run\s+\d+\s*)?(?::|\s)\s*success\s*\.?\s*$/im
     |> Regex.scan(workpad)
     |> Enum.map(fn [_, check] -> String.trim(check) end)
     |> Enum.reject(&(&1 == ""))

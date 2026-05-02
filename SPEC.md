@@ -363,8 +363,14 @@ Fields:
   - Default: empty list, which means no label filter.
   - When set, a candidate issue MUST have at least one matching label after case-insensitive
     normalization.
+- `dispatch_states` (list of strings)
+  - Default: `Todo`
+  - States Symphony polls for new work.
+  - SHOULD usually exclude long-running states such as `In Progress` so a released or blocked issue
+    is not immediately reclaimed.
 - `active_states` (list of strings)
   - Default: `Todo`, `In Progress`
+  - States where an already-running worker remains valid during reconciliation.
 - `terminal_states` (list of strings)
   - Default: `Closed`, `Cancelled`, `Canceled`, `Duplicate`, `Done`
 
@@ -580,6 +586,7 @@ not require recognizing or validating extension fields unless that extension is 
 - `tracker.api_key`: string or `$VAR`, canonical env `LINEAR_API_KEY` when `tracker.kind=linear`
 - `tracker.project_slug`: string, REQUIRED when `tracker.kind=linear`
 - `tracker.labels`: list of strings, default `[]`
+- `tracker.dispatch_states`: list of strings, default `["Todo"]`
 - `tracker.active_states`: list of strings, default `["Todo", "In Progress"]`
 - `tracker.terminal_states`: list of strings, default `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]`
 - `polling.interval_ms`: integer, default `30000`
@@ -725,7 +732,7 @@ first.
 An issue is dispatch-eligible only if all are true:
 
 - It has `id`, `identifier`, `title`, and `state`.
-- Its state is in `active_states` and not in `terminal_states`.
+- Its state is in `dispatch_states` and not in `terminal_states`.
 - It is not already in `running`.
 - It is not already in `claimed`.
 - Global concurrency slots are available.
