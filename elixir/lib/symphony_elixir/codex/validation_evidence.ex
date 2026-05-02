@@ -7,6 +7,7 @@ defmodule SymphonyElixir.Codex.ValidationEvidence do
   @unchecked_checkbox_regex ~r/^\s*[-*]\s+\[ \]\s+(.+)$/m
   @heavy_check_regex ~r/(^|[^a-z0-9_-])(make(?:\.cmd)?\s+(-C\s+elixir\s+)?all|make-all)([^a-z0-9_-]|$)/i
   @ci_only_regex ~r/(?:(?:^\s*(?:ci|github actions?)\b\s*(?::|-|[a-z]+\b))|\bci[-\s]+only\b|\b(?:in|by|via|on|from)\s+(?:ci|github actions?)\b)/i
+  @unsuccessful_result_regex ~r/\b(?:failed|failing|errored|timed\s+out|timeout|timedout|cancelled|canceled)\b/i
   @skip_words ~w(skip skipped not cannot can't unable unavailable pending later)
   @restated_skip_words ~w(all cannot can't check gate heavy local locally make not run skipped to unable unavailable validation)
   @inline_code_regex ~r/`([^`]+)`/
@@ -62,6 +63,7 @@ defmodule SymphonyElixir.Codex.ValidationEvidence do
     has_validation_command?(item) and
       not only_delegates_to_ci?(normalized) and
       not ci_only_evidence?(item) and
+      not unsuccessful_result?(item) and
       not skip_item?(normalized)
   end
 
@@ -93,6 +95,8 @@ defmodule SymphonyElixir.Codex.ValidationEvidence do
   end
 
   defp ci_only_evidence?(item), do: Regex.match?(@ci_only_regex, item)
+
+  defp unsuccessful_result?(item), do: Regex.match?(@unsuccessful_result_regex, item)
 
   defp heavy_check?(text), do: Regex.match?(@heavy_check_regex, text)
 

@@ -200,6 +200,35 @@ defmodule SymphonyElixir.Codex.ValidationEvidenceTest do
            ]
   end
 
+  test "rejects checked validation commands reported as unsuccessful" do
+    for result <- ["failed locally", "errored locally", "timed out locally", "canceled locally", "cancelled locally"] do
+      body = """
+      #### Test Plan
+
+      - [ ] `make -C elixir all` not run locally because this test checks unsuccessful evidence rejection.
+      - [x] `mix test test/symphony_elixir/validation_evidence_test.exs` #{result}.
+      """
+
+      assert ValidationEvidence.lint_pr_body(body) == [
+               "Test Plan must include at least one checked local validation command or targeted check.",
+               "Test Plan must name narrower local validation when the heavy check is skipped."
+             ]
+    end
+  end
+
+  test "rejects checked heavy validation reported as unsuccessful" do
+    body = """
+    #### Test Plan
+
+    - [x] `make -C elixir all` failed locally.
+    - [x] `mix test test/symphony_elixir/validation_evidence_test.exs` passed locally.
+    """
+
+    assert ValidationEvidence.lint_pr_body(body) == [
+             "Test Plan must explain why the heavy local validation check was not run."
+           ]
+  end
+
   test "accepts unbackticked targeted validation commands" do
     body = """
     #### Test Plan

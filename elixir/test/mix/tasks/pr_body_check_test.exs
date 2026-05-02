@@ -515,6 +515,46 @@ defmodule Mix.Tasks.PrBody.CheckTest do
     end)
   end
 
+  test "fails when checked validation command reports a local failure" do
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      failed_evidence = """
+      #### Context
+
+      Context text.
+
+      #### TL;DR
+
+      Short summary.
+
+      #### Summary
+
+      - First change.
+
+      #### Alternatives
+
+      - Alternative considered.
+
+      #### Test Plan
+
+      - [ ] `make -C elixir all` not run locally because the focused check failed first.
+      - [x] `mix test test/mix/tasks/pr_body_check_test.exs` failed locally.
+      """
+
+      File.write!("body.md", failed_evidence)
+
+      error_output =
+        capture_io(:stderr, fn ->
+          assert_raise Mix.Error, ~r/PR body format invalid/, fn ->
+            Check.run(["lint", "--file", "body.md"])
+          end
+        end)
+
+      assert error_output =~ "Test Plan must include at least one checked local validation command or targeted check"
+    end)
+  end
+
   test "passes when skipped heavy validation is justified with narrower local evidence" do
     in_temp_repo(fn ->
       write_template!(@template)
