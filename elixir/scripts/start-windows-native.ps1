@@ -167,9 +167,10 @@ $metadata = [ordered]@{
 $metadata | ConvertTo-Json | Set-Content -LiteralPath $PidFile -Encoding UTF8
 
 try {
-  & $Mise exec -- escript .\bin\symphony $WorkflowPath `
+    & $Mise exec -- escript .\bin\symphony $WorkflowPath `
     --port $Port `
     --logs-root $LogsRoot `
+    --pid-file $PidFile `
     --i-understand-that-this-will-be-running-without-the-usual-guardrails
 } finally {
   if (Test-Path -LiteralPath $PidFile -PathType Leaf) {

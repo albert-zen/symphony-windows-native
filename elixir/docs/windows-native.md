@@ -326,6 +326,39 @@ While another active lease is preserved, the issue appears in the dashboard
 backoff queue with an `external_claim` reason instead of being shown as a local
 running worker.
 
+## Apply merged runtime updates
+
+The dashboard exposes a guarded runtime deploy section and matching JSON API for
+applying merged changes from `origin/main`:
+
+```text
+POST http://127.0.0.1:4011/api/v1/runtime/reload
+```
+
+This is a managed reload, not an in-process BEAM hot code swap. It always
+requires the operator token configured by `observability.steer_token` or
+`SYMPHONY_STEER_TOKEN`, refuses to queue while workers or another reload are
+active, refuses dirty runtime checkouts, and starts
+`scripts/reload-windows-native.ps1` in a detached PowerShell process. The helper
+fetches `origin/main`, checks out the target commit, rebuilds the escript,
+checks `/api/v1/state` again for active workers immediately before stopping,
+stops the old Windows-native launcher, starts it again with the same workflow,
+port, logs root, and PID file, then verifies that `/api/v1/state` reports the
+new commit. If the updated runtime fails after the checkout begins, the helper
+attempts to restore and restart the previous commit recorded in the request.
+
+Reload status files are written under `<logs-root>/reload/` and are shown in the
+dashboard runtime deploy panel. While a status is `queued`, `running`, or
+`rolling_back`, the orchestrator pauses new dispatch so a reload cannot race new
+worker starts.
+
+### Format checks on Windows
+
+`make all` uses `mix format.check_normalized` for the format gate. The task still
+fails when the Elixir formatter changes code layout, but it normalizes CRLF and
+LF before comparing formatter output so an older Windows checkout does not fail
+only because working-tree line endings differ from the repository attributes.
+
 ## Install a Windows long-running task
 
 The recommended Windows-native long-running setup is Task Scheduler. It runs under the same

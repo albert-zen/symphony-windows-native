@@ -3,7 +3,7 @@ defmodule SymphonyElixirWeb.Presenter do
   Shared projections for the observability API and dashboard.
   """
 
-  alias SymphonyElixir.{Config, Orchestrator, Redactor, StatusDashboard}
+  alias SymphonyElixir.{Config, Deployment.Reload, Orchestrator, Redactor, RuntimeInfo, StatusDashboard}
 
   @conversation_display_limit 120
   @conversation_event_scan_limit 400
@@ -34,7 +34,8 @@ defmodule SymphonyElixirWeb.Presenter do
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
           codex_totals: snapshot.codex_totals,
           rate_limits: snapshot.rate_limits,
-          workspace_cleanup: Map.get(snapshot, :workspace_cleanup)
+          workspace_cleanup: Map.get(snapshot, :workspace_cleanup),
+          runtime: runtime_payload()
         }
 
       :timeout ->
@@ -82,6 +83,34 @@ defmodule SymphonyElixirWeb.Presenter do
       payload ->
         {:ok, Map.update!(payload, :requested_at, &DateTime.to_iso8601/1)}
     end
+  end
+
+  @spec runtime_payload() :: map()
+  def runtime_payload do
+    info = RuntimeInfo.snapshot()
+
+    %{
+      cwd: info.cwd,
+      repo_root: info.repo_root,
+      commit: info.commit,
+      branch: info.branch,
+      dirty?: info.dirty?,
+      workflow_path: info.workflow_path,
+      logs_root: info.logs_root,
+      pid_file: info.pid_file,
+      port: info.port,
+      os_pid: info.os_pid,
+      started_at: info.started_at,
+      reload: Reload.latest_status(info.logs_root)
+    }
+  end
+
+  @spec request_reload_payload(GenServer.name(), timeout()) ::
+          {:ok, map()} | {:error, atom() | {atom(), term()}}
+  @spec request_reload_payload(GenServer.name(), timeout(), keyword()) ::
+          {:ok, map()} | {:error, atom() | {atom(), term()}}
+  def request_reload_payload(orchestrator, snapshot_timeout_ms, opts \\ []) do
+    Reload.request(orchestrator, snapshot_timeout_ms, opts)
   end
 
   @spec worker_conversation([map()]) :: [map()]

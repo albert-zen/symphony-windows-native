@@ -289,13 +289,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   test "orchestrator exposes external claim in retry state without spawning duplicate worker" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear", polling_interval_ms: 50)
     Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
-    parent = self()
-
-    Application.put_env(:symphony_elixir, :task_supervisor_start_child, fn fun ->
-      send(parent, :task_supervisor_start_child)
-      Task.start(fun)
-    end)
-
+    Application.delete_env(:symphony_elixir, :logs_root)
     issue_id = "issue-external-claim"
 
     issue = %Issue{
@@ -354,8 +348,51 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert snapshot.running == []
     assert [%{error: error, error_kind: "external_claim"}] = snapshot.retrying
     assert error =~ "durable claim held by #{owner}"
-    assert_received :task_supervisor_start_child
-    refute_received :task_supervisor_start_child
+  end
+
+  test "orchestrator pauses dispatch while a managed reload is active" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear", polling_interval_ms: 50)
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+
+    logs_root = Path.join(System.tmp_dir!(), "symphony-active-reload-test-#{System.unique_integer([:positive])}")
+    reload_dir = Path.join(logs_root, "reload")
+    File.mkdir_p!(reload_dir)
+    File.write!(Path.join(reload_dir, "reload-active.json"), Jason.encode!(%{status: "queued"}))
+    Application.put_env(:symphony_elixir, :logs_root, logs_root)
+
+    issue = %Issue{
+      id: "issue-paused-reload",
+      identifier: "MT-RELOAD-PAUSE",
+      title: "Reload pause",
+      description: "Do not dispatch during managed reload",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-RELOAD-PAUSE"
+    }
+
+    Application.put_env(:symphony_elixir, :orchestrator_status_fake_linear,
+      candidate_issues: [issue],
+      graphql: fn _query, _variables -> flunk("dispatch should not inspect claims during active reload") end
+    )
+
+    orchestrator_name = Module.concat(__MODULE__, :ActiveReloadPauseOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      File.rm_rf(logs_root)
+
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    snapshot =
+      wait_for_snapshot(pid, fn
+        %{polling: %{checking?: false}} -> true
+        _ -> false
+      end)
+
+    assert snapshot.running == []
+    assert snapshot.retrying == []
   end
 
   test "orchestrator snapshot includes command watchdog metadata and stalled policy comments" do

@@ -21,6 +21,12 @@ defmodule SymphonyElixir.Application do
 
   @impl true
   def start(_type, _args) do
+    Application.put_env(
+      :symphony_elixir,
+      :started_at,
+      DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+    )
+
     :ok = SymphonyElixir.LogFile.configure()
 
     children = [

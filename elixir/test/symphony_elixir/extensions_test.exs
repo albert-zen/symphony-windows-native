@@ -1088,8 +1088,15 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     conn = get(build_conn(), "/api/v1/state")
     state_payload = json_response(conn, 200)
+    runtime_payload = Map.fetch!(state_payload, "runtime")
 
-    assert state_payload == %{
+    assert %{
+             "commit" => _commit,
+             "workflow_path" => _workflow_path,
+             "reload" => _reload
+           } = runtime_payload
+
+    assert Map.delete(state_payload, "runtime") == %{
              "generated_at" => state_payload["generated_at"],
              "counts" => %{"running" => 1, "retrying" => 1},
              "running" => [
@@ -1234,8 +1241,104 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert %{"queued" => true, "coalesced" => false, "operations" => ["poll", "reconcile"]} =
              json_response(conn, 202)
 
+    assert %{"runtime" => %{"workflow_path" => _workflow_path}} =
+             json_response(get(build_conn(), "/api/v1/runtime"), 200)
+
     assert json_response(post(build_conn(), "/api/v1/MT-HTTP/steer", %{}), 404) ==
              %{"error" => %{"code" => "not_found", "message" => "Route not found"}}
+  end
+
+  test "phoenix observability api queues guarded managed runtime reloads" do
+    logs_root = Path.join(System.tmp_dir!(), "symphony-reload-test-#{System.unique_integer([:positive])}")
+
+    try do
+      repo_root = Path.join(logs_root, "repo")
+      reload_script = Path.join([repo_root, "elixir", "scripts", "reload-windows-native.ps1"])
+      File.mkdir_p!(Path.dirname(reload_script))
+      File.write!(reload_script, "# test script\n")
+
+      runtime_info = %{
+        cwd: Path.join(repo_root, "elixir"),
+        repo_root: repo_root,
+        commit: "abc123456789",
+        branch: nil,
+        dirty?: false,
+        workflow_path: Workflow.workflow_file_path(),
+        logs_root: logs_root,
+        pid_file: Path.join(logs_root, "symphony.pid.json"),
+        port: 4011,
+        os_pid: "999",
+        started_at: "2026-01-01T00:00:00Z"
+      }
+
+      parent = self()
+      Application.put_env(:symphony_elixir, :logs_root, logs_root)
+      Application.put_env(:symphony_elixir, :pid_file, Path.join(logs_root, "symphony.pid.json"))
+      Application.put_env(:symphony_elixir, :reload_runtime_info, runtime_info)
+      Application.put_env(:symphony_elixir, :reload_id_fun, fn -> "reload-test" end)
+      Application.put_env(:symphony_elixir, :reload_now_fun, fn -> ~U[2026-01-01 00:00:00Z] end)
+
+      Application.put_env(:symphony_elixir, :reload_start_fun, fn payload ->
+        send(parent, {:reload_started, payload})
+        :ok
+      end)
+
+      running_orchestrator = Module.concat(__MODULE__, :ReloadRunningOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(
+          name: running_orchestrator,
+          snapshot: static_snapshot()
+        )
+
+      start_test_endpoint(orchestrator: running_orchestrator, snapshot_timeout_ms: 50, steer_token: "letmein")
+
+      assert json_response(post(build_conn(), "/api/v1/runtime/reload", %{}), 403) == %{
+               "error" => %{
+                 "code" => "operator_token_required",
+                 "message" => "Operator token is required"
+               }
+             }
+
+      assert json_response(post(build_conn(), "/api/v1/runtime/reload", %{"operator_token" => "letmein"}), 409) == %{
+               "error" => %{
+                 "code" => "active_workers",
+                 "message" => "Refusing reload while 1 worker(s) are active"
+               }
+             }
+
+      refute_received {:reload_started, _payload}
+
+      stop_supervised(SymphonyElixirWeb.Endpoint)
+      idle_orchestrator = Module.concat(__MODULE__, :ReloadIdleOrchestrator)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(
+          name: idle_orchestrator,
+          snapshot: %{static_snapshot() | running: []}
+        )
+
+      start_test_endpoint(orchestrator: idle_orchestrator, snapshot_timeout_ms: 50, steer_token: "letmein")
+
+      assert %{"reload" => %{"request_id" => "reload-test", "status" => "queued"}} =
+               json_response(post(build_conn(), "/api/v1/runtime/reload", %{"operator_token" => "letmein"}), 202)
+
+      assert_receive {:reload_started, %{request_id: "reload-test", target_ref: "origin/main"}}
+
+      assert json_response(post(build_conn(), "/api/v1/runtime/reload", %{"operator_token" => "letmein"}), 409) == %{
+               "error" => %{
+                 "code" => "reload_in_progress",
+                 "message" => "A managed reload is already queued or running"
+               }
+             }
+
+      assert File.exists?(Path.join(logs_root, "reload/reload-test.json"))
+
+      assert %{"runtime" => %{"reload" => %{"request_id" => "reload-test", "status" => "queued"}}} =
+               json_response(get(build_conn(), "/api/v1/runtime"), 200)
+    after
+      File.rm_rf(logs_root)
+    end
   end
 
   test "phoenix observability api preserves 405, 404, and unavailable behavior" do
@@ -1246,6 +1349,9 @@ defmodule SymphonyElixir.ExtensionsTest do
              %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
 
     assert json_response(get(build_conn(), "/api/v1/refresh"), 405) ==
+             %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
+
+    assert json_response(get(build_conn(), "/api/v1/runtime/reload"), 405) ==
              %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
 
     assert json_response(post(build_conn(), "/", %{}), 405) ==

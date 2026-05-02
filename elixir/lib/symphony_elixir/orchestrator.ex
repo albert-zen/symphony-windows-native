@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, Redactor, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, Config, Deployment.Reload, Redactor, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Codex.CommandWatchdog
   alias SymphonyElixir.Linear.Issue
 
@@ -312,6 +312,7 @@ defmodule SymphonyElixir.Orchestrator do
     state = reconcile_running_issues(state)
 
     with :ok <- Config.validate!(),
+         :ok <- ensure_no_active_reload_dispatch_guard(),
          {:ok, issues} <- Tracker.fetch_candidate_issues(),
          true <- available_slots(state) > 0 do
       choose_issues(issues, state)
@@ -342,6 +343,10 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.error("Missing WORKFLOW.md at #{path}: #{inspect(reason)}")
         state
 
+      {:error, :reload_in_progress} ->
+        Logger.info("Skipping dispatch while managed runtime reload is queued or running")
+        state
+
       {:error, :workflow_front_matter_not_a_map} ->
         Logger.error("Failed to parse WORKFLOW.md: workflow front matter must decode to a map")
         state
@@ -357,6 +362,12 @@ defmodule SymphonyElixir.Orchestrator do
       false ->
         state
     end
+  end
+
+  defp ensure_no_active_reload_dispatch_guard do
+    logs_root = Application.get_env(:symphony_elixir, :logs_root)
+
+    if Reload.active?(logs_root), do: {:error, :reload_in_progress}, else: :ok
   end
 
   defp reconcile_running_issues(%State{} = state) do
