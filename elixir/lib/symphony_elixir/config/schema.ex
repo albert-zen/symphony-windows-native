@@ -61,7 +61,17 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:kind, :endpoint, :api_key, :project_slug, :assignee, :labels, :dispatch_states, :active_states, :terminal_states],
+        [
+          :kind,
+          :endpoint,
+          :api_key,
+          :project_slug,
+          :assignee,
+          :labels,
+          :dispatch_states,
+          :active_states,
+          :terminal_states
+        ],
         empty_values: []
       )
     end
