@@ -185,8 +185,9 @@ not fail preflight. It verifies:
 - `LINEAR_API_KEY` is available and Linear GraphQL is reachable.
 - `git`, `gh`, `node`, and the configured Codex app-server command resolve on `PATH`.
 - `gh auth status` succeeds for GitHub operations.
-- The local checkout's `main` branch does not hide a newer `origin/main` behind
-  a stale noncanonical upstream such as `windows/main`.
+- After refreshing `origin/main`, the local checkout's `main` branch does not
+  hide a newer canonical base behind a stale noncanonical upstream such as
+  `windows/main`.
 - `codex app-server` can start without non-JSON startup output on stdio.
 - The repository URL in `hooks.after_create` can be cloned by Git.
 - `workspace.root` is writable.

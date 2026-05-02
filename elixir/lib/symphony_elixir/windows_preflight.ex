@@ -238,6 +238,7 @@ defmodule SymphonyElixir.WindowsPreflight do
     local_shell_run = Map.get(deps, :local_shell_run, &LocalShell.run/2)
 
     with {:ok, repo_root} <- git_output(local_shell_run, "git rev-parse --show-toplevel", File.cwd!()),
+         {:ok, _fetch_output} <- git_output(local_shell_run, "git -C #{shell_quote(repo_root)} fetch origin main", repo_root),
          {:ok, main_sha} <- git_output(local_shell_run, "git -C #{shell_quote(repo_root)} rev-parse --verify main", repo_root),
          {:ok, origin_main_sha} <-
            git_output(local_shell_run, "git -C #{shell_quote(repo_root)} rev-parse --verify origin/main", repo_root),

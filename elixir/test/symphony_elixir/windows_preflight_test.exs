@@ -258,6 +258,7 @@ defmodule SymphonyElixir.WindowsPreflightTest do
 
   test "warns when local main tracks a noncanonical stale remote while origin main is newer" do
     workflow_path = workflow_with_preflight_config()
+    Process.put(:fetched_origin_main, false)
 
     deps =
       ready_deps(%{
@@ -267,10 +268,15 @@ defmodule SymphonyElixir.WindowsPreflightTest do
               command == "git rev-parse --show-toplevel" ->
                 {:ok, {"C:/repo/symphony-windows-native\n", 0}}
 
+              String.contains?(command, "fetch origin main") ->
+                Process.put(:fetched_origin_main, true)
+                {:ok, {"From https://github.com/albert-zen/symphony-windows-native\n", 0}}
+
               String.contains?(command, "rev-parse --verify main") ->
                 {:ok, {"local-main-sha\n", 0}}
 
               String.contains?(command, "rev-parse --verify origin/main") ->
+                assert Process.get(:fetched_origin_main)
                 {:ok, {"origin-main-sha\n", 0}}
 
               String.contains?(command, "rev-parse --abbrev-ref main@{upstream}") ->
@@ -356,6 +362,7 @@ defmodule SymphonyElixir.WindowsPreflightTest do
 
   defp git_main_tracking_command?(command) do
     command == "git rev-parse --show-toplevel" or
+      String.contains?(command, "fetch origin main") or
       String.contains?(command, "rev-parse --verify main") or
       String.contains?(command, "rev-parse --verify origin/main") or
       String.contains?(command, "rev-parse --abbrev-ref main@{upstream}") or
@@ -368,6 +375,9 @@ defmodule SymphonyElixir.WindowsPreflightTest do
 
   defp ready_git_main_tracking_response(command) do
     cond do
+      String.contains?(command, "fetch origin main") ->
+        {:ok, {"From https://github.com/albert-zen/symphony-windows-native\n", 0}}
+
       String.contains?(command, "rev-parse --verify main") ->
         {:ok, {"main-sha\n", 0}}
 
