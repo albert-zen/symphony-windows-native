@@ -19,6 +19,7 @@ polling:
   interval_ms: 5000
 workspace:
   root: ~/code/symphony-workspaces
+  startup_cleanup_ttl_ms: 604800000
 hooks:
   after_create: |
     git clone --depth 1 https://github.com/openai/symphony .
