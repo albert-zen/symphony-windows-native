@@ -107,7 +107,16 @@ Operating model:
     `- validate-pr-description run <run-id>: success.`
     `- windows-native-test run <run-id>: success.`
 11. Do not move unrelated Backlog issues to Todo.
-12. If you discover an automation/system defect, create a GitHub issue with the configured optimization label and add a Linear mirror in the configured Linear project if the Linear tool is available.
+12. If you discover an automation/system defect:
+    - Search existing open and recently closed GitHub issues plus Linear mirrors for the same root
+      cause before creating anything new.
+    - If a canonical issue exists, add a concise comment there with the new evidence, affected
+      issue/PR/log, and impact instead of creating a duplicate.
+    - If no canonical issue exists, create a GitHub issue with the configured optimization label,
+      including observed symptoms, suspected root cause, impact, and acceptance criteria, then add a
+      Linear mirror in the configured Linear project if the Linear tool is available.
+    - If you discover duplicates, link them back to the canonical issue and leave final duplicate
+      cleanup to the manager.
 13. Leave problem breadcrumbs without spamming:
     - Update the `## Codex Workpad` for recovered transient noise, retries, or routine validation fixes.
     - Add a separate concise Linear problem comment only for notable environment, validation, auth,
