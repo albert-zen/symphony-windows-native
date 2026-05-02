@@ -52,6 +52,17 @@ defmodule SymphonyElixirWeb.Layouts do
                     second: "2-digit"
                   });
                 }
+              },
+              AutoScroll: {
+                mounted: function () {
+                  this.scrollToBottom();
+                },
+                updated: function () {
+                  this.scrollToBottom();
+                },
+                scrollToBottom: function () {
+                  this.el.scrollTop = this.el.scrollHeight;
+                }
               }
             };
 

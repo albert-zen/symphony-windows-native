@@ -329,7 +329,8 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp conversation_event_kind(event, method, payload, message) do
     cond do
-      agent_message_delta?(method) -> :assistant_delta
+      agent_message_completed?(method, payload) -> :assistant_completed
+      agent_message_delta?(method) -> :ignore
       command_begin?(method, payload) -> :command_begin
       command_output?(method) -> :command_output
       command_end?(method, payload) -> :command_end
@@ -339,175 +340,57 @@ defmodule SymphonyElixirWeb.Presenter do
     end
   end
 
-  defp append_classified_conversation_event(:assistant_delta, event, method, payload, _raw, _message, items) do
-    append_assistant_delta(event, method, payload, items)
+  defp append_classified_conversation_event(:assistant_completed, event, method, payload, _raw, _message, items) do
+    append_completed_assistant_message(event, method, payload, items)
   end
 
-  defp append_classified_conversation_event(:command_begin, event, method, payload, _raw, _message, items) do
-    append_command_begin(event, method, payload, items)
+  defp append_classified_conversation_event(:ignore, _event, _method, _payload, _raw, _message, items) do
+    items
   end
 
-  defp append_classified_conversation_event(:command_output, event, _method, payload, _raw, _message, items) do
-    append_command_output(event, payload, items)
+  defp append_classified_conversation_event(:command_begin, _event, _method, _payload, _raw, _message, items) do
+    items
   end
 
-  defp append_classified_conversation_event(:command_end, event, _method, payload, _raw, _message, items) do
-    append_command_end(event, payload, items)
+  defp append_classified_conversation_event(:command_output, _event, _method, _payload, _raw, _message, items) do
+    items
   end
 
-  defp append_classified_conversation_event(:manager_steer, event, _method, _payload, raw, message, items) do
-    append_new_item(manager_message_item(event, message, raw), items)
+  defp append_classified_conversation_event(:command_end, _event, _method, _payload, _raw, _message, items) do
+    items
   end
 
-  defp append_classified_conversation_event(:warning, event, _method, _payload, raw, message, items) do
-    append_system_item(event, "warning", summarized_event_message(event, message), raw, items)
+  defp append_classified_conversation_event(:manager_steer, _event, _method, _payload, _raw, _message, items) do
+    items
   end
 
-  defp append_classified_conversation_event(:system, event, _method, _payload, raw, message, items) do
-    append_system_item(event, "system", summarized_event_message(event, message), raw, items)
+  defp append_classified_conversation_event(:warning, _event, _method, _payload, _raw, _message, items) do
+    items
   end
 
-  defp append_assistant_delta(event, method, payload, []) do
-    delta = extract_text_delta(payload)
-    {excerpt, truncated?} = truncate_text(delta, @text_excerpt_chars)
-
-    append_new_item(
-      %{
-        type: "assistant",
-        key: item_key(event, payload),
-        at: iso8601(event[:timestamp]),
-        title: "Assistant",
-        excerpt: excerpt <> if(truncated?, do: "\n[truncated]", else: ""),
-        truncated?: truncated?,
-        raw: [raw_item(method, event, payload)]
-      },
-      []
-    )
+  defp append_classified_conversation_event(:system, _event, _method, _payload, _raw, _message, items) do
+    items
   end
 
-  defp append_assistant_delta(event, method, payload, [last | rest] = items) do
-    key = item_key(event, payload)
-    delta = extract_text_delta(payload)
+  defp append_completed_assistant_message(event, _method, payload, items) do
+    text = payload |> extract_completed_agent_text() |> Redactor.redact() |> absorb_redacted_suffix()
+    {excerpt, truncated?} = truncate_text(text, @text_excerpt_chars)
 
-    if last[:type] == "assistant" and last[:key] == key do
-      updated =
-        last
-        |> append_excerpt_delta(delta)
-        |> prepend_raw(raw_item(method, event, payload))
-
-      [updated | rest]
+    if String.trim(excerpt) == "" do
+      items
     else
-      {excerpt, truncated?} = truncate_text(delta, @text_excerpt_chars)
-
       append_new_item(
         %{
           type: "assistant",
-          key: key,
+          key: item_key(event, payload),
           at: iso8601(event[:timestamp]),
-          title: "Assistant",
+          title: "Agent",
           excerpt: excerpt <> if(truncated?, do: "\n[truncated]", else: ""),
-          truncated?: truncated?,
-          raw: [raw_item(method, event, payload)]
+          truncated?: truncated?
         },
         items
       )
     end
-  end
-
-  defp append_assistant_delta(event, method, payload, items) do
-    append_assistant_delta(event, method, payload, List.wrap(items))
-  end
-
-  defp append_command_begin(event, method, payload, items) do
-    command = extract_command(payload) || summarize_message(payload) || "command"
-    key = item_key(event, payload)
-
-    append_new_item(
-      %{
-        type: "tool",
-        key: key,
-        at: iso8601(event[:timestamp]),
-        title: "Command",
-        command: command,
-        status: "running",
-        elapsed_ms: nil,
-        output_excerpt: "",
-        output_truncated?: false,
-        raw: [raw_item(method, event, payload)]
-      },
-      items
-    )
-  end
-
-  defp append_command_output(event, payload, items) do
-    output = extract_command_output(payload)
-    key = item_key(event, payload)
-
-    update_matching_or_append_tool(items, key, fn item ->
-      output_text =
-        item
-        |> Map.get(:output_excerpt, "")
-        |> String.replace_suffix("\n[truncated]", "")
-        |> Kernel.<>(output)
-        |> Redactor.redact()
-        |> absorb_redacted_suffix()
-
-      {excerpt, truncated?} = truncate_text(output_text, @text_excerpt_chars)
-
-      item
-      |> Map.put(:output_excerpt, excerpt)
-      |> Map.put(:output_truncated?, Map.get(item, :output_truncated?, false) or truncated?)
-      |> prepend_raw(raw_item("command output", event, payload))
-    end)
-  end
-
-  defp append_command_end(event, payload, items) do
-    key = item_key(event, payload)
-    status = command_status(payload)
-
-    update_matching_or_append_tool(items, key, fn item ->
-      item
-      |> Map.put(:status, status)
-      |> Map.put(:elapsed_ms, elapsed_ms(item.at, event[:timestamp]))
-      |> prepend_raw(raw_item("command end", event, payload))
-    end)
-  end
-
-  defp update_matching_or_append_tool(items, key, fun) do
-    case Enum.split_while(items, fn item -> !(item[:type] == "tool" and item[:key] == key) end) do
-      {before, [item | after_items]} ->
-        before ++ [fun.(item) | after_items]
-
-      _ ->
-        placeholder = %{
-          type: "tool",
-          key: key,
-          at: nil,
-          title: "Command",
-          command: "command",
-          status: "running",
-          elapsed_ms: nil,
-          output_excerpt: "",
-          output_truncated?: false,
-          raw: []
-        }
-
-        append_new_item(fun.(placeholder), items)
-    end
-  end
-
-  defp append_system_item(event, kind, message, raw, items) do
-    append_new_item(
-      %{
-        type: kind,
-        key: "#{kind}:#{iso8601(event[:timestamp])}:#{event[:event]}:#{length(items)}",
-        at: iso8601(event[:timestamp]),
-        title: if(kind == "warning", do: "Warning", else: event_label(event[:event])),
-        excerpt: message || "Worker update",
-        raw: [raw_item(event[:event], event, raw)]
-      },
-      items
-    )
   end
 
   defp append_new_item(item, items), do: [item | items]
@@ -520,59 +403,8 @@ defmodule SymphonyElixirWeb.Presenter do
     end
   end
 
-  defp prepend_raw(item, raw) do
-    Map.update(item, :raw, [raw], fn entries ->
-      [raw | entries] |> Enum.take(@raw_items_per_display_item)
-    end)
-  end
-
-  defp append_excerpt_delta(item, delta) do
-    current_excerpt =
-      item
-      |> Map.get(:excerpt, "")
-      |> String.replace_suffix("\n[truncated]", "")
-
-    {excerpt, truncated?} =
-      current_excerpt
-      |> Kernel.<>(delta)
-      |> Redactor.redact()
-      |> absorb_redacted_suffix()
-      |> truncate_text(@text_excerpt_chars)
-
-    item
-    |> Map.put(:excerpt, excerpt <> if(truncated?, do: "\n[truncated]", else: ""))
-    |> Map.put(:truncated?, Map.get(item, :truncated?, false) or truncated?)
-  end
-
   defp absorb_redacted_suffix(text) when is_binary(text) do
     Regex.replace(~r/\[REDACTED\][A-Za-z0-9_=\-]+/, text, "[REDACTED]")
-  end
-
-  defp manager_message_item(event, message, raw) do
-    text =
-      message
-      |> summarize_message()
-      |> strip_manager_prefix()
-
-    %{
-      type: "user",
-      key: "manager:#{iso8601(event[:timestamp])}:#{event[:turn_id]}",
-      at: iso8601(event[:timestamp]),
-      title: "Manager",
-      excerpt: text,
-      raw: [raw_item(event[:event], event, raw)]
-    }
-  end
-
-  defp raw_item(label, event, payload) do
-    {excerpt, truncated?} = inspect_bounded(payload, @raw_excerpt_chars)
-
-    %{
-      label: to_string(label || event[:event] || "event"),
-      at: iso8601(event[:timestamp]),
-      excerpt: excerpt,
-      truncated?: truncated?
-    }
   end
 
   defp event_method(%{} = payload) do
@@ -587,6 +419,10 @@ defmodule SymphonyElixirWeb.Presenter do
   defp event_method(_payload), do: nil
 
   defp agent_message_delta?(method), do: method in ["item/agentMessage/delta", "codex/event/agent_message_delta", "codex/event/agent_message_content_delta"]
+
+  defp agent_message_completed?(method, payload) do
+    item_lifecycle_type?(method, payload, "item/completed", "agentMessage")
+  end
 
   defp command_begin?(method, payload) do
     method in ["codex/event/exec_command_begin", "item/commandExecution/begin"] ||
@@ -617,10 +453,6 @@ defmodule SymphonyElixirWeb.Presenter do
     String.contains?(event_name, ["error", "warning", "failed"]) or String.contains?(text, ["error", "warning", "failed"])
   end
 
-  defp summarized_event_message(event, message) do
-    summarize_message(event[:message] || message || event[:raw])
-  end
-
   defp item_key(event, payload) do
     map_path(payload, ["params", "itemId"]) ||
       map_path(payload, [:params, :itemId]) ||
@@ -632,116 +464,38 @@ defmodule SymphonyElixirWeb.Presenter do
       "event"
   end
 
-  defp extract_text_delta(payload) do
+  defp extract_completed_agent_text(payload) do
     first_map_path(payload, [
-      ["params", "delta"],
-      [:params, :delta],
-      ["params", "textDelta"],
-      [:params, :textDelta],
-      ["params", "msg", "delta"],
-      [:params, :msg, :delta],
-      ["params", "msg", "textDelta"],
-      [:params, :msg, :textDelta],
-      ["params", "msg", "payload", "delta"],
-      [:params, :msg, :payload, :delta],
-      ["params", "msg", "payload", "textDelta"],
-      [:params, :msg, :payload, :textDelta],
+      ["params", "item", "text"],
+      [:params, :item, :text],
+      ["params", "item", "content"],
+      [:params, :item, :content],
+      ["params", "msg", "text"],
+      [:params, :msg, :text],
       ["params", "msg", "content"],
-      [:params, :msg, :content],
-      ["params", "msg", "payload", "content"],
-      [:params, :msg, :payload, :content]
-    ]) ||
-      ""
+      [:params, :msg, :content]
+    ])
+    |> normalize_agent_text()
   end
 
-  defp extract_command_output(payload) do
-    map_path(payload, ["params", "outputDelta"]) ||
-      map_path(payload, [:params, :outputDelta]) ||
-      map_path(payload, ["params", "msg", "delta"]) ||
-      map_path(payload, [:params, :msg, :delta]) ||
-      map_path(payload, ["params", "delta"]) ||
-      map_path(payload, [:params, :delta]) ||
-      ""
+  defp normalize_agent_text(text) when is_binary(text), do: text
+
+  defp normalize_agent_text(parts) when is_list(parts) do
+    parts
+    |> Enum.map(&normalize_agent_text_part/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join("\n")
   end
 
-  defp extract_command(payload) do
-    command =
-      first_map_path(payload, [
-        ["params", "msg", "command"],
-        [:params, :msg, :command],
-        ["params", "item", "command"],
-        [:params, :item, :command],
-        ["params", "item", "parsedCmd"],
-        [:params, :item, :parsedCmd],
-        ["params", "item", "parsed_cmd"],
-        [:params, :item, :parsed_cmd],
-        ["params", "command"],
-        [:params, :command],
-        ["params", "parsedCmd"],
-        [:params, :parsedCmd],
-        ["params", "parsed_cmd"],
-        [:params, :parsed_cmd]
-      ])
+  defp normalize_agent_text(_text), do: ""
 
-    normalize_command(command)
+  defp normalize_agent_text_part(part) when is_binary(part), do: part
+
+  defp normalize_agent_text_part(%{} = part) do
+    map_value(part, ["text", :text, "content", :content]) |> normalize_agent_text()
   end
 
-  defp command_status(payload) do
-    exit_code =
-      map_path(payload, ["params", "msg", "exit_code"]) ||
-        map_path(payload, [:params, :msg, :exit_code]) ||
-        map_path(payload, ["params", "exitCode"]) ||
-        map_path(payload, [:params, :exitCode]) ||
-        map_path(payload, ["params", "item", "exitCode"]) ||
-        map_path(payload, [:params, :item, :exitCode])
-
-    case exit_code do
-      0 -> "completed"
-      code when is_integer(code) -> "failed (exit #{code})"
-      _ -> "completed"
-    end
-  end
-
-  defp elapsed_ms(nil, _ended_at), do: nil
-  defp elapsed_ms(_started_at, nil), do: nil
-
-  defp elapsed_ms(started_at, %DateTime{} = ended_at) when is_binary(started_at) do
-    case DateTime.from_iso8601(started_at) do
-      {:ok, parsed, _offset} -> max(DateTime.diff(ended_at, parsed, :millisecond), 0)
-      _ -> nil
-    end
-  end
-
-  defp elapsed_ms(_started_at, _ended_at), do: nil
-
-  defp strip_manager_prefix(nil), do: nil
-
-  defp strip_manager_prefix(text) when is_binary(text) do
-    text
-    |> String.replace_prefix("manager steer queued: ", "")
-    |> String.replace_prefix("manager steer delivered: ", "")
-  end
-
-  defp normalize_command(%{} = command) do
-    binary_command = map_value(command, ["parsedCmd", :parsedCmd, "command", :command, "cmd", :cmd])
-    args = map_value(command, ["args", :args, "argv", :argv])
-
-    if is_binary(binary_command) and is_list(args) do
-      normalize_command([binary_command | args])
-    else
-      normalize_command(binary_command || args)
-    end
-  end
-
-  defp normalize_command(command) when is_binary(command), do: String.trim(command)
-
-  defp normalize_command(command) when is_list(command) do
-    if Enum.all?(command, &is_binary/1) do
-      command |> Enum.join(" ") |> normalize_command()
-    end
-  end
-
-  defp normalize_command(_command), do: nil
+  defp normalize_agent_text_part(_part), do: ""
 
   defp truncate_text(text, limit) when is_binary(text) do
     if String.length(text) > limit do
@@ -750,8 +504,6 @@ defmodule SymphonyElixirWeb.Presenter do
       {text, false}
     end
   end
-
-  defp truncate_text(value, limit), do: value |> to_string() |> truncate_text(limit)
 
   defp inspect_bounded(value, limit) do
     {bounded, structurally_truncated?} = bound_debug_value(value, limit)
@@ -835,9 +587,6 @@ defmodule SymphonyElixirWeb.Presenter do
       Enum.any?(values, fn {_value, truncated?} -> truncated? end)
     }
   end
-
-  defp event_label(event) when is_atom(event), do: event |> Atom.to_string() |> String.replace("_", " ")
-  defp event_label(event), do: event |> to_string() |> String.replace("_", " ")
 
   defp first_map_path(value, paths) do
     Enum.find_value(paths, &map_path(value, &1))
