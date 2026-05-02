@@ -5,6 +5,11 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
 
   import ExUnit.CaptureIO
 
+  @fake_cli_skip if(SymphonyElixir.TestSupport.windows?(),
+                   do: "Fake gh/git fixtures are Unix scripts; Windows coverage for gh uses real gh.exe availability checks.",
+                   else: nil
+                 )
+
   setup do
     Mix.Task.reenable("workspace.before_remove")
     :ok
@@ -48,6 +53,8 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       assert output == ""
     end)
   end
+
+  if @fake_cli_skip, do: @tag(skip: @fake_cli_skip)
 
   test "uses current branch for lookup when branch option is omitted" do
     with_fake_gh_and_git(
@@ -100,6 +107,8 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     )
   end
 
+  if @fake_cli_skip, do: @tag(skip: @fake_cli_skip)
+
   test "closes open pull requests for the branch and tolerates close failures" do
     with_fake_gh(fn log_path ->
       File.write!(log_path, "")
@@ -129,6 +138,8 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       assert error_output =~ "Failed to close PR #102 for branch feature/workpad"
     end)
   end
+
+  if @fake_cli_skip, do: @tag(skip: @fake_cli_skip)
 
   test "formats close failures without command stderr output" do
     with_fake_gh(
@@ -167,6 +178,8 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     )
   end
 
+  if @fake_cli_skip, do: @tag(skip: @fake_cli_skip)
+
   test "no-ops when PR list fails for current branch" do
     with_fake_gh(
       """
@@ -202,6 +215,8 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     )
   end
 
+  if @fake_cli_skip, do: @tag(skip: @fake_cli_skip)
+
   test "no-ops when git current branch is blank" do
     with_fake_gh_and_git(
       """
@@ -233,6 +248,8 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       end
     )
   end
+
+  if @fake_cli_skip, do: @tag(skip: @fake_cli_skip)
 
   test "no-ops when gh auth is unavailable" do
     with_fake_gh(
@@ -305,7 +322,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       File.mkdir_p!(bin_dir)
       File.write!(log_path, "")
       original_path = System.get_env("PATH") || ""
-      path_with_binaries = Enum.join([bin_dir, original_path], ":")
+      path_with_binaries = Enum.join([bin_dir, original_path], SymphonyElixir.TestSupport.path_separator())
 
       Enum.each(scripts, fn {name, script} ->
         path = Path.join(bin_dir, name)

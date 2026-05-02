@@ -1,4 +1,18 @@
 defmodule SymphonyElixir.TestSupport do
+  @moduledoc """
+  Shared test helpers.
+
+  Use `write_fake_codex!/3` for app-server protocol fixtures that must run on
+  both Windows and Unix. It writes a Node payload behind a Unix-style shim; the
+  production `LocalShell` Windows launcher recognizes that shim and executes the
+  `.js` file with `node.exe`.
+
+  Direct executable fakes for tools launched with `System.cmd/3` or
+  `Port.open/2`, such as `ssh` and `gh`, should be real platform executables.
+  Keep Unix shell-script fakes Unix-only when the production code intentionally
+  resolves and launches the real host executable directly.
+  """
+
   @workflow_prompt "You are an agent for this repository."
 
   defmacro __using__(_opts) do
@@ -22,7 +36,15 @@ defmodule SymphonyElixir.TestSupport do
       alias SymphonyElixir.Workspace
 
       import SymphonyElixir.TestSupport,
-        only: [write_workflow_file!: 1, write_workflow_file!: 2, restore_env: 2, stop_default_http_server: 0]
+        only: [
+          restore_env: 2,
+          stop_default_http_server: 0,
+          write_fake_codex!: 2,
+          write_fake_codex!: 3,
+          write_node_executable!: 2,
+          write_workflow_file!: 1,
+          write_workflow_file!: 2
+        ]
 
       setup do
         workflow_root =
@@ -73,6 +95,129 @@ defmodule SymphonyElixir.TestSupport do
     match?({:win32, _}, :os.type())
   end
 
+  def path_separator, do: if(windows?(), do: ";", else: ":")
+
+  def write_node_executable!(executable, javascript) when is_binary(executable) and is_binary(javascript) do
+    script = executable <> ".js"
+    script_name = Path.basename(script)
+
+    File.write!(script, javascript)
+
+    File.write!(executable, """
+    #!/bin/sh
+    basedir=$(dirname "$(echo "$0" | sed -e 's,\\\\,/,g')")
+    exec node "$basedir/#{script_name}" "$@"
+    """)
+
+    File.chmod!(executable, 0o755)
+    executable
+  end
+
+  def write_fake_codex!(executable, steps, opts \\ []) when is_binary(executable) and is_list(steps) do
+    trace_env = Keyword.get(opts, :trace_env)
+    default_trace = Keyword.get(opts, :default_trace, "/tmp/symphony-fake-codex.trace")
+    trace_prefix = Keyword.get(opts, :trace_prefix, "JSON:")
+    startup_trace = Keyword.get(opts, :startup_trace, [])
+    steps_json = Jason.encode!(Enum.map(steps, &normalize_fake_codex_step/1))
+    startup_trace_json = Jason.encode!(Enum.map(List.wrap(startup_trace), &to_string/1))
+
+    write_node_executable!(
+      executable,
+      """
+      const fs = require("fs");
+      const readline = require("readline");
+
+      const steps = #{steps_json};
+      const traceEnv = #{Jason.encode!(trace_env)};
+      const defaultTrace = #{Jason.encode!(default_trace)};
+      const tracePrefix = #{Jason.encode!(trace_prefix)};
+      const startupTrace = #{startup_trace_json};
+      const traceFile = traceEnv ? (process.env[traceEnv] || defaultTrace) : null;
+      let count = 0;
+
+      function writeTrace(line) {
+        if (traceFile) {
+          fs.appendFileSync(traceFile, `${tracePrefix}${line}\\n`);
+        }
+      }
+
+      function writeStartupTrace() {
+        if (!traceFile) {
+          return;
+        }
+
+        for (const marker of startupTrace) {
+          if (marker === "argv") {
+            fs.appendFileSync(traceFile, `ARGV:${process.argv.slice(2).join(" ")}\\n`);
+          } else if (marker === "cwd") {
+            fs.appendFileSync(traceFile, `CWD:${process.cwd()}\\n`);
+          } else if (marker === "run") {
+            fs.appendFileSync(traceFile, `RUN:${Date.now()}-${process.pid}\\n`);
+          } else if (marker === "run_marker") {
+            fs.appendFileSync(traceFile, "RUN\\n");
+          }
+        }
+      }
+
+      function writeMany(stream, values) {
+        for (const value of values || []) {
+          stream.write(`${value}\\n`);
+        }
+      }
+
+      function replyToInputId(line, payloadKey, payload) {
+        const request = JSON.parse(line);
+        process.stdout.write(`${JSON.stringify({ id: request.id, [payloadKey]: payload })}\\n`);
+      }
+
+      function applyStep(step, line) {
+        if (step.reply_result !== null && step.reply_result !== undefined) {
+          replyToInputId(line, "result", step.reply_result);
+        }
+
+        if (step.reply_error !== null && step.reply_error !== undefined) {
+          replyToInputId(line, "error", step.reply_error);
+        }
+
+        writeMany(process.stderr, step.stderr);
+        writeMany(process.stdout, step.stdout);
+
+        if (step.exit !== null && step.exit !== undefined) {
+          process.exit(step.exit);
+        }
+
+        if (step.hold) {
+          setInterval(() => {}, 1000);
+        }
+      }
+
+      writeStartupTrace();
+
+      const rl = readline.createInterface({ input: process.stdin, terminal: false });
+
+      rl.on("line", line => {
+        count += 1;
+        writeTrace(line);
+        applyStep(steps[count - 1] || { exit: 0 }, line);
+      });
+      """
+    )
+  end
+
+  defp normalize_fake_codex_step(step) when is_binary(step), do: %{stdout: [step]}
+
+  defp normalize_fake_codex_step(step) when is_list(step) do
+    step
+    |> Map.new()
+    |> normalize_fake_codex_step()
+  end
+
+  defp normalize_fake_codex_step(step) when is_map(step) do
+    step
+    |> Map.update(:stdout, [], &List.wrap/1)
+    |> Map.update(:stderr, [], &List.wrap/1)
+  end
+
   def symlink_skip_reason do
     if windows?() do
       test_root =
@@ -98,23 +243,33 @@ defmodule SymphonyElixir.TestSupport do
   end
 
   def stop_default_http_server do
-    case Enum.find(Supervisor.which_children(SymphonyElixir.Supervisor), fn
-           {SymphonyElixir.HttpServer, _pid, _type, _modules} -> true
-           _child -> false
-         end) do
-      {SymphonyElixir.HttpServer, pid, _type, _modules} when is_pid(pid) ->
-        :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.HttpServer)
-
-        if Process.alive?(pid) do
-          Process.exit(pid, :normal)
-        end
-
-        :ok
-
-      _ ->
-        :ok
+    case Process.whereis(SymphonyElixir.Supervisor) do
+      nil -> :ok
+      supervisor -> stop_default_http_server(supervisor)
     end
   end
+
+  defp stop_default_http_server(supervisor) when is_pid(supervisor) do
+    supervisor
+    |> Supervisor.which_children()
+    |> Enum.find(fn
+      {SymphonyElixir.HttpServer, _pid, _type, _modules} -> true
+      _child -> false
+    end)
+    |> terminate_default_http_server(supervisor)
+  end
+
+  defp terminate_default_http_server({SymphonyElixir.HttpServer, pid, _type, _modules}, supervisor) when is_pid(pid) do
+    :ok = Supervisor.terminate_child(supervisor, SymphonyElixir.HttpServer)
+
+    if Process.alive?(pid) do
+      Process.exit(pid, :normal)
+    end
+
+    :ok
+  end
+
+  defp terminate_default_http_server(_child, _supervisor), do: :ok
 
   defp workflow_content(overrides) do
     config =
