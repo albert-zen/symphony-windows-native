@@ -19,4 +19,5 @@
 #### Test Plan
 
 - [ ] `make -C elixir all`
-- [ ] <!-- Additional targeted checks (list below) -->
+- [ ] <!-- Additional local targeted checks, with command/result evidence -->
+- <!-- If `make -C elixir all` was not run locally, explain why and name the narrower local validation above. -->

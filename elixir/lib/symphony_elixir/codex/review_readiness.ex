@@ -7,6 +7,7 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
   @github_accept "application/vnd.github+json"
   @passing_status_states MapSet.new(["success"])
   @passing_check_conclusions MapSet.new(["success", "neutral", "skipped"])
+  alias SymphonyElixir.Codex.ValidationEvidence
   alias SymphonyElixir.Config
 
   @context_query """
@@ -383,6 +384,7 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
   defp required_checks_passed?(issue, %{owner: owner, repo: repo, number: number}, github_client) do
     with {:ok, pr} <- github_json(github_client, "#{@github_api}/repos/#{owner}/#{repo}/pulls/#{number}"),
          :ok <- pull_request_matches_issue?(issue, owner, repo, pr),
+         :ok <- local_validation_evidence_ready?(pr),
          :ok <- pull_request_closes_origin_issue?(issue, owner, repo, pr),
          {:ok, head_sha} <- required_string(pr, ["head", "sha"], :review_readiness_missing_pr_head_sha),
          {:ok, base_ref} <- required_string(pr, ["base", "ref"], :review_readiness_missing_pr_base_ref),
@@ -396,6 +398,19 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
          {:ok, statuses} <- github_json(github_client, "#{@github_api}/repos/#{owner}/#{repo}/commits/#{head_sha}/status"),
          {:ok, check_runs} <- github_json(github_client, "#{@github_api}/repos/#{owner}/#{repo}/commits/#{head_sha}/check-runs") do
       verify_contexts(required_checks, statuses, check_runs)
+    end
+  end
+
+  defp local_validation_evidence_ready?(pr) do
+    case Map.get(pr, "body") do
+      body when is_binary(body) ->
+        case ValidationEvidence.lint_pr_body(body) do
+          [] -> :ok
+          errors -> {:error, {:review_readiness_local_validation_evidence_missing, errors}}
+        end
+
+      _ ->
+        {:error, {:review_readiness_local_validation_evidence_missing, ["PR body is missing."]}}
     end
   end
 
@@ -1344,6 +1359,9 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
 
   defp rejection_message({:review_readiness_required_checks_not_passing, failures}),
     do: "required GitHub checks are not passing: #{format_failures(failures)}."
+
+  defp rejection_message({:review_readiness_local_validation_evidence_missing, errors}),
+    do: "local validation evidence is missing from the linked PR Test Plan: #{Enum.join(errors, " ")}"
 
   defp rejection_message({:review_readiness_pr_file_list_too_large, changed_files}),
     do: "the linked PR changes #{changed_files} files; review readiness only verifies the first 100 GitHub PR files. Split the PR or get manager review outside the agent session."
