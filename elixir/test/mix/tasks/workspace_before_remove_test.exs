@@ -215,6 +215,93 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     )
   end
 
+  test "no-ops when PR list exits through fallback failure" do
+    with_fake_gh(
+      """
+      #!/bin/sh
+      printf '%s\n' "$*" >> "$GH_LOG"
+
+      if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+        exit 0
+      fi
+
+      exit 99
+      """,
+      fn log_path ->
+        output =
+          capture_io(fn ->
+            BeforeRemove.run(["--branch", "feature/list-fallback-fails"])
+          end)
+
+        assert output == ""
+
+        log = File.read!(log_path)
+        assert log =~ "auth status"
+
+        assert log =~
+                 "pr list --repo openai/symphony --head feature/list-fallback-fails --state open --json number --jq .[].number"
+
+        refute log =~ "pr close"
+      end
+    )
+  end
+
+  test "wraps gh cmd shims through cmd.exe when only gh.cmd is available" do
+    if windows?() do
+      :ok
+    else
+      with_only_fake_binaries(
+        %{
+          "gh.cmd" => """
+          #!/bin/sh
+          printf 'GH:%s\n' "$*" >> "$GH_LOG"
+
+          if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+            exit 0
+          fi
+
+          if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
+            printf '101\n'
+            exit 0
+          fi
+
+          if [ "$1" = "pr" ] && [ "$2" = "close" ] && [ "$3" = "101" ]; then
+            exit 0
+          fi
+
+          exit 99
+          """,
+          "cmd.exe" => """
+          #!/bin/sh
+          printf 'CMD:%s\n' "$*" >> "$GH_LOG"
+
+          if [ "$1" = "/c" ]; then
+            shift
+            shim="$1"
+            shift
+            "$shim" "$@"
+            exit $?
+          fi
+
+          exit 99
+          """
+        },
+        fn log_path ->
+          capture_io(fn ->
+            BeforeRemove.run(["--branch", "feature/cmd-shim"])
+          end)
+
+          log = File.read!(log_path)
+          assert log =~ "CMD:/c"
+          assert log =~ "gh.cmd"
+          assert log =~ "GH:auth status"
+          assert log =~ "GH:pr list --repo openai/symphony --head feature/cmd-shim"
+          assert log =~ "GH:pr close 101 --repo openai/symphony"
+        end
+      )
+    end
+  end
+
   if @fake_cli_skip, do: @tag(skip: @fake_cli_skip)
 
   test "no-ops when git current branch is blank" do
@@ -312,6 +399,14 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
   end
 
   defp with_fake_binaries(scripts, fun) do
+    with_fake_binaries(scripts, true, fun)
+  end
+
+  defp with_only_fake_binaries(scripts, fun) do
+    with_fake_binaries(scripts, false, fun)
+  end
+
+  defp with_fake_binaries(scripts, include_original_path?, fun) do
     unique = System.unique_integer([:positive, :monotonic])
     root = Path.join(System.tmp_dir!(), "workspace-before-remove-task-test-#{unique}")
     bin_dir = Path.join(root, "bin")
@@ -322,19 +417,28 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       File.mkdir_p!(bin_dir)
       File.write!(log_path, "")
       original_path = System.get_env("PATH") || ""
-      path_with_binaries = Enum.join([bin_dir, original_path], SymphonyElixir.TestSupport.path_separator())
+
+      path_with_binaries =
+        if include_original_path? do
+          Enum.join([bin_dir, original_path], SymphonyElixir.TestSupport.path_separator())
+        else
+          bin_dir
+        end
 
       Enum.each(scripts, fn {name, script} ->
-        path = Path.join(bin_dir, name)
-        File.write!(path, script)
+        path = Path.join(bin_dir, fake_binary_name(name))
+        File.write!(path, fake_binary_script(name, script))
         File.chmod!(path, 0o755)
       end)
 
       with_env(
-        %{
-          "GH_LOG" => log_path,
-          "PATH" => path_with_binaries
-        },
+        Map.merge(
+          %{
+            "GH_LOG" => log_path,
+            "PATH" => path_with_binaries
+          },
+          fake_binary_env(scripts)
+        ),
         fn ->
           fun.(log_path)
         end
@@ -345,8 +449,136 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
   end
 
   defp with_path(paths, fun) do
-    with_env(%{"PATH" => Enum.join(paths, ":")}, fun)
+    with_env(%{"PATH" => Enum.join(paths, path_separator())}, fun)
   end
+
+  defp fake_binary_name(name) do
+    cond do
+      Path.extname(name) != "" -> name
+      windows?() -> name <> ".cmd"
+      true -> name
+    end
+  end
+
+  defp fake_binary_script(name, script) when name in ["gh", "git"] do
+    if windows?() do
+      windows_fake_binary_script(name, script)
+    else
+      script
+    end
+  end
+
+  defp fake_binary_script(_name, script), do: script
+
+  defp fake_binary_env(scripts) do
+    scripts
+    |> Enum.reduce(%{}, fn
+      {"gh", script}, env ->
+        env
+        |> maybe_put_fake_env(
+          "SYMPHONY_FAKE_GH_AUTH_FAIL",
+          fake_gh_auth_fail?(script)
+        )
+        |> maybe_put_fake_env(
+          "SYMPHONY_FAKE_GH_LIST_FAIL",
+          fake_gh_list_fail?(script) or fake_gh_fallback_fail?(script)
+        )
+        |> maybe_put_fake_env("SYMPHONY_FAKE_GH_SINGLE_PR", String.contains?(script, "printf '102\\n'"))
+        |> maybe_put_fake_env(
+          "SYMPHONY_FAKE_GH_NO_STDERR",
+          Regex.match?(~r/\[ "\$1" = "pr" \].*?\[ "\$2" = "close" \].*?\[ "\$3" = "102" \].*?then\s+exit 17\s+fi/s, script)
+        )
+
+      {"git", script}, env ->
+        cond do
+          String.contains?(script, "printf '\\n'") or String.contains?(script, "printf '\n'") ->
+            Map.put(env, "SYMPHONY_FAKE_GIT_BLANK_BRANCH", "1")
+
+          String.contains?(script, "feature/workpad") ->
+            Map.put(env, "SYMPHONY_FAKE_GIT_BRANCH", "feature/workpad")
+
+          true ->
+            env
+        end
+
+      _, env ->
+        env
+    end)
+  end
+
+  defp maybe_put_fake_env(env, key, true), do: Map.put(env, key, "1")
+  defp maybe_put_fake_env(env, _key, false), do: env
+
+  defp windows_fake_binary_script("git", _script) do
+    """
+    @echo off
+    if "%SYMPHONY_FAKE_GIT_BLANK_BRANCH%"=="1" (
+      echo.
+    ) else if "%SYMPHONY_FAKE_GIT_BRANCH%"=="" (
+      echo feature/workpad
+    ) else (
+      echo %SYMPHONY_FAKE_GIT_BRANCH%
+    )
+    exit /b 0
+    """
+  end
+
+  defp windows_fake_binary_script("gh", script) do
+    single_pr = if String.contains?(script, "printf '102\\n'"), do: "1", else: "0"
+    no_stderr = if fake_gh_no_stderr?(script), do: "1", else: "0"
+
+    """
+    @echo off
+    echo %*>>"%GH_LOG%"
+    if "%1 %2"=="auth status" (
+      if "%SYMPHONY_FAKE_GH_AUTH_FAIL%"=="1" exit 1
+      exit /b 0
+    )
+    if "%1 %2"=="pr list" (
+      if "%SYMPHONY_FAKE_GH_LIST_FAIL%"=="1" exit 1
+      if "#{single_pr}"=="1" (
+        echo 102
+      ) else (
+        echo 101
+        echo 102
+      )
+      exit /b 0
+    )
+    if "%1 %2 %3"=="pr close 101" exit /b 0
+    if "%1 %2 %3"=="pr close 102" (
+      if not "#{no_stderr}"=="1" echo boom 1>&2
+      exit /b 17
+    )
+    exit /b 99
+    """
+  end
+
+  defp fake_gh_auth_fail?(script),
+    do:
+      script
+      |> String.split(~s([ "$1" = "pr" ]), parts: 2)
+      |> List.first()
+      |> String.contains?("exit 1")
+
+  defp fake_gh_list_fail?(script),
+    do:
+      String.contains?(script, ~s([ "$1" = "pr" ])) and
+        String.contains?(script, ~s([ "$2" = "list" ])) and
+        Regex.match?(~r/\bexit\s+1\b/, script)
+
+  defp fake_gh_fallback_fail?(script) do
+    String.contains?(script, "exit 99") and not String.contains?(script, ~s([ "$2" = "list" ]))
+  end
+
+  defp fake_gh_no_stderr?(script),
+    do:
+      Regex.match?(
+        ~r/\[ "\$1" = "pr" \].*?\[ "\$2" = "close" \].*?\[ "\$3" = "102" \].*?then\s+exit 17\s+fi/s,
+        script
+      )
+
+  defp path_separator, do: if(windows?(), do: ";", else: ":")
+  defp windows?, do: match?({:win32, _}, :os.type())
 
   defp with_env(overrides, fun) do
     keys = Map.keys(overrides)
