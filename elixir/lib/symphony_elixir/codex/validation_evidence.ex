@@ -6,11 +6,11 @@ defmodule SymphonyElixir.Codex.ValidationEvidence do
   @checked_checkbox_regex ~r/^\s*[-*]\s+\[[xX]\]\s+(.+)$/m
   @unchecked_checkbox_regex ~r/^\s*[-*]\s+\[ \]\s+(.+)$/m
   @heavy_check_regex ~r/(^|[^a-z0-9_-])(make(?:\.cmd)?\s+(-C\s+elixir\s+)?all|make-all)([^a-z0-9_-]|$)/i
-  @ci_only_regex ~r/(?:(?:^\s*(?:ci|github actions?)\b\s*(?::|-|[a-z]+\b))|\b(?:in|by|via|on|from)\s+(?:ci|github actions?)\b)/i
+  @ci_only_regex ~r/(?:(?:^\s*(?:ci|github actions?)\b\s*(?::|-|[a-z]+\b))|\bci[-\s]+only\b|\b(?:in|by|via|on|from)\s+(?:ci|github actions?)\b)/i
   @skip_words ~w(skip skipped not cannot can't unable unavailable pending later)
-  @restated_skip_words ~w(all cannot can't check gate heavy local locally make not run skipped unable unavailable validation)
+  @restated_skip_words ~w(all cannot can't check gate heavy local locally make not run skipped to unable unavailable validation)
   @inline_code_regex ~r/`([^`]+)`/
-  @validation_command_regex ~r/^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*(?:(?:mix\s+(?:test|format|pr_body\.check|specs\.check|symphony\.preflight\.windows)\b)|(?:make(?:\.cmd)?(?:\s+-C\s+\S+)?\s+(?:all|test|windows-native-test|diff-check|validate-pr-description|[\w.-]*test[\w.-]*|[\w.-]*check[\w.-]*))|(?:git\s+diff\s+--check\b)|(?:(?:npm|pnpm|yarn)\s+(?:test|lint|format|check|typecheck|type-check)\b)|(?:gh\s+(?:pr\s+checks|run\s+view)\b))/i
+  @validation_command_regex ~r/^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*(?:(?:mix\s+(?:test|format|pr_body\.check|specs\.check|symphony\.preflight\.windows)\b)|(?:make(?:\.cmd)?(?:\s+-C\s+\S+)?\s+(?:all|test|windows-native-test|diff-check|validate-pr-description|[\w.-]*test[\w.-]*|[\w.-]*check[\w.-]*))|(?:git\s+diff\s+--check\b)|(?:(?:npm|pnpm|yarn)\s+(?:test|lint|format|check|typecheck|type-check)\b))/i
 
   @spec lint_pr_body(String.t()) :: [String.t()]
   def lint_pr_body(body) when is_binary(body) do
@@ -27,7 +27,7 @@ defmodule SymphonyElixir.Codex.ValidationEvidence do
 
     []
     |> require_local_validation_evidence(local_evidence_items)
-    |> require_heavy_skip_justification(section, checked_items, unchecked_items, local_evidence_items)
+    |> require_heavy_skip_justification(section, unchecked_items, local_evidence_items)
   end
 
   defp require_local_validation_evidence(errors, []),
@@ -35,8 +35,8 @@ defmodule SymphonyElixir.Codex.ValidationEvidence do
 
   defp require_local_validation_evidence(errors, _items), do: errors
 
-  defp require_heavy_skip_justification(errors, section, checked_items, unchecked_items, local_evidence_items) do
-    heavy_checked? = Enum.any?(checked_items, &heavy_check?/1)
+  defp require_heavy_skip_justification(errors, section, unchecked_items, local_evidence_items) do
+    heavy_checked? = Enum.any?(local_evidence_items, &heavy_check?/1)
     heavy_skip_items = heavy_skip_items(section, unchecked_items)
 
     cond do

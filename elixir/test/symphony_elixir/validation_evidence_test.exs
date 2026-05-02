@@ -97,6 +97,21 @@ defmodule SymphonyElixir.Codex.ValidationEvidenceTest do
     end
   end
 
+  test "rejects filler-only inability phrases" do
+    for reason <- ["cannot run", "unable to run", "unavailable to run"] do
+      body = """
+      #### Test Plan
+
+      - [ ] `make -C elixir all` #{reason}.
+      - [x] `mix test test/symphony_elixir/validation_evidence_test.exs` passed locally.
+      """
+
+      assert ValidationEvidence.lint_pr_body(body) == [
+               "Test Plan must explain why the heavy local validation check was not run."
+             ]
+    end
+  end
+
   test "accepts concrete inability reason for skipped heavy validation" do
     body = """
     #### Test Plan
@@ -143,7 +158,7 @@ defmodule SymphonyElixir.Codex.ValidationEvidenceTest do
            ]
   end
 
-  test "accepts recognized CI inspection commands when run locally" do
+  test "rejects CI inspection commands as local validation evidence" do
     body = """
     #### Test Plan
 
@@ -151,7 +166,24 @@ defmodule SymphonyElixir.Codex.ValidationEvidenceTest do
     - [x] `gh run view 25243442043 --log-failed` used locally to inspect CI failure evidence.
     """
 
-    assert ValidationEvidence.lint_pr_body(body) == []
+    assert ValidationEvidence.lint_pr_body(body) == [
+             "Test Plan must include at least one checked local validation command or targeted check.",
+             "Test Plan must name narrower local validation when the heavy check is skipped."
+           ]
+  end
+
+  test "rejects gh pr checks as local validation evidence" do
+    body = """
+    #### Test Plan
+
+    - [ ] `make -C elixir all` not run locally because only CI failure inspection was needed.
+    - [x] `gh pr checks 57` used locally to inspect CI failure evidence.
+    """
+
+    assert ValidationEvidence.lint_pr_body(body) == [
+             "Test Plan must include at least one checked local validation command or targeted check.",
+             "Test Plan must name narrower local validation when the heavy check is skipped."
+           ]
   end
 
   test "rejects checked backticked prose that is not a validation command" do
@@ -216,6 +248,45 @@ defmodule SymphonyElixir.Codex.ValidationEvidenceTest do
     assert ValidationEvidence.lint_pr_body(body) == [
              "Test Plan must include at least one checked local validation command or targeted check.",
              "Test Plan must name narrower local validation when the heavy check is skipped."
+           ]
+  end
+
+  test "rejects checked heavy validation reported only from CI" do
+    body = """
+    #### Test Plan
+
+    - [x] `make -C elixir all` passed in CI.
+    - [x] `mix test test/symphony_elixir/validation_evidence_test.exs` passed locally.
+    """
+
+    assert ValidationEvidence.lint_pr_body(body) == [
+             "Test Plan must explain why the heavy local validation check was not run."
+           ]
+  end
+
+  test "rejects checked heavy validation reported as CI-only" do
+    body = """
+    #### Test Plan
+
+    - [x] `make -C elixir all` CI-only.
+    - [x] `mix test test/symphony_elixir/validation_evidence_test.exs` passed locally.
+    """
+
+    assert ValidationEvidence.lint_pr_body(body) == [
+             "Test Plan must explain why the heavy local validation check was not run."
+           ]
+  end
+
+  test "rejects checked make-all reported only from CI" do
+    body = """
+    #### Test Plan
+
+    - [x] `make-all` passed in CI.
+    - [x] `mix test test/symphony_elixir/validation_evidence_test.exs` passed locally.
+    """
+
+    assert ValidationEvidence.lint_pr_body(body) == [
+             "Test Plan must explain why the heavy local validation check was not run."
            ]
   end
 
