@@ -2005,13 +2005,20 @@ defmodule SymphonyElixir.ExtensionsTest do
     {:ok, _view, html} = live(build_conn(), "/")
     assert html =~ "Latest upstream rate-limit snapshot for codex · prolite."
     assert html =~ "Primary"
+    assert html =~ "Operational"
     assert html =~ "57% used"
+    assert html =~ "Window"
     assert html =~ "5h window"
+    assert html =~ "Reset time"
     assert html =~ "2099-05-02 07:05:00 UTC"
     assert html =~ "Secondary"
+    assert html =~ "Critical usage"
     assert html =~ "92% used"
     assert html =~ "7d window"
+    assert html =~ "Reset countdown"
     assert html =~ "resets in 4m 10s"
+    assert html =~ "<details"
+    refute html =~ ~s(<details class="raw-details rate-limit-debug" open>)
     assert html =~ "Raw rate-limit payload"
   end
 
@@ -2037,10 +2044,13 @@ defmodule SymphonyElixir.ExtensionsTest do
     {:ok, _view, html} = live(build_conn(), "/")
     assert html =~ "Latest upstream rate-limit snapshot for codex-lite."
     assert html =~ "Primary"
+    assert html =~ "Operational"
     assert html =~ "40% used"
     assert html =~ "window n/a"
     assert html =~ "Secondary"
+    assert html =~ "Usage unavailable"
     assert html =~ "n/a"
+    assert html =~ "Reset time"
     assert html =~ "2099-05-02 08:10:00 UTC"
     assert html =~ "Raw rate-limit payload"
     refute html =~ "Latest upstream rate-limit snapshot, when available."
