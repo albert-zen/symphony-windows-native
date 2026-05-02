@@ -26,7 +26,7 @@ defmodule SymphonyElixir.CoreTest do
     assert config.tracker.terminal_states == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
     assert config.tracker.assignee == nil
     assert config.agent.max_turns == 20
-    assert config.codex.review_readiness_repository == "albert-zen/symphony-windows-native"
+    assert config.codex.review_readiness_repository == nil
     assert config.codex.review_readiness_required_checks == []
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: "invalid")

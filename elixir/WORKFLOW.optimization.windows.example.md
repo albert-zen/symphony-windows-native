@@ -2,6 +2,9 @@
 tracker:
   kind: linear
   api_key: $LINEAR_API_KEY
+  # Replace with your Linear project slug. The Windows preflight can verify
+  # Linear connectivity, and the dashboard/logs will show which project is
+  # being polled.
   project_slug: "YOUR_LINEAR_PROJECT_SLUG"
   # Optional: uncomment only if this project is shared with unrelated work.
   # labels:
@@ -17,13 +20,15 @@ tracker:
 polling:
   interval_ms: 5000
 workspace:
-  root: "D:/code/symphony-optimization-workspaces"
+  # Use a dedicated disposable automation root. Do not point this at your
+  # everyday source checkout or a broad personal directory.
+  root: "D:/code/symphony-workspaces"
 hooks:
   timeout_ms: 300000
   after_create: |
     $ErrorActionPreference = "Stop"
-    git clone --depth 1 https://github.com/albert-zen/symphony-windows-native.git .
-    git remote set-url origin https://github.com/albert-zen/symphony-windows-native.git
+    git clone --depth 1 https://github.com/YOUR_GITHUB_OWNER/YOUR_REPO.git .
+    git remote set-url origin https://github.com/YOUR_GITHUB_OWNER/YOUR_REPO.git
     git fetch origin main
     git config user.email "codex-symphony@example.invalid"
     git config user.name "Codex Symphony"
@@ -42,7 +47,7 @@ codex:
   approval_policy: never
   thread_sandbox: danger-full-access
   # Used when GitHub branch protection required-check metadata is private or unavailable.
-  review_readiness_repository: albert-zen/symphony-windows-native
+  review_readiness_repository: YOUR_GITHUB_OWNER/YOUR_REPO
   command_watchdog_long_running_ms: 300000
   command_watchdog_idle_ms: 120000
   command_watchdog_stalled_ms: 300000
@@ -83,13 +88,15 @@ Operating model:
 7. Run focused validation before committing.
 8. Commit with lightweight Conventional Commits, for example
    `docs(quality): add agent PR quality policy`, and push the branch to
-   `albert-zen/symphony-windows-native`.
+   the configured GitHub repository.
 9. Open a GitHub pull request against `main` and link it in the Linear workpad.
+   If the Linear issue has one unambiguous origin GitHub issue, include a supported closing keyword
+   in the PR body, for example `Fixes #NN`.
 10. Wait for required GitHub checks to complete before moving the Linear issue to `In Review`.
     If checks cannot be verified, record the exact reason in the workpad and PR, then keep the
     issue in `In Progress` or return it to `Todo`; only a manager may explicitly override this.
 11. Do not move unrelated Backlog issues to Todo.
-12. If you discover an automation/system defect, create a GitHub issue with label `symphony-optimization` and add a Linear mirror in project `YOUR_LINEAR_PROJECT_NAME` if the Linear tool is available.
+12. If you discover an automation/system defect, create a GitHub issue with the configured optimization label and add a Linear mirror in the configured Linear project if the Linear tool is available.
 13. Leave problem breadcrumbs without spamming:
     - Update the `## Codex Workpad` for recovered transient noise, retries, or routine validation fixes.
     - Add a separate concise Linear problem comment only for notable environment, validation, auth,
@@ -105,7 +112,7 @@ Operating model:
 Quality bar:
 
 - Prefer small, reviewable changes.
-- Treat `origin/main` in `albert-zen/symphony-windows-native` as the canonical
+- Treat `origin/main` in the configured GitHub repository as the canonical
   GitHub base ref for manager-side stale-base checks unless the workflow
   explicitly configures another trusted remote.
 - Run `mix format` for touched Elixir files.
