@@ -95,6 +95,29 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     refute_received {:workpad_recorded, _}
   end
 
+  test "linear_graphql resolves In Review transition context by Linear identifier when direct issue lookup is not found" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(%{"issueId" => "ALB-19"}),
+        linear_client: review_linear_client_with_identifier_fallback(test_pid, issue_with_pr()),
+        github_client:
+          github_client(%{
+            "pulls/42" => %{"head" => %{"sha" => "abc123"}, "base" => %{"ref" => "main"}},
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all"]},
+            "commits/abc123/status" => %{"statuses" => []},
+            "commits/abc123/check-runs" => %{"check_runs" => [%{"name" => "make-all", "status" => "completed", "conclusion" => "success"}]}
+          })
+      )
+
+    assert response["success"] == true
+    assert_received {:identifier_context_lookup, "ALB-19"}
+    assert_received {:linear_mutation_allowed, "ALB-19", "state-review"}
+    refute_received {:workpad_recorded, _}
+  end
+
   test "linear_graphql allows In Review transition when PR body closes the originating GitHub issue" do
     test_pid = self()
 
@@ -1706,6 +1729,62 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert body =~ ":timeout"
   end
 
+  test "linear_graphql rejects Workpad connector check evidence when PR metadata is rate limited" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_connector_check_evidence()),
+        github_client: fn _url, _opts ->
+          {:ok,
+           %{
+             status: 403,
+             body: %{"message" => "API rate limit exceeded for 35.92.31.60."}
+           }}
+        end
+      )
+
+    assert response["success"] == false
+    assert Jason.decode!(response["output"])["error"]["message"] =~ "GitHub readiness could not be verified"
+    assert_received {:workpad_recorded, body}
+    assert body =~ "rate limit exceeded"
+    refute_received {:linear_mutation_allowed, _, _}
+  end
+
+  test "linear_graphql accepts Workpad connector check evidence when final check endpoints are rate limited" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_connector_check_evidence()),
+        github_client: github_client_with_rate_limited_checks()
+      )
+
+    assert response["success"] == true
+    assert_received {:linear_mutation_allowed, "issue-1", "state-review"}
+    refute_received {:workpad_recorded, _}
+  end
+
+  test "linear_graphql accepts Workpad connector check evidence when branch protection requires auth" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        review_transition_arguments(),
+        linear_client: review_linear_client(test_pid, issue_with_connector_check_evidence()),
+        github_client: github_client_with_auth_required_branch_protection()
+      )
+
+    assert response["success"] == true
+    assert_received {:linear_mutation_allowed, "issue-1", "state-review"}
+    refute_received {:workpad_recorded, _}
+  end
+
   test "linear_graphql rejects agent-supplied manager override for In Review transition" do
     test_pid = self()
 
@@ -2050,6 +2129,24 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     ])
   end
 
+  defp issue_with_connector_check_evidence do
+    put_in(issue_with_origin_github_issue(), ["comments", "nodes"], [
+      %{
+        "id" => "comment-1",
+        "body" => """
+        ## Codex Workpad
+
+        PR: https://github.com/albert-zen/symphony-windows-native/pull/42
+
+        GitHub checks:
+        - Head `abc123`.
+        - `make-all` run 191: success.
+        - `pr-description-lint` run 255: success.
+        """
+      }
+    ])
+  end
+
   defp review_linear_client(test_pid, issue) do
     fn query, variables, _opts ->
       cond do
@@ -2072,11 +2169,86 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     end
   end
 
+  defp review_linear_client_with_identifier_fallback(test_pid, issue) do
+    fn query, variables, _opts ->
+      cond do
+        query =~ "SymphonyReviewReadinessContextByIdentifier" ->
+          send(test_pid, {:identifier_context_lookup, variables["identifier"]})
+          {:ok, %{"data" => %{"issues" => %{"nodes" => [issue]}}}}
+
+        query =~ "SymphonyReviewReadinessContext" ->
+          {:ok, %{"data" => %{"issue" => nil}}}
+
+        query =~ "SymphonyReviewReadinessCreateWorkpad" ->
+          send(test_pid, {:workpad_recorded, variables["body"]})
+          {:ok, %{"data" => %{"commentCreate" => %{"success" => true}}}}
+
+        query =~ "SymphonyReviewReadinessUpdateWorkpad" ->
+          send(test_pid, {:workpad_recorded, variables["body"]})
+          {:ok, %{"data" => %{"commentUpdate" => %{"success" => true}}}}
+
+        query =~ "issueUpdate" ->
+          state_id = variables["stateId"] || get_in(variables, ["input", "stateId"])
+          send(test_pid, {:linear_mutation_allowed, variables["issueId"], state_id})
+          {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+      end
+    end
+  end
+
   defp github_client(responses) do
     fn url, _opts ->
       case github_response(responses, url) do
         {_suffix, payload} -> {:ok, %{status: 200, body: default_pr_payload(url, payload)}}
         nil -> default_github_response(url)
+      end
+    end
+  end
+
+  defp github_client_with_rate_limited_checks do
+    rate_limited = {:ok, %{status: 403, body: %{"message" => "API rate limit exceeded for 35.92.31.60."}}}
+
+    fn url, _opts ->
+      cond do
+        String.contains?(url, "commits/abc123/status") ->
+          rate_limited
+
+        String.contains?(url, "commits/abc123/check-runs") ->
+          rate_limited
+
+        true ->
+          github_client(%{
+            "pulls/42" => %{
+              "body" => with_validation_evidence("#### Context\n\nImplements the linked spec.\n\nFixes #46"),
+              "head" => %{"sha" => "abc123"},
+              "base" => %{"ref" => "main"}
+            },
+            "branches/main/protection/required_status_checks" => %{"contexts" => ["make-all", "pr-description-lint"]}
+          }).(url, [])
+      end
+    end
+  end
+
+  defp github_client_with_auth_required_branch_protection do
+    auth_required = {:ok, %{status: 401, body: %{"message" => "Requires authentication", "status" => "401"}}}
+
+    fn url, _opts ->
+      if String.contains?(url, "branches/main/protection/required_status_checks") do
+        auth_required
+      else
+        github_client(%{
+          "pulls/42" => %{
+            "body" => with_validation_evidence("#### Context\n\nImplements the linked spec.\n\nFixes #46"),
+            "head" => %{"sha" => "abc123"},
+            "base" => %{"ref" => "main"}
+          },
+          "commits/abc123/status" => %{"statuses" => []},
+          "commits/abc123/check-runs" => %{
+            "check_runs" => [
+              %{"name" => "make-all", "status" => "completed", "conclusion" => "success"},
+              %{"name" => "pr-description-lint", "status" => "completed", "conclusion" => "success"}
+            ]
+          }
+        }).(url, [])
       end
     end
   end

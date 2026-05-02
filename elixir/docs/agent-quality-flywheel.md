@@ -27,6 +27,12 @@ Agents must not weaken, skip, disable, or relax CI, lint, formatter, or test gat
 work. If a gate is wrong or flaky, file or link a follow-up defect and keep the current issue out of
 `In Review` until the required checks pass or a manager explicitly overrides the state transition.
 
+Coverage is a quality signal, not a mechanical target. The repository keeps a high total coverage
+threshold, but it is intentionally below 100% so workers are not forced to add filler tests for
+incidental branches. Review should still demand meaningful tests for the changed behavior, failure
+modes, and public contracts. Coverage threshold changes are manager-owned policy work and must be
+made through an explicit issue and review, not as a drive-by workaround in an unrelated PR.
+
 Coverage ignore changes are gate changes. A PR must not add a production module to
 `test_coverage.ignore_modules` when that same module is changed in the PR. The review-readiness
 gate rejects that overlap before an agent can move the Linear issue to review. If a manager believes
