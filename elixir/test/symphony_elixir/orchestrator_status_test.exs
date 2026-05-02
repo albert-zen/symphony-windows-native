@@ -1413,9 +1413,11 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
     end)
 
+    before_restart_ms = System.monotonic_time(:millisecond)
     send(pid, :tick)
     Process.sleep(100)
     state = :sys.get_state(pid)
+    after_restart_ms = System.monotonic_time(:millisecond)
 
     refute Process.alive?(worker_pid)
     refute Map.has_key?(state.running, issue_id)
@@ -1428,9 +1430,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
            } = state.retry_attempts[issue_id]
 
     assert is_integer(due_at_ms)
-    remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
-    assert remaining_ms >= 9_500
-    assert remaining_ms <= 10_500
+    assert due_at_ms >= before_restart_ms + 10_000
+    assert due_at_ms <= after_restart_ms + 10_000
   end
 
   test "status dashboard renders offline marker to terminal" do

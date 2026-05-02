@@ -74,7 +74,7 @@ exit /b %ERRORLEVEL%
 exit /b %ERRORLEVEL%
 
 :windows_native_test
-"%MIX_CMD%" test test/symphony_elixir/local_shell_test.exs test/symphony_elixir/workspace_and_config_test.exs test/symphony_elixir/windows_preflight_test.exs test/symphony_elixir/windows_lifecycle_scripts_test.exs test/symphony_elixir/ssh_test.exs test/mix/tasks/workspace_before_remove_test.exs test/mix/tasks/pr_body_check_test.exs test/symphony_elixir/specs_check_test.exs
+"%MIX_CMD%" test test/symphony_elixir/local_shell_test.exs test/symphony_elixir/workspace_and_config_test.exs test/symphony_elixir/windows_preflight_test.exs test/symphony_elixir/windows_lifecycle_scripts_test.exs test/symphony_elixir/repository_line_endings_test.exs test/symphony_elixir/ssh_test.exs test/mix/tasks/workspace_before_remove_test.exs test/mix/tasks/pr_body_check_test.exs test/symphony_elixir/specs_check_test.exs
 exit /b %ERRORLEVEL%
 
 :coverage
