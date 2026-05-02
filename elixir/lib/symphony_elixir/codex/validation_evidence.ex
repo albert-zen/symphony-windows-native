@@ -64,7 +64,7 @@ defmodule SymphonyElixir.Codex.ValidationEvidence do
       not only_delegates_to_ci?(normalized) and
       not ci_only_evidence?(item) and
       not unsuccessful_result?(item) and
-      not skip_item?(normalized)
+      not explicit_skip_evidence?(normalized)
   end
 
   defp has_validation_command?(item) do
@@ -140,6 +140,78 @@ defmodule SymphonyElixir.Codex.ValidationEvidence do
   defp skip_item?(normalized) do
     Enum.any?(@skip_words, &String.contains?(normalized, &1))
   end
+
+  defp explicit_skip_evidence?(normalized) do
+    explicit_skip_phrase?(normalized) or
+      skipped_without_count?(normalized)
+  end
+
+  defp explicit_skip_phrase?(normalized) do
+    [
+      "not run",
+      "did not run",
+      "was not run",
+      "wasn't run",
+      "cannot",
+      "can't",
+      "unable",
+      "unavailable",
+      "pending",
+      "later"
+    ]
+    |> Enum.any?(&String.contains?(normalized, &1))
+  end
+
+  defp skipped_without_count?(normalized) do
+    if skipped_result_count?(normalized) and successful_result_summary?(normalized) do
+      false
+    else
+      skipped_word?(normalized)
+    end
+  end
+
+  defp skipped_word?(normalized) do
+    normalized
+    |> String.split(~r/[^a-z0-9']+/, trim: true)
+    |> Enum.any?(fn
+      "skipped" -> true
+      "skip" -> true
+      _ -> false
+    end)
+  end
+
+  defp skipped_result_count?(normalized) do
+    tokens = String.split(normalized, ~r/[^a-z0-9']+/, trim: true)
+
+    numeric_skipped_count?(tokens) or numeric_tests_skipped_count?(tokens)
+  end
+
+  defp numeric_skipped_count?(tokens) do
+    tokens
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.any?(fn
+      [count, "skipped"] -> integer_string?(count)
+      [count, "skip"] -> integer_string?(count)
+      _ -> false
+    end)
+  end
+
+  defp numeric_tests_skipped_count?(tokens) do
+    tokens
+    |> Enum.chunk_every(3, 1, :discard)
+    |> Enum.any?(fn
+      [count, test_word, "skipped"] when test_word in ["test", "tests"] -> integer_string?(count)
+      [count, test_word, "skip"] when test_word in ["test", "tests"] -> integer_string?(count)
+      _ -> false
+    end)
+  end
+
+  defp successful_result_summary?(normalized) do
+    Regex.match?(~r/\b(?:passed|passing|succeeded|successful|successfully)\b/, normalized) or
+      Regex.match?(~r/\b(?:0|zero|no)\s+failures?\b/, normalized)
+  end
+
+  defp integer_string?(value), do: Regex.match?(~r/^\d+$/, value)
 
   defp only_delegates_to_ci?(normalized) do
     String.contains?(normalized, "ci") and
