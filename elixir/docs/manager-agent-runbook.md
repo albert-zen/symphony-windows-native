@@ -260,14 +260,19 @@ continuity, not as a substitute for recording blockers and review outcomes.
 System-level changes are not complete when merged. After major orchestration,
 runtime, workflow, credential, review-readiness, or concurrency changes land:
 
-1. Fetch the latest canonical `origin/main`.
-2. Rebuild the Elixir runtime from `elixir/`.
-3. Stop the old runtime process cleanly.
-4. Start the runtime with the intended workflow file.
-5. Verify the dashboard responds.
-6. Verify the active process is running the expected commit and configuration.
-7. Verify sensitive settings are redacted and not committed.
-8. Update Linear and GitHub with deployment evidence.
+1. Prefer the dashboard `Runtime deploy` panel or
+   `POST /api/v1/runtime/reload` when the runtime has no active workers and the
+   checkout is clean. Managed reload requires an operator token even on
+   loopback.
+2. Confirm the managed reload fetched `origin/main`, rebuilt the escript,
+   restarted with the same workflow, port, logs root, and PID file, and verified
+   the running commit through `/api/v1/state`. If it fails, inspect the reload
+   status and log for rollback evidence before attempting another reload.
+3. If the managed reload is unavailable, fall back to the manual path: fetch the
+   latest canonical `origin/main`, rebuild from `elixir/`, stop the old process,
+   start with the intended workflow file, and verify the dashboard responds.
+4. Verify sensitive settings are redacted and not committed.
+5. Update Linear and GitHub with deployment evidence.
 
 Only then should the manager consider the system fix operational.
 

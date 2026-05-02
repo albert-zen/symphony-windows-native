@@ -71,6 +71,13 @@ defmodule SymphonyElixir.TestSupport do
           Application.delete_env(:symphony_elixir, :orchestrator_status_fake_linear)
           Application.delete_env(:symphony_elixir, :tasklist_lookup)
           Application.delete_env(:symphony_elixir, :tasklist_cmd)
+          Application.delete_env(:symphony_elixir, :logs_root)
+          Application.delete_env(:symphony_elixir, :pid_file)
+          Application.delete_env(:symphony_elixir, :started_at)
+          Application.delete_env(:symphony_elixir, :reload_runtime_info)
+          Application.delete_env(:symphony_elixir, :reload_start_fun)
+          Application.delete_env(:symphony_elixir, :reload_now_fun)
+          Application.delete_env(:symphony_elixir, :reload_id_fun)
           File.rm_rf(workflow_root)
         end)
 

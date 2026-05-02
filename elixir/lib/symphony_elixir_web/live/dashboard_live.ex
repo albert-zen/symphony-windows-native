@@ -79,6 +79,27 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
+  def handle_event("reload_runtime", %{"reload" => reload_params}, socket) do
+    operator_token = Map.get(reload_params, "operator_token")
+
+    case authorize_reload(operator_token) do
+      :ok ->
+        case Presenter.request_reload_payload(orchestrator(), snapshot_timeout_ms()) do
+          {:ok, payload} ->
+            {:noreply,
+             socket
+             |> put_flash(:info, "Managed reload queued: #{payload.request_id}.")
+             |> assign(:payload, load_payload())}
+
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, reload_error_message(reason))}
+        end
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, reload_error_message(reason))}
+    end
+  end
+
   defp submit_steer(socket, issue_identifier, message, session_id) do
     if non_blank_binary?(session_id) do
       case Presenter.steer_payload(issue_identifier, message, session_id, orchestrator()) do
@@ -288,6 +309,53 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <p class="metric-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@payload, @now)) %></p>
             <p class="metric-detail">Total Codex runtime across completed and active sessions.</p>
           </article>
+        </section>
+
+        <section class="section-card">
+          <div class="section-header">
+            <div>
+              <h2 class="section-title">Runtime deploy</h2>
+              <p class="section-copy"><%= runtime_deploy_summary(@payload.runtime) %></p>
+            </div>
+            <.form for={%{}} as={:reload} phx-submit="reload_runtime" class="runtime-reload-form">
+              <%= if @steer_token_configured do %>
+                <input
+                  type="password"
+                  name="reload[operator_token]"
+                  class="steer-token"
+                  placeholder="Operator token"
+                  autocomplete="off"
+                />
+              <% end %>
+              <button
+                type="submit"
+                disabled={runtime_reload_disabled?(@payload, @steer_auth_required, @steer_token_configured)}
+              >Apply latest main</button>
+            </.form>
+          </div>
+
+          <div class="metric-grid">
+            <article class="metric-card">
+              <p class="metric-label">Commit</p>
+              <p class="metric-value mono detail-session"><%= short_commit(@payload.runtime.commit) %></p>
+              <p class="metric-detail"><%= @payload.runtime.branch || "detached" %></p>
+            </article>
+            <article class="metric-card">
+              <p class="metric-label">Process</p>
+              <p class="metric-value mono detail-session"><%= @payload.runtime.os_pid || "n/a" %></p>
+              <p class="metric-detail"><%= @payload.runtime.started_at || "start time unavailable" %></p>
+            </article>
+            <article class="metric-card">
+              <p class="metric-label">Workflow</p>
+              <p class="metric-value detail-path"><%= @payload.runtime.workflow_path || "n/a" %></p>
+              <p class="metric-detail">Port <%= @payload.runtime.port || "n/a" %></p>
+            </article>
+            <article class="metric-card">
+              <p class="metric-label">Last reload</p>
+              <p class="metric-value"><%= reload_status(@payload.runtime.reload) %></p>
+              <p class="metric-detail"><%= reload_message(@payload.runtime.reload) %></p>
+            </article>
+          </div>
         </section>
 
         <section class="section-card">
@@ -574,14 +642,23 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
+  defp authorize_reload(operator_token) do
+    authorize_exposed_steer(operator_token)
+  end
+
   defp compare_steer_token(operator_token, expected_token) do
     submitted_token = String.trim(operator_token || "")
 
-    if byte_size(submitted_token) == byte_size(expected_token) and
-         Plug.Crypto.secure_compare(submitted_token, expected_token) do
-      :ok
-    else
-      {:error, :invalid_steer_token}
+    cond do
+      submitted_token == "" ->
+        {:error, :steer_auth_required}
+
+      byte_size(submitted_token) == byte_size(expected_token) and
+          Plug.Crypto.secure_compare(submitted_token, expected_token) ->
+        :ok
+
+      true ->
+        {:error, :invalid_steer_token}
     end
   end
 
@@ -698,6 +775,39 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp rate_limit_metadata(_snapshot), do: "Latest upstream rate-limit snapshot, when available."
+
+  defp runtime_deploy_summary(%{} = runtime) do
+    cond do
+      runtime[:dirty?] == true ->
+        "Reload is blocked until local repository changes are committed or removed."
+
+      is_map(runtime[:reload]) ->
+        "Last managed reload #{reload_status(runtime[:reload])}: #{reload_message(runtime[:reload])}"
+
+      true ->
+        "Apply merged runtime changes through a guarded fetch, build, restart, and health check."
+    end
+  end
+
+  defp runtime_deploy_summary(_runtime), do: "Runtime metadata is unavailable."
+
+  defp runtime_reload_disabled?(payload, _auth_required?, token_configured?) do
+    (payload.running || []) != [] or
+      payload.runtime[:dirty?] == true or
+      not token_configured?
+  end
+
+  defp short_commit(commit) when is_binary(commit) and byte_size(commit) >= 7, do: String.slice(commit, 0, 7)
+  defp short_commit(_commit), do: "n/a"
+
+  defp reload_status(%{} = reload), do: reload[:status] || reload["status"] || "unknown"
+  defp reload_status(_reload), do: "none"
+
+  defp reload_message(%{} = reload) do
+    reload[:message] || reload["message"] || reload[:updated_at] || reload["updated_at"] || "No reload message recorded."
+  end
+
+  defp reload_message(_reload), do: "No managed reload has run yet."
 
   defp rate_limit_rows(snapshot, now) do
     [
@@ -880,6 +990,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp steer_error_message(:steer_auth_required), do: "Operator token is required before steering exposed workers."
   defp steer_error_message(:invalid_steer_token), do: "Operator token is invalid."
   defp steer_error_message(reason), do: "Steer failed: #{inspect(reason)}"
+
+  defp reload_error_message({:active_workers, count}), do: "Reload is blocked while #{count} worker(s) are active."
+  defp reload_error_message(:dirty_repo), do: "Reload is blocked because the runtime checkout has uncommitted changes."
+  defp reload_error_message(:reload_in_progress), do: "Reload is already queued or running."
+  defp reload_error_message(:snapshot_timeout), do: "Reload could not inspect active workers before timing out."
+  defp reload_error_message(:snapshot_unavailable), do: "Reload could not inspect active workers."
+  defp reload_error_message(:steer_auth_required), do: "Reload requires an operator token."
+  defp reload_error_message(:invalid_steer_token), do: "Reload operator token is invalid."
+  defp reload_error_message(reason), do: "Reload failed: #{inspect(reason)}"
 
   defp state_badge_class(state) do
     base = "state-badge"
