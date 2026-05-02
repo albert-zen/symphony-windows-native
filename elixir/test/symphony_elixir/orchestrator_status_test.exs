@@ -101,6 +101,108 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
            }
   end
 
+  test "orchestrator keeps completed agent messages outside the raw event ring" do
+    issue_id = "issue-completed-agent-messages"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-189",
+      title: "Completed agent messages",
+      description: "Keep completed messages visible",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-189"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :CompletedAgentMessagesOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    started_at = DateTime.utc_now()
+
+    running_entry = %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: "thread-message-turn-message",
+      thread_id: "thread-message",
+      turn_id: "turn-message",
+      turn_count: 1,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      recent_codex_events: [],
+      completed_agent_messages: [],
+      started_at: started_at
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :notification,
+         message: %{
+           "method" => "item/completed",
+           "params" => %{
+             "item" => %{
+               "id" => "msg-189",
+               "type" => "agentMessage",
+               "text" => "Durable completed message"
+             }
+           }
+         },
+         timestamp: started_at
+       }}
+    )
+
+    for index <- 1..90 do
+      send(
+        pid,
+        {:codex_worker_update, issue_id,
+         %{
+           event: :notification,
+           message: %{"method" => "item/commandExecution/outputDelta", "params" => %{"outputDelta" => "noise #{index}"}},
+           timestamp: DateTime.add(started_at, index, :second)
+         }}
+      )
+    end
+
+    snapshot = GenServer.call(pid, :snapshot)
+    assert %{running: [snapshot_entry]} = snapshot
+
+    refute Enum.any?(snapshot_entry.recent_codex_events, fn event ->
+             inspect(event, limit: :infinity) =~ "Durable completed message"
+           end)
+
+    assert [
+             %{
+               event: :notification,
+               message: %{
+                 "method" => "item/completed",
+                 "params" => %{
+                   "item" => %{
+                     "id" => "msg-189",
+                     "type" => "agentMessage",
+                     "text" => "Durable completed message"
+                   }
+                 }
+               }
+             }
+           ] = snapshot_entry.completed_agent_messages
+  end
+
   test "orchestrator snapshot includes command watchdog metadata and stalled policy comments" do
     write_workflow_file!(
       Workflow.workflow_file_path(),

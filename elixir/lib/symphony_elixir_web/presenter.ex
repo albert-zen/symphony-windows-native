@@ -143,7 +143,19 @@ defmodule SymphonyElixirWeb.Presenter do
   defp optional_timeline(running), do: timeline_payload(running)
 
   defp optional_conversation(nil), do: []
-  defp optional_conversation(running), do: running |> Map.get(:recent_codex_events, []) |> worker_conversation()
+
+  defp optional_conversation(running) do
+    running
+    |> conversation_events()
+    |> worker_conversation()
+  end
+
+  defp conversation_events(running) do
+    case Map.get(running, :completed_agent_messages, []) do
+      [_ | _] = messages -> messages
+      _ -> Map.get(running, :recent_codex_events, [])
+    end
+  end
 
   defp retry_error(nil), do: nil
   defp retry_error(retry), do: retry.error

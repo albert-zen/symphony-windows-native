@@ -1795,6 +1795,38 @@ defmodule SymphonyElixir.ExtensionsTest do
     refute html =~ hidden_marker
   end
 
+  test "worker detail projection uses durable completed messages when raw events roll over" do
+    noisy_recent_events =
+      1..80
+      |> Enum.map(fn index ->
+        command_event("item/commandExecution/outputDelta", %{"itemId" => "cmd-#{index}", "outputDelta" => "noise #{index}"}, DateTime.add(~U[2026-01-01 00:00:00Z], index, :second))
+      end)
+
+    snapshot =
+      static_snapshot()
+      |> put_in([:running, Access.at(0), :recent_codex_events], noisy_recent_events)
+      |> put_in([:running, Access.at(0), :completed_agent_messages], [
+        agent_completed_event("msg-durable", "Durable message survives noise.", ~U[2026-01-01 00:00:00Z])
+      ])
+
+    orchestrator_name = Module.concat(__MODULE__, :WorkerDetailDurableMessagesOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    issue_payload = json_response(get(build_conn(), "/api/v1/MT-HTTP"), 200)
+    assert [%{"type" => "assistant", "excerpt" => "Durable message survives noise."}] = issue_payload["conversation"]
+
+    {:ok, _view, html} = live(build_conn(), "/workers/MT-HTTP")
+    assert html =~ "Durable message survives noise."
+    refute html =~ "noise 80"
+  end
+
   test "worker detail projection redacts secrets from completed agent messages" do
     snapshot =
       static_snapshot()
