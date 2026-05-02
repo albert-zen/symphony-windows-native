@@ -481,10 +481,15 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
         reject_unmapped_closing_keyword(body, owner, repo)
 
       [%{owner: issue_owner, repo: issue_repo, number: issue_number}] ->
-        if closing_keyword_for_issue?(body, issue_owner, issue_repo, issue_number) do
-          :ok
-        else
-          {:error, {:review_readiness_missing_closing_keyword, issue_owner, issue_repo, issue_number}}
+        cond do
+          extra_closing_keyword_for_trusted_repo?(body, owner, repo, issue_number) ->
+            {:error, {:review_readiness_unmapped_closing_keyword, owner, repo}}
+
+          closing_keyword_for_issue?(body, issue_owner, issue_repo, issue_number) ->
+            :ok
+
+          true ->
+            {:error, {:review_readiness_missing_closing_keyword, issue_owner, issue_repo, issue_number}}
         end
 
       _ambiguous ->
@@ -553,12 +558,20 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
     number = Regex.escape(to_string(number))
 
     Regex.match?(
-      ~r/\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\s+(?:#{owner}\/#{repo})?##{number}\b/i,
+      ~r/\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\s*:?\s+(?:#{owner}\/#{repo})?##{number}\b/i,
       body
     )
   end
 
   defp closing_keyword_for_issue?(_body, _owner, _repo, _number), do: false
+
+  defp extra_closing_keyword_for_trusted_repo?(body, owner, repo, allowed_number) when is_binary(body) do
+    body
+    |> trusted_repo_closing_keyword_numbers(owner, repo)
+    |> Enum.any?(&(&1 != to_string(allowed_number)))
+  end
+
+  defp extra_closing_keyword_for_trusted_repo?(_body, _owner, _repo, _allowed_number), do: false
 
   defp reject_unmapped_closing_keyword(body, owner, repo) do
     if closing_keyword_for_trusted_repo?(body, owner, repo) do
@@ -569,23 +582,35 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
   end
 
   defp closing_keyword_for_trusted_repo?(body, owner, repo) when is_binary(body) do
-    trusted_repository = normalize_repo_name("#{owner}/#{repo}")
-
-    ~r/\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+(?:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+))?#(\d+)\b/i
-    |> Regex.scan(body)
-    |> Enum.any?(fn
-      [_match, "", _number] ->
-        true
-
-      [_match, repository, _number] ->
-        normalize_repo_name(repository) == trusted_repository
-
-      _ ->
-        false
-    end)
+    body
+    |> trusted_repo_closing_keyword_numbers(owner, repo)
+    |> Enum.any?()
   end
 
   defp closing_keyword_for_trusted_repo?(_body, _owner, _repo), do: false
+
+  defp trusted_repo_closing_keyword_numbers(body, owner, repo) when is_binary(body) do
+    trusted_repository = normalize_repo_name("#{owner}/#{repo}")
+
+    ~r/\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+(?:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+))?#(\d+)\b/i
+    |> Regex.scan(body)
+    |> Enum.flat_map(fn
+      [_match, "", number] ->
+        [number]
+
+      [_match, repository, number] ->
+        if normalize_repo_name(repository) == trusted_repository do
+          [number]
+        else
+          []
+        end
+
+      _ ->
+        []
+    end)
+  end
+
+  defp trusted_repo_closing_keyword_numbers(_body, _owner, _repo), do: []
 
   defp normalize_repo_name(nil), do: nil
 
