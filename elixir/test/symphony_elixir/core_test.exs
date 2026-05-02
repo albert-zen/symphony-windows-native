@@ -1686,7 +1686,9 @@ defmodule SymphonyElixir.CoreTest do
       assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
 
       trace = File.read!(trace_file)
-      assert length(String.split(trace, "RUN", trim: true)) == 1
+      lines = String.split(trace, "\n", trim: true)
+
+      assert Enum.count(lines, &(&1 == "RUN")) == 1
       assert length(Regex.scan(~r/"method":"turn\/start"/, trace)) == 2
     after
       System.delete_env("SYMP_TEST_CODEx_TRACE")

@@ -73,8 +73,11 @@ defmodule SymphonyElixir.AppServerTest do
         labels: ["backend"]
       }
 
-      assert {:error, {:invalid_workspace_cwd, :symlink_escape, ^symlink_workspace, _root}} =
+      assert {:error, {:invalid_workspace_cwd, :symlink_escape, rejected_path, _root}} =
                AppServer.run(symlink_workspace, "guard", issue)
+
+      assert SymphonyElixir.TestSupport.normalize_path_for_assertion(rejected_path) ==
+               SymphonyElixir.TestSupport.normalize_path_for_assertion(symlink_workspace)
     after
       File.rm_rf(test_root)
     end

@@ -25,8 +25,10 @@ defmodule SymphonyElixir.PathSafetyTest do
 
     case File.ln_s(target, link) do
       :ok ->
-        assert PathSafety.canonicalize(Path.join([link, "nested", "file.txt"])) ==
-                 {:ok, Path.join([target, "nested", "file.txt"])}
+        assert {:ok, canonical_path} = PathSafety.canonicalize(Path.join([link, "nested", "file.txt"]))
+
+        assert SymphonyElixir.TestSupport.normalize_path_for_assertion(canonical_path) ==
+                 SymphonyElixir.TestSupport.normalize_path_for_assertion(Path.join([target, "nested", "file.txt"]))
 
       {:error, reason} when reason in [:eperm, :eacces, :enotsup] ->
         :ok

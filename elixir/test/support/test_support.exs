@@ -97,6 +97,46 @@ defmodule SymphonyElixir.TestSupport do
 
   def path_separator, do: if(windows?(), do: ";", else: ":")
 
+  def normalize_path_for_assertion(path) do
+    path
+    |> Path.expand()
+    |> String.replace("\\", "/")
+    |> then(fn expanded ->
+      if windows?() do
+        expanded
+        |> String.downcase()
+        |> normalize_windows_temp_root_for_assertion()
+      else
+        expanded
+      end
+    end)
+  end
+
+  defp normalize_windows_temp_root_for_assertion(path) do
+    windows_temp_roots_for_assertion()
+    |> Enum.reduce(path, fn root, normalized ->
+      String.replace(normalized, root, "<windows-temp-root>")
+    end)
+  end
+
+  defp windows_temp_roots_for_assertion do
+    [
+      System.tmp_dir!(),
+      System.get_env("TEMP"),
+      System.get_env("TMP"),
+      System.get_env("USERPROFILE") && Path.join(System.get_env("USERPROFILE"), "AppData/Local/Temp")
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(fn path ->
+      path
+      |> Path.expand()
+      |> String.replace("\\", "/")
+      |> String.downcase()
+    end)
+    |> Enum.uniq()
+    |> Enum.sort_by(&byte_size/1, :desc)
+  end
+
   def write_node_executable!(executable, javascript) when is_binary(executable) and is_binary(javascript) do
     script = executable <> ".js"
     script_name = Path.basename(script)
