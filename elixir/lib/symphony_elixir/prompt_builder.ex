@@ -9,7 +9,7 @@ defmodule SymphonyElixir.PromptBuilder do
 
   @spec build_prompt(SymphonyElixir.Linear.Issue.t(), keyword()) :: String.t()
   def build_prompt(issue, opts \\ []) do
-    workflow = Workflow.current()
+    workflow = workflow!()
 
     template =
       workflow
@@ -35,22 +35,19 @@ defmodule SymphonyElixir.PromptBuilder do
     |> IO.iodata_to_binary()
   end
 
-  defp prompt_template!({:ok, %{prompt_template: prompt}}), do: default_prompt(prompt)
-
-  defp prompt_template!({:error, reason}) do
-    raise RuntimeError, "workflow_unavailable: #{inspect(reason)}"
+  defp workflow! do
+    case Workflow.current() do
+      {:ok, workflow} -> workflow
+      {:error, reason} -> raise RuntimeError, "workflow_unavailable: #{inspect(reason)}"
+    end
   end
 
-  defp workflow_context!({:ok, %{config: config}}) when is_map(config) do
+  defp prompt_template!(%{prompt_template: prompt}), do: default_prompt(prompt)
+
+  defp workflow_context!(%{config: config}) do
     config
     |> Redactor.redact()
     |> to_solid_map()
-  end
-
-  defp workflow_context!({:ok, _workflow}), do: %{}
-
-  defp workflow_context!({:error, reason}) do
-    raise RuntimeError, "workflow_unavailable: #{inspect(reason)}"
   end
 
   defp parse_template!(prompt) when is_binary(prompt) do

@@ -5,7 +5,10 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
   defmodule FakeLinearClient do
     def fetch_candidate_issues do
-      {:ok, Keyword.get(config(), :candidate_issues, [])}
+      case Keyword.get(config(), :fetch_candidate_issues) do
+        fun when is_function(fun, 0) -> fun.()
+        _ -> {:ok, Keyword.get(config(), :candidate_issues, [])}
+      end
     end
 
     def fetch_issues_by_states(_states), do: {:ok, []}
@@ -1564,8 +1567,17 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
   test "orchestrator triggers an immediate poll cycle shortly after startup" do
     write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_api_token: nil,
+      tracker_api_token: "token",
       poll_interval_ms: 5_000
+    )
+
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+
+    Application.put_env(:symphony_elixir, :orchestrator_status_fake_linear,
+      fetch_candidate_issues: fn ->
+        Process.sleep(100)
+        {:ok, []}
+      end
     )
 
     orchestrator_name = Module.concat(__MODULE__, :ImmediateStartupOrchestrator)
