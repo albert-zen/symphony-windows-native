@@ -192,13 +192,11 @@ defmodule SymphonyElixirWeb.Presenter do
   end
 
   defp lookup_rollouts(issue_identifier) do
-    try do
-      RolloutIndex.lookup(issue_identifier)
-    rescue
-      _ -> []
-    catch
-      _, _ -> []
-    end
+    RolloutIndex.lookup(issue_identifier)
+  rescue
+    _ -> []
+  catch
+    _, _ -> []
   end
 
   defp attach_rollouts(payload, rollouts) do

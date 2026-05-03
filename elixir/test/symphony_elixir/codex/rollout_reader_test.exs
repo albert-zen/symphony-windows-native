@@ -222,6 +222,30 @@ defmodule SymphonyElixir.Codex.RolloutReaderTest do
                Enum.map(parsed, &RolloutReader.to_conversation_item/1)
     end
 
+    test "conversation_items caps initial transcript to the latest items" do
+      path = Path.join(@tmp_dir, "rollout-limited-#{System.unique_integer([:positive])}.jsonl")
+
+      lines =
+        1..5
+        |> Enum.map(fn index ->
+          Jason.encode!(%{
+            "timestamp" => "2026-05-02T10:00:0#{index}Z",
+            "type" => "response_item",
+            "payload" => %{
+              "type" => "message",
+              "role" => "assistant",
+              "content" => "message #{index}"
+            }
+          })
+        end)
+
+      File.write!(path, Enum.join(lines, "\n"))
+      on_exit_cleanup(path)
+
+      assert [%{text: "message 3"}, %{text: "message 4"}, %{text: "message 5"}] =
+               RolloutReader.conversation_items(path, limit: 3)
+    end
+
     test "extracts function_call name and reasoning text" do
       assert %{kind: :tool_call, text: "rg"} =
                RolloutReader.to_conversation_item(

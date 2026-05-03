@@ -35,6 +35,7 @@ defmodule SymphonyElixirWeb.WorkerDetailLive do
   alias SymphonyElixirWeb.{CodexTailServer, Endpoint, ObservabilityPubSub, Presenter}
 
   @runtime_tick_ms 1_000
+  @transcript_limit 300
 
   @impl true
   def mount(%{"issue_identifier" => issue_identifier} = params, _session, socket) do
@@ -87,10 +88,12 @@ defmodule SymphonyElixirWeb.WorkerDetailLive do
 
   def handle_info({:rollout_item, rid, item}, socket) do
     if current_rollout_id(socket) == rid do
+      row = conversation_item_to_row(item, socket.assigns.transcript_count)
+
       {:noreply,
        socket
-       |> stream_insert(:transcript, conversation_item_to_row(item, socket.assigns.transcript_count))
-       |> update(:transcript_count, &(&1 + 1))}
+       |> stream_insert(:transcript, row, limit: -@transcript_limit)
+       |> update(:transcript_count, &min(&1 + 1, @transcript_limit))}
     else
       {:noreply, socket}
     end
@@ -445,6 +448,7 @@ defmodule SymphonyElixirWeb.WorkerDetailLive do
     end
 
     items = load_initial_items(rollout)
+    start_offset = file_size(rollout.path)
 
     rows =
       items
@@ -452,12 +456,12 @@ defmodule SymphonyElixirWeb.WorkerDetailLive do
       |> Enum.map(fn {item, idx} -> conversation_item_to_row(item, idx) end)
 
     if connected?(socket) do
-      _ = CodexTailServer.subscribe(rollout_id: rid, path: rollout.path)
+      _ = CodexTailServer.subscribe(rollout_id: rid, path: rollout.path, start_offset: start_offset)
     end
 
     socket
     |> assign(:current_rollout, rollout)
-    |> stream(:transcript, rows, reset: true)
+    |> stream(:transcript, rows, reset: true, limit: -@transcript_limit)
     |> assign(:transcript_count, length(rows))
   end
 
@@ -469,14 +473,17 @@ defmodule SymphonyElixirWeb.WorkerDetailLive do
   end
 
   defp load_initial_items(rollout) do
-    rollout.path
-    |> RolloutReader.stream()
-    |> Stream.map(&RolloutReader.to_conversation_item/1)
-    |> Stream.reject(&is_nil/1)
-    |> Enum.to_list()
-  rescue
-    _ -> []
+    RolloutReader.conversation_items(rollout.path, limit: @transcript_limit)
   end
+
+  defp file_size(path) when is_binary(path) do
+    case File.stat(path) do
+      {:ok, %File.Stat{size: size}} -> size
+      _ -> 0
+    end
+  end
+
+  defp file_size(_), do: 0
 
   defp conversation_item_to_row(item, idx) do
     Map.put(item, :id, "tr-#{idx}-#{System.unique_integer([:positive])}")

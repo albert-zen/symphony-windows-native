@@ -97,6 +97,26 @@ defmodule SymphonyElixir.Codex.RolloutReader do
   end
 
   @doc """
+  Read projected conversation items from a rollout file.
+
+  Pass `limit: n` to return only the latest `n` projected items. This keeps
+  Worker Details initial renders bounded even when a Codex session has a long
+  JSONL history.
+  """
+  @spec conversation_items(Path.t(), keyword()) :: [conversation_item()]
+  def conversation_items(path, opts \\ []) when is_binary(path) do
+    limit = Keyword.get(opts, :limit, :all)
+
+    path
+    |> stream()
+    |> Stream.map(&to_conversation_item/1)
+    |> Stream.reject(&is_nil/1)
+    |> take_latest(limit)
+  rescue
+    _ -> []
+  end
+
+  @doc """
   Project a parsed line to a `t:conversation_item/0`.
 
   Returns `nil` for items that should be hidden from the human transcript
@@ -117,6 +137,13 @@ defmodule SymphonyElixir.Codex.RolloutReader do
   def to_conversation_item(_), do: nil
 
   # ---- internals ----------------------------------------------------------
+
+  defp take_latest(stream, :all), do: Enum.to_list(stream)
+
+  defp take_latest(stream, limit) when is_integer(limit) and limit > 0,
+    do: Enum.take(stream, -limit)
+
+  defp take_latest(_stream, _limit), do: []
 
   defp read_meta_from_io(io, path) do
     case IO.binread(io, :line) do
@@ -140,29 +167,27 @@ defmodule SymphonyElixir.Codex.RolloutReader do
   defp decode_line(line, path) do
     trimmed = String.trim(line)
 
-    cond do
-      trimmed == "" ->
-        nil
+    if trimmed == "" do
+      nil
+    else
+      case Jason.decode(trimmed) do
+        {:ok, %{"type" => "session_meta"} = obj} ->
+          {:meta, obj}
 
-      true ->
-        case Jason.decode(trimmed) do
-          {:ok, %{"type" => "session_meta"} = obj} ->
-            {:meta, obj}
+        {:ok, %{"type" => "event_msg"} = obj} ->
+          {:event, obj}
 
-          {:ok, %{"type" => "event_msg"} = obj} ->
-            {:event, obj}
+        {:ok, %{"type" => "response_item"} = obj} ->
+          {:response, obj}
 
-          {:ok, %{"type" => "response_item"} = obj} ->
-            {:response, obj}
+        {:ok, _other} ->
+          :unknown
 
-          {:ok, _other} ->
-            :unknown
+        {:error, reason} ->
+          Logger.debug("rollout_reader: skipping malformed line in #{path}: #{inspect(reason)}")
 
-          {:error, reason} ->
-            Logger.debug("rollout_reader: skipping malformed line in #{path}: #{inspect(reason)}")
-
-            nil
-        end
+          nil
+      end
     end
   end
 

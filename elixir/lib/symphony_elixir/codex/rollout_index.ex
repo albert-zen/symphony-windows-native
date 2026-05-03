@@ -222,7 +222,18 @@ defmodule SymphonyElixir.Codex.RolloutIndex do
 
   defp entry_for_path(path, %State{} = state) do
     path = normalize_path(path)
+    mtime = file_mtime(path)
 
+    case Map.get(state.by_path, path) do
+      %{mtime: ^mtime} = entry when not is_nil(mtime) ->
+        entry
+
+      _ ->
+        read_entry(path, state, mtime)
+    end
+  end
+
+  defp read_entry(path, %State{} = state, mtime) do
     case RolloutReader.read_meta(path) do
       {:ok, meta} ->
         cwd = meta.cwd
@@ -235,7 +246,7 @@ defmodule SymphonyElixir.Codex.RolloutIndex do
           issue_identifier: issue_identifier,
           started_at: meta.started_at,
           model: meta.model,
-          mtime: file_mtime(path)
+          mtime: mtime
         }
 
       {:error, _reason} ->
@@ -257,13 +268,11 @@ defmodule SymphonyElixir.Codex.RolloutIndex do
   def derive_issue_identifier(cwd, workspace_root) when is_binary(cwd) do
     normalized_cwd = normalize_path(cwd)
 
-    cond do
-      is_binary(workspace_root) and not within_root?(normalized_cwd, workspace_root) ->
-        nil
-
-      true ->
-        candidate = normalized_cwd |> Path.basename() |> sanitize_identifier()
-        if candidate == "", do: nil, else: candidate
+    if is_binary(workspace_root) and not within_root?(normalized_cwd, workspace_root) do
+      nil
+    else
+      candidate = normalized_cwd |> Path.basename() |> sanitize_identifier()
+      if candidate == "", do: nil, else: candidate
     end
   end
 
@@ -301,12 +310,10 @@ defmodule SymphonyElixir.Codex.RolloutIndex do
   end
 
   defp resolve_workspace_root do
-    try do
-      Config.settings!().workspace.root
-    rescue
-      _ -> nil
-    catch
-      _, _ -> nil
-    end
+    Config.settings!().workspace.root
+  rescue
+    _ -> nil
+  catch
+    _, _ -> nil
   end
 end

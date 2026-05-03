@@ -74,9 +74,19 @@ defmodule SymphonyElixirWeb.CodexTailServer do
     rollout_id = Keyword.fetch!(opts, :rollout_id)
     pubsub = Keyword.get(opts, :pubsub, SymphonyElixir.PubSub)
 
-    with {:ok, _pid} <- start(opts),
-         :ok <- PubSub.subscribe(pubsub, topic(rollout_id)) do
-      :ok
+    case PubSub.subscribe(pubsub, topic(rollout_id)) do
+      :ok ->
+        case start(opts) do
+          {:ok, _pid} ->
+            :ok
+
+          {:error, reason} ->
+            PubSub.unsubscribe(pubsub, topic(rollout_id))
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -113,11 +123,13 @@ defmodule SymphonyElixirWeb.CodexTailServer do
       rollout_id: Keyword.fetch!(opts, :rollout_id),
       path: Keyword.fetch!(opts, :path),
       pubsub: Keyword.get(opts, :pubsub, SymphonyElixir.PubSub),
-      offset: 0,
+      offset: Keyword.get(opts, :start_offset, 0),
+      poll_interval_ms: Keyword.get(opts, :poll_interval_ms, @poll_interval_ms),
+      idle_timeout_ms: Keyword.get(opts, :idle_timeout_ms, @idle_timeout_ms),
       idle_since: System.monotonic_time(:millisecond)
     }
 
-    Process.send_after(self(), :poll, @poll_interval_ms)
+    schedule_poll(state)
     {:ok, state}
   end
 
@@ -125,25 +137,25 @@ defmodule SymphonyElixirWeb.CodexTailServer do
   def handle_info(:poll, state) do
     state = poll(state)
 
-    cond do
-      no_subscribers?(state) and idle_too_long?(state) ->
-        {:stop, :normal, state}
+    if no_subscribers?(state) and idle_too_long?(state) do
+      {:stop, :normal, state}
+    else
+      schedule_poll(state)
 
-      true ->
-        Process.send_after(self(), :poll, @poll_interval_ms)
+      state =
+        if no_subscribers?(state),
+          do: state,
+          else: %{state | idle_since: System.monotonic_time(:millisecond)}
 
-        state =
-          if no_subscribers?(state),
-            do: state,
-            else: %{state | idle_since: System.monotonic_time(:millisecond)}
-
-        {:noreply, state}
+      {:noreply, state}
     end
   end
 
   def handle_info(_other, state), do: {:noreply, state}
 
   # ---- internals ---------------------------------------------------------
+
+  defp schedule_poll(%{poll_interval_ms: interval}), do: Process.send_after(self(), :poll, interval)
 
   defp poll(%{path: path, offset: offset} = state) do
     case File.stat(path) do
@@ -227,20 +239,15 @@ defmodule SymphonyElixirWeb.CodexTailServer do
   end
 
   defp no_subscribers?(%{pubsub: pubsub, rollout_id: rid}) do
-    case Registry.lookup(pubsub_registry(pubsub), topic(rid)) do
+    case Registry.lookup(pubsub, topic(rid)) do
       [] -> true
       _ -> false
     end
   rescue
-    # If the PubSub adapter doesn't expose a Registry, fall back to "always
-    # has subscribers" — the idle-timeout still bounds memory because the
-    # supervisor restarts the tailer on demand.
-    _ -> false
+    _ -> true
   end
 
-  defp pubsub_registry(pubsub), do: Module.concat(pubsub, "Registry")
-
-  defp idle_too_long?(%{idle_since: since}) do
-    System.monotonic_time(:millisecond) - since > @idle_timeout_ms
+  defp idle_too_long?(%{idle_since: since, idle_timeout_ms: timeout}) do
+    System.monotonic_time(:millisecond) - since > timeout
   end
 end
