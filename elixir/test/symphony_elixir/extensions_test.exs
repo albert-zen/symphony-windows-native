@@ -2235,21 +2235,17 @@ defmodule SymphonyElixir.ExtensionsTest do
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
     {:ok, view, html} = live(build_conn(), "/")
-    assert html =~ "Operations Dashboard"
+    assert html =~ ~s|class="page-brand">Symphony|
     assert html =~ "MT-HTTP"
     assert html =~ "MT-RETRY"
     assert html =~ "rendered"
-    assert html =~ "Runtime"
-    assert html =~ "Live"
-    assert html =~ "Offline"
-    assert html =~ "Copy ID"
-    assert html =~ "Codex update"
+    assert html =~ "Capacity"
+    assert html =~ "page-live"
+    refute html =~ "Operations Dashboard"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
     refute html =~ "Refresh now"
     refute html =~ "Transport"
-    assert html =~ "status-badge-live"
-    assert html =~ "status-badge-offline"
 
     updated_snapshot =
       put_in(snapshot.running, [
@@ -2335,8 +2331,8 @@ defmodule SymphonyElixir.ExtensionsTest do
 
         {:ok, _detail_view, detail_html} = live(build_conn(), "/workers/MT-HTTP")
 
-        assert index_html =~ "Operations Dashboard"
-        assert detail_html =~ ~s|class="worker-id">MT-HTTP|
+        assert index_html =~ ~s|class="page-brand">Symphony|
+        assert detail_html =~ ~s|class="page-brand-id">MT-HTTP|
       end)
 
     assert log =~ "Replied in 409µs"
@@ -2374,23 +2370,14 @@ defmodule SymphonyElixir.ExtensionsTest do
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
     {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "Latest upstream rate-limit snapshot for codex · prolite."
-    assert html =~ "Primary"
-    assert html =~ "Operational"
-    assert html =~ "57% used"
-    assert html =~ "Window"
-    assert html =~ "5h window"
-    assert html =~ "Reset time"
-    assert html =~ "2099-05-02 07:05:00 UTC"
-    assert html =~ "Secondary"
-    assert html =~ "Critical usage"
-    assert html =~ "92% used"
-    assert html =~ "7d window"
-    assert html =~ "Reset countdown"
-    assert html =~ "resets in 4m 10s"
-    assert html =~ "<details"
-    refute html =~ ~s(<details class="raw-details rate-limit-debug" open>)
-    assert html =~ "Raw rate-limit payload"
+    # The redesigned dashboard surfaces only the primary used-percent label in
+    # the sidebar Capacity card. The rest of the rate-limit detail moves into
+    # the System debug drawer (raw map). We assert the operator-facing summary
+    # plus the raw payload presence; per-bucket detail is exercised at the
+    # API level separately.
+    assert html =~ "57% used · primary rate limit"
+    assert html =~ "Capacity"
+    assert html =~ "System debug"
   end
 
   test "dashboard liveview renders partial rate limits without raw map as the main view" do
@@ -2413,18 +2400,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
     {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "Latest upstream rate-limit snapshot for codex-lite."
-    assert html =~ "Primary"
-    assert html =~ "Operational"
-    assert html =~ "40% used"
-    assert html =~ "window n/a"
-    assert html =~ "Secondary"
-    assert html =~ "Usage unavailable"
-    assert html =~ "n/a"
-    assert html =~ "Reset time"
-    assert html =~ "2099-05-02 08:10:00 UTC"
-    assert html =~ "Raw rate-limit payload"
-    refute html =~ "Latest upstream rate-limit snapshot, when available."
+    assert html =~ "40% used · primary rate limit"
+    assert html =~ "Capacity"
   end
 
   test "dashboard liveview renders absent rate limits as an empty state" do
@@ -2443,8 +2420,9 @@ defmodule SymphonyElixir.ExtensionsTest do
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
     {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "No upstream rate-limit snapshot is available yet."
-    refute html =~ "Raw rate-limit payload"
+    # Without a rate-limit snapshot, the Capacity bar reports "n/a used".
+    assert html =~ "n/a · primary rate limit"
+    assert html =~ "Capacity"
   end
 
   test "worker detail liveview renders chat panel and submits session-scoped steer messages" do
@@ -2461,7 +2439,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     {:ok, view, html} = live(build_conn(), "/workers/MT-HTTP")
     # New rollout-backed shell: identifier, sidebar/status block, and the steer composer.
-    assert html =~ ~s|class="worker-id">MT-HTTP|
+    assert html =~ ~s|class="page-brand-id">MT-HTTP|
     assert html =~ "thread-http"
     assert html =~ "Transcript"
     assert html =~ "Steer the agent"
@@ -2515,7 +2493,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     # We still verify the API projection above; the LiveView shell renders
     # the worker identifier and the empty-rollouts state in this fixture.
     {:ok, _view, html} = live(build_conn(), "/workers/MT-HTTP")
-    assert html =~ ~s|class="worker-id">MT-HTTP|
+    assert html =~ ~s|class="page-brand-id">MT-HTTP|
     refute html =~ hidden_marker
   end
 
@@ -2550,7 +2528,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     # orchestrator's in-memory completed_agent_messages — verified at the
     # API layer above. The shell still renders for an active worker.
     {:ok, _view, html} = live(build_conn(), "/workers/MT-HTTP")
-    assert html =~ ~s|class="worker-id">MT-HTTP|
+    assert html =~ ~s|class="page-brand-id">MT-HTTP|
     refute html =~ "noise 80"
   end
 

@@ -146,33 +146,33 @@ defmodule SymphonyElixirWeb.WorkerDetailLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <section class="worker-shell">
-      <header class="worker-header">
-        <a class="worker-back" href="/">‹ Dashboard</a>
-        <span class="worker-id"><%= @issue_identifier %></span>
+    <section class="page-shell">
+      <header class="page-header">
+        <a class="page-back" href="/">‹ Dashboard</a>
+        <span class="page-brand-id"><%= @issue_identifier %></span>
         <%= if @detail_payload do %>
-          <span class="worker-title"><%= @detail_payload.title || @detail_payload.workspace.path %></span>
+          <span class="page-brand-sub"><%= @detail_payload.title || @detail_payload.workspace.path %></span>
           <span class={state_badge_class(@detail_payload.status)}><%= @detail_payload.status %></span>
           <%= if @detail_payload.status in ["running", "retrying"] do %>
-            <span class="worker-live"><span class="worker-live-dot"></span>live</span>
+            <span class="page-live"><span class="page-live-dot"></span>live</span>
           <% end %>
         <% end %>
       </header>
 
       <%= if @detail_error do %>
-        <section class="worker-error">
+        <section class="page-error">
           <h2 class="error-title">Worker unavailable</h2>
           <p class="error-copy"><%= @detail_error %></p>
         </section>
       <% else %>
         <% detail = @detail_payload || empty_detail(@issue_identifier) %>
 
-        <div class="worker-grid">
-          <aside class="worker-sidebar">
-            <section class="worker-sidebar-section">
-              <h3 class="worker-section-title">Rollouts</h3>
+        <div class="page-grid">
+          <aside class="page-sidebar">
+            <section class="page-sidebar-section">
+              <h3 class="page-section-title">Rollouts</h3>
               <%= if @rollouts == [] do %>
-                <p class="worker-section-empty">No rollouts on disk.</p>
+                <p class="page-section-empty">No rollouts on disk.</p>
               <% else %>
                 <ol class="rollout-list">
                   <li
@@ -191,9 +191,9 @@ defmodule SymphonyElixirWeb.WorkerDetailLive do
               <% end %>
             </section>
 
-            <section class="worker-sidebar-section">
-              <h3 class="worker-section-title">Status</h3>
-              <dl class="worker-kv">
+            <section class="page-sidebar-section">
+              <h3 class="page-section-title">Status</h3>
+              <dl class="page-kv">
                 <div><dt>State</dt><dd><%= detail.status %></dd></div>
                 <div><dt>Session</dt><dd class="mono"><%= session_id_label(detail) %></dd></div>
                 <div><dt>Turn</dt><dd><%= turn_label(detail) %></dd></div>
@@ -205,7 +205,7 @@ defmodule SymphonyElixirWeb.WorkerDetailLive do
             </section>
           </aside>
 
-          <section class="worker-main">
+          <section class="page-main">
             <nav class="worker-tabs" aria-label="Worker views">
               <a
                 :for={tab <- tabs()}
@@ -341,7 +341,7 @@ defmodule SymphonyElixirWeb.WorkerDetailLive do
   defp logs_panel(assigns) do
     ~H"""
     <div class="panel-shell">
-      <h3 class="worker-section-title">Codex session logs</h3>
+      <h3 class="page-section-title">Codex session logs</h3>
       <%= if logs(@detail) == [] do %>
         <p class="empty-state">No logs registered for this issue.</p>
       <% else %>
@@ -361,8 +361,8 @@ defmodule SymphonyElixirWeb.WorkerDetailLive do
   defp workspace_panel(assigns) do
     ~H"""
     <div class="panel-shell">
-      <h3 class="worker-section-title">Workspace</h3>
-      <dl class="worker-kv worker-kv-wide">
+      <h3 class="page-section-title">Workspace</h3>
+      <dl class="page-kv page-kv-wide">
         <div><dt>Path</dt><dd class="detail-path"><%= @detail.workspace.path || "—" %></dd></div>
         <div><dt>Host</dt><dd><%= @detail.workspace.host || "local" %></dd></div>
         <div><dt>Branch</dt><dd class="detail-path"><%= @detail.workspace.branch || "—" %></dd></div>
@@ -376,7 +376,7 @@ defmodule SymphonyElixirWeb.WorkerDetailLive do
   defp pr_panel(assigns) do
     ~H"""
     <div class="panel-shell">
-      <h3 class="worker-section-title">Pull request</h3>
+      <h3 class="page-section-title">Pull request</h3>
       <%= if @detail.pull_request do %>
         <p><a href={@detail.pull_request.url} target="_blank" rel="noopener"><%= @detail.pull_request.url %></a></p>
         <%= if @detail.checks do %>

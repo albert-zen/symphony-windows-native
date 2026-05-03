@@ -13,9 +13,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     socket =
       socket
       |> assign(:payload, load_payload())
-      |> assign(:detail_payload, nil)
-      |> assign(:detail_error, nil)
-      |> assign(:issue_identifier, nil)
+      |> assign(:filter, :all)
       |> assign(:steer_auth_required, steer_auth_required?())
       |> assign(:steer_token_configured, steer_token_configured?())
       |> assign(:now, DateTime.utc_now())
@@ -29,17 +27,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   @impl true
-  def handle_params(%{"issue_identifier" => issue_identifier}, _uri, socket) do
-    {:noreply, assign_detail_payload(socket, issue_identifier)}
-  end
-
-  def handle_params(_params, _uri, socket) do
-    {:noreply,
-     socket
-     |> assign(:detail_payload, nil)
-     |> assign(:detail_error, nil)
-     |> assign(:issue_identifier, nil)}
-  end
+  def handle_params(_params, _uri, socket), do: {:noreply, socket}
 
   @impl true
   def handle_info(:runtime_tick, socket) do
@@ -49,34 +37,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   @impl true
   def handle_info(:observability_updated, socket) do
-    socket =
-      socket
-      |> assign(:payload, load_payload())
-      |> assign(:now, DateTime.utc_now())
-
-    socket =
-      case socket.assigns[:issue_identifier] do
-        issue_identifier when is_binary(issue_identifier) -> assign_detail_payload(socket, issue_identifier)
-        _ -> socket
-      end
-
-    {:noreply, socket}
+    {:noreply,
+     socket
+     |> assign(:payload, load_payload())
+     |> assign(:now, DateTime.utc_now())}
   end
 
   @impl true
-  def handle_event("steer", %{"steer" => steer_params}, socket) do
-    issue_identifier = socket.assigns.issue_identifier
-    message = Map.get(steer_params, "message", "")
-    session_id = Map.get(steer_params, "session_id")
-    operator_token = Map.get(steer_params, "operator_token")
-
-    case authorize_steer(operator_token) do
-      :ok ->
-        submit_steer(socket, issue_identifier, message, session_id)
-
-      {:error, reason} ->
-        {:noreply, put_flash(socket, :error, steer_error_message(reason))}
-    end
+  def handle_event("filter", %{"kind" => kind}, socket) do
+    {:noreply, assign(socket, :filter, normalize_filter(kind))}
   end
 
   def handle_event("reload_runtime", %{"reload" => reload_params}, socket) do
@@ -100,376 +69,285 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
-  defp submit_steer(socket, issue_identifier, message, session_id) do
-    if non_blank_binary?(session_id) do
-      case Presenter.steer_payload(issue_identifier, message, session_id, orchestrator()) do
-        {:ok, _payload} ->
-          {:noreply,
-           socket
-           |> put_flash(:info, "Steer message queued for #{issue_identifier}.")
-           |> assign_detail_payload(issue_identifier)}
-
-        {:error, reason} ->
-          {:noreply, put_flash(socket, :error, steer_error_message(reason))}
-      end
-    else
-      {:noreply, put_flash(socket, :error, steer_error_message(:session_mismatch))}
-    end
-  end
-
   @impl true
   def render(assigns) do
     ~H"""
-    <section class="dashboard-shell">
-      <header class="hero-card">
-        <div class="hero-grid">
-          <div>
-            <p class="eyebrow">
-              Symphony Observability
-            </p>
-            <h1 class="hero-title">
-              Operations Dashboard
-            </h1>
-            <p class="hero-copy">
-              Current state, retry pressure, token usage, and orchestration health for the active Symphony runtime.
-            </p>
-          </div>
-
-          <div class="status-stack">
-            <span class="status-badge status-badge-live">
-              <span class="status-badge-dot"></span>
-              Live
-            </span>
-            <span class="status-badge status-badge-offline">
-              <span class="status-badge-dot"></span>
-              Offline
-            </span>
-          </div>
-        </div>
+    <section class="page-shell">
+      <header class="page-header dashboard-header">
+        <span class="page-brand">Symphony</span>
+        <span class="page-brand-sub">Operations</span>
+        <%= if @payload[:runtime] && @payload.runtime.commit do %>
+          <span class="page-meta mono"><%= short_commit(@payload.runtime.commit) %></span>
+        <% end %>
+        <span class="page-live">
+          <span class="page-live-dot"></span>
+          <%= dashboard_freshness_label(@payload[:generated_at], @now) %>
+        </span>
+        <.form for={%{}} as={:reload} phx-submit="reload_runtime" class="header-reload">
+          <%= if @steer_token_configured do %>
+            <input
+              type="password"
+              name="reload[operator_token]"
+              class="steer-token"
+              placeholder="Operator token"
+              autocomplete="off"
+            />
+          <% end %>
+          <button
+            type="submit"
+            class="secondary"
+            disabled={runtime_reload_disabled?(@payload, @steer_auth_required, @steer_token_configured)}
+          >Reload runtime</button>
+        </.form>
       </header>
 
       <%= if @payload[:error] do %>
-        <section class="error-card">
-          <h2 class="error-title">
-            Snapshot unavailable
-          </h2>
-          <p class="error-copy">
-            <strong><%= @payload.error.code %>:</strong> <%= @payload.error.message %>
-          </p>
+        <section class="page-error">
+          <h2 class="error-title">Snapshot unavailable</h2>
+          <p class="error-copy"><strong><%= @payload.error.code %>:</strong> <%= @payload.error.message %></p>
         </section>
       <% else %>
-        <section class="metric-grid">
-          <article class="metric-card">
-            <p class="metric-label">Running</p>
-            <p class="metric-value numeric"><%= @payload.counts.running %></p>
-            <p class="metric-detail">Active issue sessions in the current runtime.</p>
-          </article>
+        <% running = @payload.running || [] %>
+        <% retrying = @payload.retrying || [] %>
+        <% retrying_ids = MapSet.new(retrying, & &1.issue_identifier) %>
+        <% classified = Enum.map(running, &Map.put(&1, :__triage, triage_classification(&1, retrying_ids))) %>
+        <% counts = triage_counts(classified, retrying) %>
+        <% alerts = alert_rows(classified) %>
+        <% filtered = filter_running(classified, @filter) %>
+        <% primary_used = primary_rate_limit_used(@payload.rate_limits) %>
 
-          <article class="metric-card">
-            <p class="metric-label">Retrying</p>
-            <p class="metric-value numeric"><%= @payload.counts.retrying %></p>
-            <p class="metric-detail">Issues waiting for the next retry window.</p>
-          </article>
+        <div class="page-grid">
+          <aside class="page-sidebar">
+            <section class="page-sidebar-section dock">
+              <h3 class="page-section-title">Capacity</h3>
+              <div class="dock-pair">
+                <div class="dock-pair-cell">
+                  <span class="dock-numeral"><%= counts.running %></span>
+                  <span class="dock-numeral-label">running</span>
+                </div>
+                <div class="dock-pair-cell">
+                  <span class="dock-numeral"><%= counts.retrying %></span>
+                  <span class="dock-numeral-label">retrying</span>
+                </div>
+              </div>
+              <div class="dock-bar" aria-label="Primary rate limit used">
+                <span
+                  class={"dock-bar-fill " <> rate_limit_bar_class(primary_used)}
+                  style={"width: " <> Integer.to_string(primary_used || 0) <> "%"}
+                ></span>
+              </div>
+              <p class="dock-bar-label"><%= used_label(primary_used) %> · primary rate limit</p>
+            </section>
 
-          <article class="metric-card">
-            <p class="metric-label">Total tokens</p>
-            <p class="metric-value numeric"><%= format_int(@payload.codex_totals.total_tokens) %></p>
-            <p class="metric-detail numeric">
-              In <%= format_int(@payload.codex_totals.input_tokens) %> / Out <%= format_int(@payload.codex_totals.output_tokens) %>
-            </p>
-          </article>
+            <section class="page-sidebar-section dock">
+              <h3 class="page-section-title">Tokens</h3>
+              <p class="dock-numeral numeric"><%= format_int(@payload.codex_totals.total_tokens) %></p>
+              <% in_pct = token_share(@payload.codex_totals.input_tokens, @payload.codex_totals.total_tokens) %>
+              <% out_pct = token_share(@payload.codex_totals.output_tokens, @payload.codex_totals.total_tokens) %>
+              <div class="dock-bar dock-bar-split" aria-label="Token in/out share">
+                <span class="dock-bar-input" style={"width: " <> Integer.to_string(in_pct) <> "%"}></span>
+                <span class="dock-bar-output" style={"width: " <> Integer.to_string(out_pct) <> "%"}></span>
+              </div>
+              <p class="dock-bar-label numeric">
+                in <%= format_int(@payload.codex_totals.input_tokens) %>
+                · out <%= format_int(@payload.codex_totals.output_tokens) %>
+              </p>
+            </section>
 
-          <article class="metric-card">
-            <p class="metric-label">Runtime</p>
-            <p class="metric-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@payload, @now)) %></p>
-            <p class="metric-detail">Total Codex runtime across completed and active sessions.</p>
-          </article>
-        </section>
+            <section class="page-sidebar-section">
+              <h3 class="page-section-title">Runtime</h3>
+              <dl class="page-kv">
+                <div>
+                  <dt>Commit</dt>
+                  <dd class="mono"><%= short_commit(@payload.runtime.commit) %> · <%= @payload.runtime.branch || "detached" %></dd>
+                </div>
+                <div>
+                  <dt>Port</dt>
+                  <dd class="mono"><%= @payload.runtime.port || "n/a" %></dd>
+                </div>
+                <div>
+                  <dt>PID</dt>
+                  <dd class="mono"><%= @payload.runtime.os_pid || "n/a" %></dd>
+                </div>
+                <div>
+                  <dt>Up</dt>
+                  <dd><%= uptime_label(@payload.runtime.started_at, @now) %></dd>
+                </div>
+              </dl>
+            </section>
 
-        <section class="section-card">
-          <div class="section-header">
-            <div>
-              <h2 class="section-title">Runtime deploy</h2>
-              <p class="section-copy"><%= runtime_deploy_summary(@payload.runtime) %></p>
-            </div>
-            <.form for={%{}} as={:reload} phx-submit="reload_runtime" class="runtime-reload-form">
-              <%= if @steer_token_configured do %>
-                <input
-                  type="password"
-                  name="reload[operator_token]"
-                  class="steer-token"
-                  placeholder="Operator token"
-                  autocomplete="off"
-                />
-              <% end %>
+            <section class="page-sidebar-section">
+              <h3 class="page-section-title">Cleanup</h3>
+              <p class="dock-bar-label"><%= workspace_cleanup_summary(@payload.workspace_cleanup) %></p>
+              <dl class="page-kv">
+                <div>
+                  <dt>Cleaned</dt>
+                  <dd class="numeric"><%= format_int(workspace_cleanup_value(@payload.workspace_cleanup, :cleaned)) %></dd>
+                </div>
+                <div>
+                  <dt>Kept</dt>
+                  <dd class="numeric"><%= format_int(workspace_cleanup_value(@payload.workspace_cleanup, :preserved)) %></dd>
+                </div>
+                <div>
+                  <dt>TTL</dt>
+                  <dd><%= workspace_cleanup_ttl(@payload.workspace_cleanup) %></dd>
+                </div>
+              </dl>
+            </section>
+          </aside>
+
+          <section class="page-main">
+            <%= if alerts != [] do %>
+              <ul class="alert-banner">
+                <li :for={a <- alerts} class={"alert-row alert-row-" <> Atom.to_string(a.tone)}>
+                  <a href={"/workers/" <> a.identifier}>
+                    <span class="alert-marker"><%= a.marker %></span>
+                    <span class="alert-id mono"><%= a.identifier %></span>
+                    <span class="alert-text"><%= a.text %></span>
+                    <span class="alert-cta">→</span>
+                  </a>
+                </li>
+              </ul>
+            <% end %>
+
+            <nav class="triage-chips" aria-label="Filter active workers">
               <button
-                type="submit"
-                disabled={runtime_reload_disabled?(@payload, @steer_auth_required, @steer_token_configured)}
-              >Apply latest main</button>
-            </.form>
-          </div>
+                type="button"
+                phx-click="filter"
+                phx-value-kind="all"
+                class={chip_class(@filter, :all)}
+              >All <span class="chip-count"><%= counts.total_visible %></span></button>
+              <button
+                type="button"
+                phx-click="filter"
+                phx-value-kind="stalled"
+                class={chip_class(@filter, :stalled)}
+                disabled={counts.stalled == 0}
+              >⚠ stalled <span class="chip-count"><%= counts.stalled %></span></button>
+              <button
+                type="button"
+                phx-click="filter"
+                phx-value-kind="retrying"
+                class={chip_class(@filter, :retrying)}
+                disabled={counts.retrying == 0}
+              >↻ retrying <span class="chip-count"><%= counts.retrying %></span></button>
+              <button
+                type="button"
+                phx-click="filter"
+                phx-value-kind="errored"
+                class={chip_class(@filter, :errored)}
+                disabled={counts.errored == 0}
+              >✕ errored <span class="chip-count"><%= counts.errored %></span></button>
+            </nav>
 
-          <div class="metric-grid">
-            <article class="metric-card">
-              <p class="metric-label">Commit</p>
-              <p class="metric-value mono detail-session"><%= short_commit(@payload.runtime.commit) %></p>
-              <p class="metric-detail"><%= @payload.runtime.branch || "detached" %></p>
-            </article>
-            <article class="metric-card">
-              <p class="metric-label">Process</p>
-              <p class="metric-value mono detail-session"><%= @payload.runtime.os_pid || "n/a" %></p>
-              <p class="metric-detail"><%= @payload.runtime.started_at || "start time unavailable" %></p>
-            </article>
-            <article class="metric-card">
-              <p class="metric-label">Workflow</p>
-              <p class="metric-value detail-path"><%= @payload.runtime.workflow_path || "n/a" %></p>
-              <p class="metric-detail">Port <%= @payload.runtime.port || "n/a" %></p>
-            </article>
-            <article class="metric-card">
-              <p class="metric-label">Last reload</p>
-              <p class="metric-value"><%= reload_status(@payload.runtime.reload) %></p>
-              <p class="metric-detail"><%= reload_message(@payload.runtime.reload) %></p>
-            </article>
-          </div>
-        </section>
-
-        <section class="section-card">
-          <div class="section-header">
-            <div>
-              <h2 class="section-title">Workspace cleanup</h2>
-              <p class="section-copy"><%= workspace_cleanup_summary(@payload.workspace_cleanup) %></p>
-            </div>
-          </div>
-
-          <div class="metric-grid">
-            <article class="metric-card">
-              <p class="metric-label">Status</p>
-              <p class="metric-value"><%= workspace_cleanup_value(@payload.workspace_cleanup, :status) %></p>
-              <p class="metric-detail">Startup cleanup runs after the app is ready.</p>
-            </article>
-            <article class="metric-card">
-              <p class="metric-label">Cleaned</p>
-              <p class="metric-value numeric"><%= format_int(workspace_cleanup_value(@payload.workspace_cleanup, :cleaned)) %></p>
-              <p class="metric-detail">Terminal workspaces past retention.</p>
-            </article>
-            <article class="metric-card">
-              <p class="metric-label">Preserved</p>
-              <p class="metric-value numeric"><%= format_int(workspace_cleanup_value(@payload.workspace_cleanup, :preserved)) %></p>
-              <p class="metric-detail">Active, protected, or recent entries.</p>
-            </article>
-            <article class="metric-card">
-              <p class="metric-label">TTL</p>
-              <p class="metric-value numeric"><%= workspace_cleanup_ttl(@payload.workspace_cleanup) %></p>
-              <p class="metric-detail">Configured terminal workspace retention.</p>
-            </article>
-          </div>
-        </section>
-
-        <section class="section-card">
-          <div class="section-header">
-            <div>
-              <h2 class="section-title">Rate limits</h2>
-              <p class="section-copy"><%= rate_limit_metadata(@payload.rate_limits) %></p>
-            </div>
-          </div>
-
-          <%= if rate_limit_snapshot?(@payload.rate_limits) do %>
-            <div class="rate-limit-list">
-              <article :for={limit <- rate_limit_rows(@payload.rate_limits, @now)} class={"rate-limit-row #{limit.tone_class}"}>
-                <div class="rate-limit-main">
-                  <div>
-                    <p class="rate-limit-name"><%= limit.label %></p>
-                    <p class="rate-limit-detail"><%= limit.status %></p>
-                  </div>
-                  <span class={limit.badge_class}><%= limit.used_label %></span>
-                </div>
-                <dl class="rate-limit-fields">
-                  <div>
-                    <dt>Window</dt>
-                    <dd><%= limit.window %></dd>
-                  </div>
-                  <div>
-                    <dt>Reset countdown</dt>
-                    <dd><%= limit.reset || "n/a" %></dd>
-                  </div>
-                  <div>
-                    <dt>Used</dt>
-                    <dd><%= limit.used_label %></dd>
-                  </div>
-                  <div>
-                    <dt>Reset time</dt>
-                    <dd>
-                      <%= if limit.reset_absolute do %>
-                        <time
-                          id={limit.reset_id}
-                          phx-hook="LocalTime"
-                          datetime={limit.reset_absolute.iso}
-                        ><%= limit.reset_absolute.fallback %></time>
-                      <% else %>
-                        n/a
-                      <% end %>
-                    </dd>
-                  </div>
-                </dl>
-                <div class="rate-limit-bar" aria-label={limit.progress_label}>
-                  <span class={limit.bar_class} style={"width: #{limit.progress_width}%"}></span>
-                </div>
-              </article>
-            </div>
-
-            <details class="raw-details rate-limit-debug">
-              <summary>Raw rate-limit payload</summary>
-              <pre class="code-panel"><%= pretty_value(@payload.rate_limits) %></pre>
-            </details>
-          <% else %>
-            <p class="empty-state">No upstream rate-limit snapshot is available yet.</p>
-          <% end %>
-        </section>
-
-        <section class="section-card">
-          <div class="section-header">
-            <div>
-              <h2 class="section-title">Running sessions</h2>
-              <p class="section-copy">Active issues, last known agent activity, and token usage.</p>
-            </div>
-          </div>
-
-          <%= if @payload.running == [] do %>
-            <p class="empty-state">No active sessions.</p>
-          <% else %>
-            <div class="table-wrap">
-              <table class="data-table data-table-running">
-                <colgroup>
-                  <col style="width: 12rem;" />
-                  <col style="width: 8rem;" />
-                  <col style="width: 7.5rem;" />
-                  <col style="width: 8.5rem;" />
-                  <col />
-                  <col style="width: 10rem;" />
-                </colgroup>
-                <thead>
-                  <tr>
-                    <th>Issue</th>
-                    <th>State</th>
-                    <th>Session</th>
-                    <th>Runtime / turns</th>
-                    <th>Codex update</th>
-                    <th>Tokens</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr :for={entry <- @payload.running}>
-                    <td>
-                      <div class="issue-stack">
-                        <span class="issue-id"><%= entry.issue_identifier %></span>
-                        <a class="issue-link" href={"/workers/#{entry.issue_identifier}"}>Worker detail</a>
-                        <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
-                      </div>
-                    </td>
-                    <td>
-                      <span class={state_badge_class(entry.state)}>
-                        <%= entry.state %>
-                      </span>
-                    </td>
-                    <td>
-                      <div class="session-stack">
-                        <%= if entry.session_id do %>
-                          <button
-                            type="button"
-                            class="subtle-button"
-                            data-label="Copy ID"
-                            data-copy={entry.session_id}
-                            onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
-                          >
-                            Copy ID
-                          </button>
-                        <% else %>
-                          <span class="muted">n/a</span>
-                        <% end %>
-                      </div>
-                    </td>
-                    <td>
-                      <div class="detail-stack numeric">
-                        <span><%= format_runtime_and_turns(entry.started_at, entry.turn_count, @now) %></span>
-                        <%= if entry.command_watchdog do %>
-                          <span class={watchdog_badge_class(entry.command_watchdog.classification)}>
-                            <%= entry.command_watchdog.classification %>
-                            · <%= format_watchdog_age(entry.command_watchdog.age_ms) %>
-                          </span>
-                        <% end %>
-                      </div>
-                    </td>
-                    <td>
-                      <div class="detail-stack">
-                        <span
-                          class="event-text"
-                          title={entry.last_message || to_string(entry.last_event || "n/a")}
-                        ><%= entry.last_message || to_string(entry.last_event || "n/a") %></span>
-                        <span class="muted event-meta">
-                          <%= entry.last_event || "n/a" %>
-                          <%= if entry.last_event_at do %>
-                            · <span class="mono numeric"><%= entry.last_event_at %></span>
+            <section class="row-section">
+              <header class="row-section-header">
+                <h2 class="page-section-title">Active workers</h2>
+                <span class="row-section-meta">
+                  <%= if @filter == :all do %>
+                    <%= length(filtered) %> of <%= length(classified) %>
+                  <% else %>
+                    filtered: <%= length(filtered) %>
+                  <% end %>
+                </span>
+              </header>
+              <%= if filtered == [] do %>
+                <p class="row-empty">
+                  <%= if classified == [], do: "No active workers.", else: "No workers match this filter." %>
+                </p>
+              <% else %>
+                <ol class="row-list">
+                  <li
+                    :for={entry <- filtered}
+                    class={"row row-" <> Atom.to_string(entry.__triage)}
+                  >
+                    <a class="row-link" href={"/workers/" <> entry.issue_identifier}>
+                      <span class="row-marker"><%= triage_marker(entry.__triage) %></span>
+                      <div class="row-body">
+                        <div class="row-line-1">
+                          <span class="row-id mono"><%= entry.issue_identifier %></span>
+                          <%= if entry.title do %>
+                            <span class="row-title"><%= entry.title %></span>
                           <% end %>
-                        </span>
+                          <span class={state_badge_class(entry.state)}><%= entry.state %></span>
+                        </div>
+                        <div class="row-line-2 muted">
+                          <span class="mono"><%= format_runtime_and_turns(entry.started_at, entry.turn_count, @now) %></span>
+                          <%= if entry.command_watchdog do %>
+                            <span class="row-pip">·</span>
+                            <span class="mono">watchdog <%= entry.command_watchdog.classification %> · <%= format_watchdog_age(entry.command_watchdog.age_ms) %></span>
+                          <% end %>
+                          <%= if entry.last_message || entry.last_event do %>
+                            <span class="row-pip">·</span>
+                            <span class="row-last"><%= entry.last_message || to_string(entry.last_event) %></span>
+                          <% end %>
+                        </div>
                       </div>
-                    </td>
-                    <td>
-                      <div class="token-stack numeric">
-                        <span>Total: <%= format_int(entry.tokens.total_tokens) %></span>
-                        <span class="muted">In <%= format_int(entry.tokens.input_tokens) %> / Out <%= format_int(entry.tokens.output_tokens) %></span>
+                      <div class="row-tokens">
+                        <% rin = token_share(entry.tokens.input_tokens, entry.tokens.total_tokens) %>
+                        <% rout = token_share(entry.tokens.output_tokens, entry.tokens.total_tokens) %>
+                        <div class="row-tokens-bar" aria-label="Token in/out share">
+                          <span class="row-tokens-input" style={"width: " <> Integer.to_string(rin) <> "%"}></span>
+                          <span class="row-tokens-output" style={"width: " <> Integer.to_string(rout) <> "%"}></span>
+                        </div>
+                        <span class="row-tokens-label numeric"><%= format_int(entry.tokens.total_tokens) %></span>
                       </div>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          <% end %>
-        </section>
+                    </a>
+                  </li>
+                </ol>
+              <% end %>
+            </section>
 
-        <section class="section-card">
-          <div class="section-header">
-            <div>
-              <h2 class="section-title">Retry queue</h2>
-              <p class="section-copy">Issues waiting for the next retry window.</p>
-            </div>
-          </div>
-
-          <%= if @payload.retrying == [] do %>
-            <p class="empty-state">No issues are currently backing off.</p>
-          <% else %>
-            <div class="table-wrap">
-              <table class="data-table" style="min-width: 680px;">
-                <thead>
-                  <tr>
-                    <th>Issue</th>
-                    <th>Attempt</th>
-                    <th>Kind</th>
-                    <th>Branch</th>
-                    <th>Due at</th>
-                    <th>Error</th>
-                    <th>Prior error</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr :for={entry <- @payload.retrying}>
-                    <td>
-                      <div class="issue-stack">
-                        <span class="issue-id"><%= entry.issue_identifier %></span>
-                        <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+            <section class="row-section">
+              <header class="row-section-header">
+                <h2 class="page-section-title">Retry queue</h2>
+                <span class="row-section-meta"><%= length(retrying) %></span>
+              </header>
+              <%= if retrying == [] do %>
+                <p class="row-empty">No retries.</p>
+              <% else %>
+                <ol class="row-list">
+                  <li :for={r <- retrying} class="row row-retrying">
+                    <a class="row-link" href={"/api/v1/" <> r.issue_identifier}>
+                      <span class="row-marker">↻</span>
+                      <div class="row-body">
+                        <div class="row-line-1">
+                          <span class="row-id mono"><%= r.issue_identifier %></span>
+                          <span class="row-title">attempt <%= r.attempt %> · <%= r.error_kind || "error" %></span>
+                        </div>
+                        <div class="row-line-2 muted">
+                          <span class="mono">due <%= r.due_at || "n/a" %></span>
+                          <%= if r.branch_name do %>
+                            <span class="row-pip">·</span>
+                            <span class="mono"><%= r.branch_name %></span>
+                          <% end %>
+                          <%= if r.error do %>
+                            <span class="row-pip">·</span>
+                            <span class="row-last"><%= r.error %></span>
+                          <% end %>
+                        </div>
                       </div>
-                    </td>
-                    <td><%= entry.attempt %></td>
-                    <td><%= entry.error_kind || "n/a" %></td>
-                    <td class="mono"><%= entry.branch_name || "n/a" %></td>
-                    <td class="mono"><%= entry.due_at || "n/a" %></td>
-                    <td><%= entry.error || "n/a" %></td>
-                    <td><%= entry.prior_error || "n/a" %></td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          <% end %>
-        </section>
+                    </a>
+                  </li>
+                </ol>
+              <% end %>
+            </section>
+
+            <details class="system-debug">
+              <summary>System debug</summary>
+              <div class="system-debug-body">
+                <h4 class="page-section-title">Workflow</h4>
+                <p class="detail-path"><%= @payload.runtime.workflow_path || "n/a" %></p>
+                <h4 class="page-section-title">Last reload</h4>
+                <p><%= reload_status(@payload.runtime.reload) %> — <%= reload_message(@payload.runtime.reload) %></p>
+                <h4 class="page-section-title">Rate limits (raw)</h4>
+                <pre class="code-panel"><%= pretty_value(@payload.rate_limits) %></pre>
+                <h4 class="page-section-title">Generated</h4>
+                <p class="mono"><%= @payload.generated_at %></p>
+              </div>
+            </details>
+          </section>
+        </div>
       <% end %>
     </section>
     """
@@ -477,22 +355,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp load_payload do
     Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
-  end
-
-  defp assign_detail_payload(socket, issue_identifier) do
-    case Presenter.issue_payload(issue_identifier, orchestrator(), snapshot_timeout_ms()) do
-      {:ok, payload} ->
-        socket
-        |> assign(:detail_payload, payload)
-        |> assign(:detail_error, nil)
-        |> assign(:issue_identifier, issue_identifier)
-
-      {:error, :issue_not_found} ->
-        socket
-        |> assign(:detail_payload, nil)
-        |> assign(:detail_error, "No active or retrying worker was found for #{issue_identifier}.")
-        |> assign(:issue_identifier, issue_identifier)
-    end
   end
 
   defp orchestrator do
@@ -512,51 +374,161 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
-  defp authorize_steer(operator_token) do
-    if steer_auth_required?(), do: authorize_exposed_steer(operator_token), else: :ok
-  end
-
-  defp authorize_exposed_steer(operator_token) do
-    case Endpoint.config(:steer_token) do
-      token when is_binary(token) ->
-        case String.trim(token) do
-          "" -> {:error, :steer_auth_required}
-          expected_token -> compare_steer_token(operator_token, expected_token)
-        end
-
-      _ ->
-        {:error, :steer_auth_required}
+  defp authorize_reload(operator_token) do
+    if steer_auth_required?() do
+      authorize_reload_token(operator_token, Endpoint.config(:steer_token))
+    else
+      :ok
     end
   end
 
-  defp authorize_reload(operator_token) do
-    authorize_exposed_steer(operator_token)
-  end
-
-  defp compare_steer_token(operator_token, expected_token) do
-    submitted_token = String.trim(operator_token || "")
+  defp authorize_reload_token(operator_token, token) when is_binary(token) do
+    expected = String.trim(token)
+    submitted = String.trim(operator_token || "")
 
     cond do
-      submitted_token == "" ->
-        {:error, :steer_auth_required}
-
-      byte_size(submitted_token) == byte_size(expected_token) and
-          Plug.Crypto.secure_compare(submitted_token, expected_token) ->
-        :ok
-
-      true ->
-        {:error, :invalid_steer_token}
+      expected == "" -> {:error, :steer_auth_required}
+      submitted == "" -> {:error, :steer_auth_required}
+      token_match?(submitted, expected) -> :ok
+      true -> {:error, :invalid_steer_token}
     end
   end
 
-  defp non_blank_binary?(value) when is_binary(value), do: String.trim(value) != ""
-  defp non_blank_binary?(_value), do: false
+  defp authorize_reload_token(_operator_token, _token), do: {:error, :steer_auth_required}
 
-  defp total_runtime_seconds(payload, now) do
-    base_seconds = payload.codex_totals.seconds_running || 0
-    active_count = length(payload.running || [])
+  defp token_match?(submitted, expected) do
+    byte_size(submitted) == byte_size(expected) and
+      Plug.Crypto.secure_compare(submitted, expected)
+  end
 
-    base_seconds + active_count * runtime_seconds_since_generated_at(payload.generated_at, now)
+  ## --- triage / classification --------------------------------------------
+
+  # Single source of truth for which workers count as stalled / errored / etc.
+  # Mirrors `watchdog_badge_class/1`'s rules so badge color and triage marker
+  # stay in sync.
+  defp triage_classification(running, retrying_ids) do
+    cond do
+      MapSet.member?(retrying_ids, running.issue_identifier) -> :retrying
+      errored_state?(running.state) -> :errored
+      stalled_watchdog?(running.command_watchdog) -> :stalled
+      idle_watchdog?(running.command_watchdog) -> :idle
+      true -> :healthy
+    end
+  end
+
+  defp errored_state?(state) do
+    s = state |> to_string() |> String.downcase()
+    String.contains?(s, ["error", "failed", "blocked"])
+  end
+
+  defp stalled_watchdog?(%{classification: c}), do: to_string(c) == "stalled"
+  defp stalled_watchdog?(_), do: false
+
+  defp idle_watchdog?(%{classification: c}) do
+    s = to_string(c)
+    s == "idle" or s == "needs_attention"
+  end
+
+  defp idle_watchdog?(_), do: false
+
+  defp triage_counts(classified, retrying) do
+    grouped = Enum.frequencies_by(classified, & &1.__triage)
+
+    %{
+      running: length(classified),
+      retrying: length(retrying),
+      stalled: Map.get(grouped, :stalled, 0),
+      errored: Map.get(grouped, :errored, 0),
+      idle: Map.get(grouped, :idle, 0),
+      healthy: Map.get(grouped, :healthy, 0),
+      total_visible: length(classified)
+    }
+  end
+
+  defp filter_running(classified, :all), do: classified
+  defp filter_running(classified, :retrying), do: Enum.filter(classified, &(&1.__triage == :retrying))
+  defp filter_running(classified, kind), do: Enum.filter(classified, &(&1.__triage == kind))
+
+  defp normalize_filter("stalled"), do: :stalled
+  defp normalize_filter("retrying"), do: :retrying
+  defp normalize_filter("errored"), do: :errored
+  defp normalize_filter(_), do: :all
+
+  defp alert_rows(classified) do
+    classified
+    |> Enum.filter(&(&1.__triage in [:stalled, :errored, :idle]))
+    |> Enum.map(fn entry ->
+      %{
+        identifier: entry.issue_identifier,
+        marker: triage_marker(entry.__triage),
+        tone: alert_tone(entry.__triage),
+        text: alert_text(entry)
+      }
+    end)
+  end
+
+  defp alert_tone(:errored), do: :danger
+  defp alert_tone(:stalled), do: :warning
+  defp alert_tone(:idle), do: :muted
+  defp alert_tone(_), do: :muted
+
+  defp alert_text(%{__triage: :stalled, command_watchdog: %{idle_ms: idle}}) when is_integer(idle),
+    do: "stalled · idle " <> format_watchdog_age(idle)
+
+  defp alert_text(%{__triage: :stalled}), do: "stalled"
+  defp alert_text(%{__triage: :idle, command_watchdog: %{classification: c}}), do: "watchdog #{c}"
+  defp alert_text(%{__triage: :errored, state: state}), do: "state: #{state}"
+  defp alert_text(_), do: "needs attention"
+
+  defp triage_marker(:healthy), do: "▸"
+  defp triage_marker(:idle), do: "·"
+  defp triage_marker(:stalled), do: "⚠"
+  defp triage_marker(:errored), do: "✕"
+  defp triage_marker(:retrying), do: "↻"
+
+  defp chip_class(active, active), do: "chip chip-active"
+  defp chip_class(_, _), do: "chip"
+
+  ## --- token bar ----------------------------------------------------------
+
+  defp token_share(_part, total) when total in [nil, 0], do: 0
+  defp token_share(nil, _total), do: 0
+
+  defp token_share(part, total) when is_integer(part) and is_integer(total) and total > 0,
+    do: part |> Kernel./(total) |> Kernel.*(100) |> round() |> max(0) |> min(100)
+
+  defp token_share(_, _), do: 0
+
+  ## --- header / freshness -------------------------------------------------
+
+  defp dashboard_freshness_label(nil, _now), do: "live"
+
+  defp dashboard_freshness_label(generated_at, %DateTime{} = now) when is_binary(generated_at) do
+    case DateTime.from_iso8601(generated_at) do
+      {:ok, parsed, _offset} ->
+        diff = DateTime.diff(now, parsed, :second)
+        if diff <= 1, do: "live", else: "live · refreshed " <> relative_duration(max(diff, 0)) <> " ago"
+
+      _ ->
+        "live"
+    end
+  end
+
+  defp dashboard_freshness_label(_, _), do: "live"
+
+  defp uptime_label(nil, _now), do: "n/a"
+
+  defp uptime_label(started_at, %DateTime{} = now) when is_binary(started_at) do
+    case DateTime.from_iso8601(started_at) do
+      {:ok, parsed, _offset} -> format_runtime_seconds(max(DateTime.diff(now, parsed, :second), 0))
+      _ -> "n/a"
+    end
+  end
+
+  defp uptime_label(_, _), do: "n/a"
+
+  defp primary_rate_limit_used(rate_limits) do
+    used_percent(field_value(rate_limits || %{}, [:primary, "primary"]))
   end
 
   defp format_runtime_and_turns(started_at, turn_count, now) when is_integer(turn_count) and turn_count > 0 do
@@ -586,15 +558,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp runtime_seconds_from_started_at(_started_at, _now), do: 0
 
-  defp runtime_seconds_since_generated_at(generated_at, %DateTime{} = now) when is_binary(generated_at) do
-    case DateTime.from_iso8601(generated_at) do
-      {:ok, parsed, _offset} -> max(DateTime.diff(now, parsed, :second), 0)
-      _ -> 0
-    end
-  end
-
-  defp runtime_seconds_since_generated_at(_generated_at, _now), do: 0
-
   defp format_int(value) when is_integer(value) do
     value
     |> Integer.to_string()
@@ -622,7 +585,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
     field_value(cleanup, [key, Atom.to_string(key)])
   end
 
-  defp workspace_cleanup_value(_cleanup, :status), do: "pending"
   defp workspace_cleanup_value(_cleanup, _key), do: nil
 
   defp workspace_cleanup_ttl(%{} = cleanup), do: cleanup |> workspace_cleanup_value(:ttl_ms) |> duration_label_from_ms()
@@ -634,50 +596,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp duration_label_from_ms(ms) when is_integer(ms), do: "#{ms}ms"
   defp duration_label_from_ms(_ms), do: "n/a"
 
-  defp rate_limit_snapshot?(%{} = snapshot), do: map_size(snapshot) > 0
-  defp rate_limit_snapshot?(_snapshot), do: false
-
-  defp rate_limit_metadata(%{} = snapshot) when map_size(snapshot) > 0 do
-    [
-      field_value(snapshot, [
-        :limit_id,
-        :limitId,
-        :limit_name,
-        :limitName,
-        "limit_id",
-        "limitId",
-        "limit_name",
-        "limitName"
-      ]),
-      field_value(snapshot, [:plan_type, :planType, "plan_type", "planType"])
-    ]
-    |> Enum.reject(&blank?/1)
-    |> case do
-      [] -> "Latest upstream rate-limit snapshot."
-      values -> "Latest upstream rate-limit snapshot for #{Enum.join(values, " · ")}."
-    end
-  end
-
-  defp rate_limit_metadata(_snapshot), do: "Latest upstream rate-limit snapshot, when available."
-
-  defp runtime_deploy_summary(%{} = runtime) do
-    cond do
-      runtime[:dirty?] == true ->
-        "Reload is blocked until local repository changes are committed or removed."
-
-      is_map(runtime[:reload]) ->
-        "Last managed reload #{reload_status(runtime[:reload])}: #{reload_message(runtime[:reload])}"
-
-      true ->
-        "Apply merged runtime changes through a guarded fetch, build, restart, and health check."
-    end
-  end
-
-  defp runtime_deploy_summary(_runtime), do: "Runtime metadata is unavailable."
-
   defp runtime_reload_disabled?(payload, _auth_required?, token_configured?) do
-    (payload.running || []) != [] or
-      payload.runtime[:dirty?] == true or
+    Map.get(payload, :error) != nil or
+      Map.get(payload, :running, []) != [] or
+      get_in(payload, [:runtime, :dirty?]) == true or
       not token_configured?
   end
 
@@ -692,51 +614,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp reload_message(_reload), do: "No managed reload has run yet."
-
-  defp rate_limit_rows(snapshot, now) do
-    [
-      rate_limit_row("Primary", field_value(snapshot, [:primary, "primary"]), now),
-      rate_limit_row("Secondary", field_value(snapshot, [:secondary, "secondary"]), now)
-    ]
-  end
-
-  defp rate_limit_row(label, %{} = bucket, now) do
-    used_percent = used_percent(bucket)
-    reset_at = reset_at(bucket, now)
-    reset_id = "rate-limit-reset-#{String.downcase(label)}"
-
-    %{
-      label: label,
-      reset_id: reset_id,
-      used_label: used_label(used_percent),
-      progress_label: "#{label} limit #{used_label(used_percent)}",
-      progress_width: used_percent || 0,
-      badge_class: rate_limit_badge_class(used_percent),
-      bar_class: rate_limit_bar_class(used_percent),
-      tone_class: rate_limit_tone_class(label),
-      status: rate_limit_status(used_percent),
-      window: window_label(field_value(bucket, [:window_duration_mins, :windowDurationMins, "window_duration_mins", "windowDurationMins"])),
-      reset: reset_relative(reset_at, now),
-      reset_absolute: reset_absolute(reset_at)
-    }
-  end
-
-  defp rate_limit_row(label, _bucket, _now) do
-    %{
-      label: label,
-      reset_id: nil,
-      used_label: "n/a",
-      progress_label: "#{label} limit unavailable",
-      progress_width: 0,
-      badge_class: "rate-limit-badge",
-      bar_class: "rate-limit-bar-fill",
-      tone_class: rate_limit_tone_class(label),
-      status: "Snapshot unavailable",
-      window: "window n/a",
-      reset: nil,
-      reset_absolute: nil
-    }
-  end
 
   defp field_value(map, keys) when is_map(map) do
     Enum.find_value(keys, fn key ->
@@ -772,14 +649,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp used_label(value) when is_integer(value), do: "#{value}% used"
   defp used_label(_value), do: "n/a"
 
-  defp rate_limit_badge_class(value) when is_integer(value) and value >= 90,
-    do: "rate-limit-badge rate-limit-badge-danger"
-
-  defp rate_limit_badge_class(value) when is_integer(value) and value >= 70,
-    do: "rate-limit-badge rate-limit-badge-warning"
-
-  defp rate_limit_badge_class(_value), do: "rate-limit-badge"
-
   defp rate_limit_bar_class(value) when is_integer(value) and value >= 90,
     do: "rate-limit-bar-fill rate-limit-bar-fill-danger"
 
@@ -788,99 +657,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp rate_limit_bar_class(_value), do: "rate-limit-bar-fill"
 
-  defp rate_limit_tone_class(label), do: "rate-limit-row-#{String.downcase(label)}"
-
-  defp rate_limit_status(value) when is_integer(value) and value >= 90, do: "Critical usage"
-  defp rate_limit_status(value) when is_integer(value) and value >= 70, do: "Elevated usage"
-  defp rate_limit_status(value) when is_integer(value), do: "Operational"
-  defp rate_limit_status(_value), do: "Usage unavailable"
-
-  defp window_label(minutes) when is_integer(minutes), do: "#{duration_label(minutes)} window"
-  defp window_label(minutes) when is_float(minutes), do: "#{duration_label(round(minutes))} window"
-  defp window_label(_minutes), do: "window n/a"
-
-  defp duration_label(minutes) when minutes > 0 and rem(minutes, 1_440) == 0, do: "#{div(minutes, 1_440)}d"
-  defp duration_label(minutes) when minutes > 0 and rem(minutes, 60) == 0, do: "#{div(minutes, 60)}h"
-  defp duration_label(minutes) when minutes > 0, do: "#{minutes}m"
-  defp duration_label(_minutes), do: "n/a"
-
-  defp reset_at(bucket, now) do
-    cond do
-      is_binary(field_value(bucket, [:reset_at, :resetAt, "reset_at", "resetAt"])) ->
-        parse_datetime(field_value(bucket, [:reset_at, :resetAt, "reset_at", "resetAt"]))
-
-      is_binary(field_value(bucket, [:resets_at, :resetsAt, "resets_at", "resetsAt"])) ->
-        parse_datetime(field_value(bucket, [:resets_at, :resetsAt, "resets_at", "resetsAt"]))
-
-      is_number(field_value(bucket, [:resets_at, :resetsAt, "resets_at", "resetsAt"])) ->
-        parse_unix_timestamp(field_value(bucket, [:resets_at, :resetsAt, "resets_at", "resetsAt"]))
-
-      is_number(field_value(bucket, [:reset_in_seconds, :resetInSeconds, "reset_in_seconds", "resetInSeconds"])) ->
-        DateTime.add(now, trunc(field_value(bucket, [:reset_in_seconds, :resetInSeconds, "reset_in_seconds", "resetInSeconds"])), :second)
-
-      is_number(field_value(bucket, [:resets_in_seconds, :resetsInSeconds, "resets_in_seconds", "resetsInSeconds"])) ->
-        DateTime.add(now, trunc(field_value(bucket, [:resets_in_seconds, :resetsInSeconds, "resets_in_seconds", "resetsInSeconds"])), :second)
-
-      is_number(field_value(bucket, [:reset_timestamp, :resetTimestamp, "reset_timestamp", "resetTimestamp"])) ->
-        parse_unix_timestamp(field_value(bucket, [:reset_timestamp, :resetTimestamp, "reset_timestamp", "resetTimestamp"]))
-
-      true ->
-        nil
-    end
-  end
-
-  defp parse_datetime(value) do
-    case DateTime.from_iso8601(value) do
-      {:ok, datetime, _offset} -> datetime
-      _ -> nil
-    end
-  end
-
-  defp parse_unix_timestamp(value) do
-    unit = if value > 10_000_000_000, do: :millisecond, else: :second
-
-    case DateTime.from_unix(trunc(value), unit) do
-      {:ok, datetime} -> datetime
-      _ -> nil
-    end
-  end
-
-  defp reset_relative(%DateTime{} = reset_at, %DateTime{} = now) do
-    diff = DateTime.diff(reset_at, now, :second)
-
-    cond do
-      diff > 0 -> "resets in #{relative_duration(diff)}"
-      diff == 0 -> "resets now"
-      true -> "reset #{relative_duration(abs(diff))} ago"
-    end
-  end
-
-  defp reset_relative(_reset_at, _now), do: nil
-
   defp relative_duration(seconds) when seconds >= 86_400, do: "#{div(seconds, 86_400)}d"
   defp relative_duration(seconds) when seconds >= 3_600, do: "#{div(seconds, 3_600)}h #{div(rem(seconds, 3_600), 60)}m"
   defp relative_duration(seconds) when seconds >= 60, do: "#{div(seconds, 60)}m #{rem(seconds, 60)}s"
   defp relative_duration(seconds), do: "#{seconds}s"
-
-  defp reset_absolute(%DateTime{} = reset_at) do
-    %{
-      iso: DateTime.to_iso8601(reset_at),
-      fallback: Calendar.strftime(reset_at, "%Y-%m-%d %H:%M:%S UTC")
-    }
-  end
-
-  defp reset_absolute(_reset_at), do: nil
-
-  defp blank?(value) when is_binary(value), do: String.trim(value) == ""
-  defp blank?(nil), do: true
-  defp blank?(_value), do: false
-
-  defp steer_error_message(:blank_message), do: "Steer message cannot be blank."
-  defp steer_error_message(:worker_not_running), do: "Worker is no longer running."
-  defp steer_error_message(:session_mismatch), do: "Worker session changed before the steer was sent."
-  defp steer_error_message(:steer_auth_required), do: "Operator token is required before steering exposed workers."
-  defp steer_error_message(:invalid_steer_token), do: "Operator token is invalid."
-  defp steer_error_message(reason), do: "Steer failed: #{inspect(reason)}"
 
   defp reload_error_message({:active_workers, count}), do: "Reload is blocked while #{count} worker(s) are active."
   defp reload_error_message(:dirty_repo), do: "Reload is blocked because the runtime checkout has uncommitted changes."
@@ -900,18 +680,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
       String.contains?(normalized, ["blocked", "error", "failed"]) -> "#{base} state-badge-danger"
       String.contains?(normalized, ["todo", "queued", "pending", "retry"]) -> "#{base} state-badge-warning"
       true -> base
-    end
-  end
-
-  defp watchdog_badge_class(classification) do
-    base = "state-badge"
-
-    case to_string(classification) do
-      "healthy" -> "#{base} state-badge-active"
-      "idle" -> "#{base} state-badge-warning"
-      "stalled" -> "#{base} state-badge-danger"
-      "needs_attention" -> "#{base} state-badge-warning"
-      _ -> base
     end
   end
 
