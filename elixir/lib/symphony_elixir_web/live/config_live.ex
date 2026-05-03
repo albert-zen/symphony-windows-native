@@ -15,7 +15,6 @@ defmodule SymphonyElixirWeb.ConfigLive do
     {:ok,
      socket
      |> assign(:projection, projection)
-     |> assign(:form_values, form_values(projection))
      |> assign(:workflow_content, workflow_content())
      |> assign(:preview, nil)
      |> assign(:active_workers_count, active_workers_count())}
@@ -40,24 +39,6 @@ defmodule SymphonyElixirWeb.ConfigLive do
     end
   end
 
-  def handle_event("preview_config", %{"workflow" => params}, socket) do
-    case WorkflowConfigEditor.preview(params) do
-      {:ok, preview} ->
-        {:noreply,
-         socket
-         |> assign(:form_values, params)
-         |> assign(:preview, Map.put(preview, :params, params))
-         |> put_flash(:info, "Preview ready. Review the diff before applying.")}
-
-      {:error, reason} ->
-        {:noreply,
-         socket
-         |> assign(:form_values, params)
-         |> assign(:preview, nil)
-         |> put_flash(:error, editor_error_message(reason))}
-    end
-  end
-
   def handle_event("apply_config", _params, %{assigns: %{preview: %{content: content}}} = socket) do
     active_workers_count = active_workers_count()
 
@@ -68,31 +49,7 @@ defmodule SymphonyElixirWeb.ConfigLive do
         {:noreply,
          socket
          |> assign(:projection, projection)
-         |> assign(:form_values, form_values(projection))
          |> assign(:workflow_content, workflow_content())
-         |> assign(:preview, nil)
-         |> assign(:active_workers_count, active_workers_count())
-         |> put_flash(:info, "Workflow applied. New hash #{applied.applied_hash}; backup written.")}
-
-      {:error, reason} ->
-        {:noreply,
-         socket
-         |> assign(:active_workers_count, active_workers_count)
-         |> put_flash(:error, editor_error_message(reason))}
-    end
-  end
-
-  def handle_event("apply_config", _params, %{assigns: %{preview: %{params: params}}} = socket) do
-    active_workers_count = active_workers_count()
-
-    case apply_preview(params, active_workers_count) do
-      {:ok, applied} ->
-        projection = WorkflowConfigProjection.current()
-
-        {:noreply,
-         socket
-         |> assign(:projection, projection)
-         |> assign(:form_values, form_values(projection))
          |> assign(:preview, nil)
          |> assign(:active_workers_count, active_workers_count())
          |> put_flash(:info, "Workflow applied. New hash #{applied.applied_hash}; backup written.")}
@@ -274,26 +231,6 @@ defmodule SymphonyElixirWeb.ConfigLive do
     "refresh #{duration_label(observability.refresh_ms)} · render #{duration_label(observability.render_interval_ms)} · steer token #{observability.steer_token}"
   end
 
-  defp form_values(%{status: :ok, config: config}) do
-    %{
-      "agent.max_concurrent_agents" => config.concurrency.max_agents,
-      "polling.interval_ms" => config.polling.interval_ms,
-      "agent.max_turns" => config.concurrency.max_turns,
-      "tracker.dispatch_states" => Enum.join(config.tracker.dispatch_states, "\n"),
-      "codex.turn_timeout_ms" => config.codex.turn_timeout_ms,
-      "codex.read_timeout_ms" => config.codex.read_timeout_ms,
-      "codex.stall_timeout_ms" => config.codex.stall_timeout_ms,
-      "codex.command_watchdog_long_running_ms" => config.codex.command_watchdog_long_running_ms,
-      "codex.command_watchdog_idle_ms" => config.codex.command_watchdog_idle_ms,
-      "codex.command_watchdog_stalled_ms" => config.codex.command_watchdog_stalled_ms,
-      "codex.command_watchdog_repeated_output_limit" => config.codex.command_watchdog_repeated_output_limit,
-      "observability.refresh_ms" => config.observability.refresh_ms,
-      "observability.render_interval_ms" => config.observability.render_interval_ms
-    }
-  end
-
-  defp form_values(_projection), do: %{}
-
   defp active_workers_count do
     case Presenter.state_payload(orchestrator(), snapshot_timeout_ms()) do
       %{running: running} when is_list(running) -> length(running)
@@ -310,9 +247,6 @@ defmodule SymphonyElixirWeb.ConfigLive do
 
   defp apply_content_preview(_content, :unknown), do: {:error, :active_workers_unknown}
   defp apply_content_preview(content, active_workers_count), do: WorkflowConfigEditor.apply_content(content, active_workers_count: active_workers_count)
-
-  defp apply_preview(_params, :unknown), do: {:error, :active_workers_unknown}
-  defp apply_preview(params, active_workers_count), do: WorkflowConfigEditor.apply(params, active_workers_count: active_workers_count)
 
   defp active_workers_badge_class(0), do: "state-badge"
   defp active_workers_badge_class(_count), do: "state-badge state-badge-warning"

@@ -3150,6 +3150,10 @@ defmodule SymphonyElixir.ExtensionsTest do
   end
 
   test "operator config liveview renders editable workflow with redacted parsed summary" do
+    previous_linear_api_key = System.get_env("LINEAR_API_KEY")
+    System.put_env("LINEAR_API_KEY", "sk-test-linear-secret")
+    on_exit(fn -> restore_env("LINEAR_API_KEY", previous_linear_api_key) end)
+
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: "$LINEAR_API_KEY",
       prompt: "Use the workflow. OPENAI_API_KEY=$OPENAI_API_KEY"
@@ -3170,9 +3174,11 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Tracker"
     assert html =~ "API key"
     assert html =~ "configured"
+    refute html =~ "sk-test-linear-secret"
     assert html =~ "Dispatch"
     assert html =~ "Todo"
     assert html =~ "Prompt body"
+    assert html =~ "$LINEAR_API_KEY"
     assert html =~ "OPENAI_API_KEY=$OPENAI_API_KEY"
   end
 
@@ -3223,6 +3229,84 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert File.read!(workflow_path) =~ "max_concurrent_agents: 4"
     assert File.read!(workflow_path) =~ "interval_ms: 7500"
     assert File.read!(workflow_path) =~ "refresh_ms: 2500"
+  end
+
+  test "operator config liveview requires preview before applying workflow edits" do
+    write_workflow_file!(Workflow.workflow_file_path())
+
+    orchestrator_name = Module.concat(__MODULE__, :ConfigLiveNoPreviewOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: %{running: [], retrying: [], codex_totals: %{}, rate_limits: nil}
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 5)
+
+    {:ok, _view, html} = live(build_conn(), "/config")
+
+    assert html =~ ~s(disabled)
+    assert html =~ "Apply"
+  end
+
+  test "operator config liveview rejects invalid full workflow content" do
+    workflow_path = Workflow.workflow_file_path()
+    write_workflow_file!(workflow_path)
+    original = File.read!(workflow_path)
+
+    orchestrator_name = Module.concat(__MODULE__, :ConfigLiveInvalidContentOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: %{running: [], retrying: [], codex_totals: %{}, rate_limits: nil}
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 5)
+
+    {:ok, view, _html} = live(build_conn(), "/config")
+
+    html =
+      view
+      |> form("#workflow-config-editor", workflow: %{"content" => "---\ntracker: [\n---\nprompt"})
+      |> render_submit()
+
+    assert html =~ "tracker: ["
+    refute html =~ "Diff preview"
+    assert File.read!(workflow_path) == original
+  end
+
+  test "operator config liveview blocks workflow apply while workers are active" do
+    workflow_path = Workflow.workflow_file_path()
+    write_workflow_file!(workflow_path, max_concurrent_agents: 2)
+
+    orchestrator_name = Module.concat(__MODULE__, :ConfigLiveActiveWorkersOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot()
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 5)
+
+    {:ok, view, _html} = live(build_conn(), "/config")
+
+    proposed =
+      workflow_path
+      |> File.read!()
+      |> String.replace("max_concurrent_agents: 2", "max_concurrent_agents: 3")
+
+    _html =
+      view
+      |> form("#workflow-config-editor", workflow: %{"content" => proposed})
+      |> render_submit()
+
+    html = view |> element("button", "Apply") |> render_click()
+
+    assert html =~ "1 active workers"
+    assert File.read!(workflow_path) =~ "max_concurrent_agents: 2"
   end
 
   test "workflow config projection reports redacted settings and prompt metadata" do
