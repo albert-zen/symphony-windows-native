@@ -1156,8 +1156,11 @@ defmodule SymphonyElixir.ExtensionsTest do
              "status" => "running",
              "workspace" => %{
                "path" => Path.join(Config.settings!().workspace.root, "MT-HTTP"),
-               "host" => nil
+               "host" => nil,
+               "branch" => nil
              },
+             "pull_request" => nil,
+             "checks" => nil,
              "attempts" => %{"restart_count" => 0, "current_retry_attempt" => 0},
              "running" => %{
                "worker_host" => nil,
@@ -1436,6 +1439,371 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert debug_payload["debug_only"] == true
     assert debug_payload["limit"] == 1
     refute inspect(debug_payload) =~ "sk-live-secret"
+  end
+
+  test "agent worker status and detail APIs project branch pull request and checks" do
+    orchestrator_name = Module.concat(__MODULE__, :WorkerPrProjectionOrchestrator)
+
+    pr_projection = %{
+      number: 110,
+      url: "https://github.com/albert-zen/symphony-windows-native/pull/110",
+      state: "OPEN",
+      head_ref: "codex/ALB-63-rate-limit-card",
+      head_sha: "03b64e1a85f678d000af4904e8fed084013efece",
+      checks: [
+        %{name: "make-all", status: "COMPLETED", conclusion: "SUCCESS"},
+        %{name: "windows-native-test", status: "IN_PROGRESS", conclusion: nil}
+      ]
+    }
+
+    snapshot =
+      worker_api_snapshot(%{
+        branch_name: "codex/ALB-63-rate-limit-card",
+        pull_request: pr_projection
+      })
+
+    {:ok, _pid} = StaticOrchestrator.start_link(name: orchestrator_name, snapshot: snapshot)
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    status_payload = json_response(get(build_conn(), "/api/v1/workers/MT-API/status"), 200)
+
+    assert status_payload["workspace"]["branch"] == "codex/ALB-63-rate-limit-card"
+
+    assert status_payload["pull_request"] == %{
+             "number" => 110,
+             "url" => "https://github.com/albert-zen/symphony-windows-native/pull/110",
+             "state" => "OPEN",
+             "head_ref" => "codex/ALB-63-rate-limit-card",
+             "head_sha" => "03b64e1a85f678d000af4904e8fed084013efece"
+           }
+
+    assert status_payload["checks"] == %{
+             "summary" => "pending",
+             "items" => [
+               %{"name" => "make-all", "status" => "COMPLETED", "conclusion" => "SUCCESS", "details_url" => nil},
+               %{"name" => "windows-native-test", "status" => "IN_PROGRESS", "conclusion" => nil, "details_url" => nil}
+             ]
+           }
+
+    detail_payload = json_response(get(build_conn(), "/api/v1/MT-API"), 200)
+    assert detail_payload["workspace"]["branch"] == "codex/ALB-63-rate-limit-card"
+    assert detail_payload["pull_request"]["number"] == 110
+    assert detail_payload["checks"]["summary"] == "pending"
+
+    {:ok, _view, html} = live(build_conn(), "/workers/MT-API")
+    assert html =~ "codex/ALB-63-rate-limit-card"
+    assert html =~ "https://github.com/albert-zen/symphony-windows-native/pull/110"
+    assert html =~ "pending"
+  end
+
+  test "agent worker status discovers branch and PR checks from workspace git and authenticated lookup" do
+    workspace_root = Config.settings!().workspace.root
+    workspace_path = Path.join(workspace_root, "MT-API-PR-#{System.unique_integer([:positive])}")
+    branch = "codex/alb-66-worker-observability"
+    test_pid = self()
+
+    File.rm_rf!(workspace_path)
+    File.mkdir_p!(workspace_path)
+    {_, 0} = System.cmd("git", ["init"], cd: workspace_path, stderr_to_stdout: true)
+    {_, 0} = System.cmd("git", ["checkout", "-b", branch], cd: workspace_path, stderr_to_stdout: true)
+
+    previous_lookup = Application.get_env(:symphony_elixir, :worker_api_pr_lookup)
+
+    Application.put_env(:symphony_elixir, :worker_api_pr_lookup, fn ^workspace_path, ^branch ->
+      send(test_pid, {:worker_pr_lookup, workspace_path, branch})
+
+      {:ok,
+       %{
+         "number" => 115,
+         "url" => "https://github.com/albert-zen/symphony-windows-native/pull/115",
+         "state" => "OPEN",
+         "headRefName" => branch,
+         "headRefOid" => "c39bc199cfc4efc6bb9edd258acecb2bc0f598f0",
+         "statusCheckRollup" => [
+           %{
+             "name" => "make-all",
+             "status" => "COMPLETED",
+             "conclusion" => "FAILURE",
+             "detailsUrl" => "https://example.org/check?token=sk-live-secret"
+           },
+           %{
+             "context" => "legacy-status",
+             "state" => "SUCCESS",
+             "targetUrl" => "https://example.org/status"
+           }
+         ]
+       }}
+    end)
+
+    on_exit(fn ->
+      if previous_lookup do
+        Application.put_env(:symphony_elixir, :worker_api_pr_lookup, previous_lookup)
+      else
+        Application.delete_env(:symphony_elixir, :worker_api_pr_lookup)
+      end
+
+      File.rm_rf!(workspace_path)
+    end)
+
+    snapshot = worker_api_snapshot(%{branch_name: nil, workspace_path: workspace_path})
+    orchestrator_name = Module.concat(__MODULE__, :WorkerPrDiscoveryOrchestrator)
+    {:ok, _pid} = StaticOrchestrator.start_link(name: orchestrator_name, snapshot: snapshot)
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    status_payload = json_response(get(build_conn(), "/api/v1/workers/MT-API/status"), 200)
+
+    assert_receive {:worker_pr_lookup, ^workspace_path, ^branch}
+    assert status_payload["workspace"]["branch"] == branch
+    assert status_payload["pull_request"]["number"] == 115
+    assert status_payload["pull_request"]["head_ref"] == branch
+    assert status_payload["checks"]["summary"] == "failing"
+
+    assert [%{"details_url" => details_url}, %{"name" => "legacy-status", "status" => "COMPLETED", "conclusion" => "SUCCESS"}] =
+             status_payload["checks"]["items"]
+
+    refute details_url =~ "sk-live-secret"
+  end
+
+  test "agent worker status treats slow PR lookup as unavailable without blocking indefinitely" do
+    workspace_root = Config.settings!().workspace.root
+    workspace_path = Path.join(workspace_root, "MT-API-SLOW-PR-#{System.unique_integer([:positive])}")
+    branch = "codex/alb-66-slow-lookup"
+
+    File.rm_rf!(workspace_path)
+    File.mkdir_p!(workspace_path)
+    {_, 0} = System.cmd("git", ["init"], cd: workspace_path, stderr_to_stdout: true)
+    {_, 0} = System.cmd("git", ["checkout", "-b", branch], cd: workspace_path, stderr_to_stdout: true)
+
+    previous_lookup = Application.get_env(:symphony_elixir, :worker_api_pr_lookup)
+    previous_timeout = Application.get_env(:symphony_elixir, :worker_api_pr_lookup_timeout_ms)
+
+    Application.put_env(:symphony_elixir, :worker_api_pr_lookup, fn ^workspace_path, ^branch ->
+      Process.sleep(100)
+      {:ok, %{url: "https://example.org/too-late"}}
+    end)
+
+    Application.put_env(:symphony_elixir, :worker_api_pr_lookup_timeout_ms, 5)
+
+    on_exit(fn ->
+      if previous_lookup do
+        Application.put_env(:symphony_elixir, :worker_api_pr_lookup, previous_lookup)
+      else
+        Application.delete_env(:symphony_elixir, :worker_api_pr_lookup)
+      end
+
+      if previous_timeout do
+        Application.put_env(:symphony_elixir, :worker_api_pr_lookup_timeout_ms, previous_timeout)
+      else
+        Application.delete_env(:symphony_elixir, :worker_api_pr_lookup_timeout_ms)
+      end
+
+      File.rm_rf!(workspace_path)
+    end)
+
+    snapshot = worker_api_snapshot(%{branch_name: nil, workspace_path: workspace_path})
+    orchestrator_name = Module.concat(__MODULE__, :WorkerSlowPrLookupOrchestrator)
+    {:ok, _pid} = StaticOrchestrator.start_link(name: orchestrator_name, snapshot: snapshot)
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    status_payload = json_response(get(build_conn(), "/api/v1/workers/MT-API/status"), 200)
+
+    assert status_payload["workspace"]["branch"] == branch
+    assert status_payload["pull_request"] == nil
+    assert status_payload["checks"] == nil
+  end
+
+  test "agent worker status handles PR lookup failures as unavailable" do
+    workspace_root = Config.settings!().workspace.root
+    workspace_path = Path.join(workspace_root, "MT-API-RAISE-PR-#{System.unique_integer([:positive])}")
+    branch = "codex/alb-66-lookup-failure"
+
+    File.rm_rf!(workspace_path)
+    File.mkdir_p!(workspace_path)
+    {_, 0} = System.cmd("git", ["init"], cd: workspace_path, stderr_to_stdout: true)
+    {_, 0} = System.cmd("git", ["checkout", "-b", branch], cd: workspace_path, stderr_to_stdout: true)
+
+    previous_lookup = Application.get_env(:symphony_elixir, :worker_api_pr_lookup)
+
+    Application.put_env(:symphony_elixir, :worker_api_pr_lookup, fn ^workspace_path, ^branch ->
+      raise "gh unavailable"
+    end)
+
+    on_exit(fn ->
+      if previous_lookup do
+        Application.put_env(:symphony_elixir, :worker_api_pr_lookup, previous_lookup)
+      else
+        Application.delete_env(:symphony_elixir, :worker_api_pr_lookup)
+      end
+
+      File.rm_rf!(workspace_path)
+    end)
+
+    snapshot = worker_api_snapshot(%{branch_name: nil, workspace_path: workspace_path})
+    orchestrator_name = Module.concat(__MODULE__, :WorkerFailedPrLookupOrchestrator)
+    {:ok, _pid} = StaticOrchestrator.start_link(name: orchestrator_name, snapshot: snapshot)
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    status_payload = json_response(get(build_conn(), "/api/v1/workers/MT-API/status"), 200)
+
+    assert status_payload["workspace"]["branch"] == branch
+    assert status_payload["pull_request"] == nil
+    assert status_payload["checks"] == nil
+  end
+
+  test "agent worker status normalizes successful GitHub status contexts" do
+    snapshot =
+      worker_api_snapshot(%{
+        branch_name: "codex/alb-66-status-contexts",
+        pull_request: %{
+          "number" => 115,
+          "url" => "https://github.com/albert-zen/symphony-windows-native/pull/115",
+          "statusCheckRollup" => [
+            %{"context" => "legacy-success", "state" => "SUCCESS", "targetUrl" => "https://example.org/success"},
+            %{"context" => "legacy-neutral", "state" => "NEUTRAL"},
+            %{"context" => "legacy-skipped", "state" => "SKIPPED"}
+          ]
+        }
+      })
+
+    orchestrator_name = Module.concat(__MODULE__, :WorkerStatusContextProjectionOrchestrator)
+    {:ok, _pid} = StaticOrchestrator.start_link(name: orchestrator_name, snapshot: snapshot)
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    status_payload = json_response(get(build_conn(), "/api/v1/workers/MT-API/status"), 200)
+
+    assert status_payload["checks"] == %{
+             "summary" => "passing",
+             "items" => [
+               %{
+                 "name" => "legacy-success",
+                 "status" => "COMPLETED",
+                 "conclusion" => "SUCCESS",
+                 "details_url" => "https://example.org/success"
+               },
+               %{"name" => "legacy-neutral", "status" => "COMPLETED", "conclusion" => "NEUTRAL", "details_url" => nil},
+               %{"name" => "legacy-skipped", "status" => "COMPLETED", "conclusion" => "SKIPPED", "details_url" => nil}
+             ]
+           }
+  end
+
+  test "agent worker status projects explicit PR URL while leaving checks unavailable" do
+    snapshot =
+      worker_api_snapshot(%{
+        branch_name: "codex/alb-66-worker-observability",
+        pull_request_url: "https://github.com/albert-zen/symphony-windows-native/pull/115"
+      })
+
+    orchestrator_name = Module.concat(__MODULE__, :WorkerPrUrlProjectionOrchestrator)
+    {:ok, _pid} = StaticOrchestrator.start_link(name: orchestrator_name, snapshot: snapshot)
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    status_payload = json_response(get(build_conn(), "/api/v1/workers/MT-API/status"), 200)
+
+    assert status_payload["pull_request"] == %{
+             "url" => "https://github.com/albert-zen/symphony-windows-native/pull/115"
+           }
+
+    assert status_payload["checks"] == nil
+  end
+
+  test "agent worker conversation API does not perform PR discovery" do
+    workspace_root = Config.settings!().workspace.root
+    workspace_path = Path.join(workspace_root, "MT-API-CONV-#{System.unique_integer([:positive])}")
+    branch = "codex/alb-66-conversation"
+    test_pid = self()
+
+    File.rm_rf!(workspace_path)
+    File.mkdir_p!(workspace_path)
+    {_, 0} = System.cmd("git", ["init"], cd: workspace_path, stderr_to_stdout: true)
+    {_, 0} = System.cmd("git", ["checkout", "-b", branch], cd: workspace_path, stderr_to_stdout: true)
+
+    previous_lookup = Application.get_env(:symphony_elixir, :worker_api_pr_lookup)
+
+    Application.put_env(:symphony_elixir, :worker_api_pr_lookup, fn _, _ ->
+      send(test_pid, :unexpected_worker_pr_lookup)
+      {:ok, %{url: "https://example.org/unexpected"}}
+    end)
+
+    on_exit(fn ->
+      if previous_lookup do
+        Application.put_env(:symphony_elixir, :worker_api_pr_lookup, previous_lookup)
+      else
+        Application.delete_env(:symphony_elixir, :worker_api_pr_lookup)
+      end
+
+      File.rm_rf!(workspace_path)
+    end)
+
+    snapshot =
+      worker_api_snapshot(%{
+        branch_name: nil,
+        workspace_path: workspace_path,
+        completed_agent_messages: [
+          agent_completed_event("msg-processed", "Processed manager update.", ~U[2026-01-01 00:00:10Z])
+        ]
+      })
+
+    orchestrator_name = Module.concat(__MODULE__, :WorkerConversationNoLookupOrchestrator)
+    {:ok, _pid} = StaticOrchestrator.start_link(name: orchestrator_name, snapshot: snapshot)
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    payload = json_response(get(build_conn(), "/api/v1/workers/MT-API/conversation"), 200)
+
+    assert [%{"excerpt" => "Processed manager update."}] = payload["items"]
+    refute_receive :unexpected_worker_pr_lookup
+  end
+
+  test "agent worker conversation API exposes processed agent messages without noisy timeline items" do
+    snapshot =
+      worker_api_snapshot(%{
+        completed_agent_messages: [
+          agent_completed_event("msg-processed", "Processed manager update.", ~U[2026-01-01 00:00:10Z])
+        ],
+        recent_codex_events: [
+          notification_event("item/agentMessage/delta", %{"textDelta" => "streaming noise"}, 1),
+          %{event: :unexpected_worker_event, message: "icon path warning", raw: %{}, timestamp: ~U[2026-01-01 00:00:02Z]}
+        ]
+      })
+
+    orchestrator_name = Module.concat(__MODULE__, :WorkerConversationApiOrchestrator)
+    {:ok, _pid} = StaticOrchestrator.start_link(name: orchestrator_name, snapshot: snapshot)
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    payload = json_response(get(build_conn(), "/api/v1/workers/MT-API/conversation"), 200)
+
+    assert payload == %{
+             "issue_identifier" => "MT-API",
+             "status" => "running",
+             "source" => "conversation",
+             "session" => %{
+               "session_id" => "session-api",
+               "thread_id" => "thread-api",
+               "turn_count" => 3,
+               "turn_id" => "turn-api"
+             },
+             "items" => [
+               %{
+                 "type" => "assistant",
+                 "key" => "msg-processed",
+                 "at" => "2026-01-01T00:00:10Z",
+                 "title" => "Agent",
+                 "excerpt" => "Processed manager update.",
+                 "truncated?" => false
+               }
+             ]
+           }
+
+    rendered = inspect(payload, limit: :infinity)
+    refute rendered =~ "streaming noise"
+    refute rendered =~ "icon path warning"
   end
 
   test "agent worker debug events bound nested payload rendering before truncation" do

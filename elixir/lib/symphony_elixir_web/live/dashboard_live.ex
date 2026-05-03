@@ -170,8 +170,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
               </div>
               <div class="sidebar-section">
                 <p class="metric-label">Branch / Checks</p>
-                <p class="metric-value detail-path"><%= detail.retry && detail.retry.branch_name || "n/a" %></p>
-                <p class="metric-detail"><%= if detail.url, do: detail.url, else: "PR and checks unavailable" %></p>
+                <p class="metric-value detail-path"><%= detail.workspace.branch || "branch unknown" %></p>
+                <p class="metric-detail">
+                  <%= cond do %>
+                    <% detail.pull_request && detail.checks -> %>
+                      <%= detail.pull_request.url %> · checks <%= detail.checks.summary %>
+                    <% detail.pull_request -> %>
+                      <%= detail.pull_request.url %> · checks unknown
+                    <% true -> %>
+                      PR/checks unavailable
+                  <% end %>
+                </p>
               </div>
               <details class="debug-drawer">
                 <summary>Worker debug payload</summary>

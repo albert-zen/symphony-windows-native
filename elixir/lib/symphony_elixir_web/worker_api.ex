@@ -15,6 +15,7 @@ defmodule SymphonyElixirWeb.WorkerApi do
   @debug_string_bytes 4_000
   @default_patch_bytes 65_536
   @max_patch_bytes 1_048_576
+  @default_pr_lookup_timeout_ms 1_500
 
   @spec status_payload(String.t(), GenServer.name(), timeout()) ::
           {:ok, map()} | {:error, :worker_not_found}
@@ -22,6 +23,18 @@ defmodule SymphonyElixirWeb.WorkerApi do
     with {:ok, _snapshot, running, retry} <- worker_entries(issue_identifier, orchestrator, snapshot_timeout_ms) do
       {:ok, status_body(issue_identifier, running, retry)}
     end
+  end
+
+  @spec worker_metadata(String.t(), map() | nil, map() | nil) :: map()
+  def worker_metadata(issue_identifier, running, retry) do
+    workspace = workspace_summary(issue_identifier, running, retry)
+    pull_request = pull_request_summary(running, retry, workspace)
+
+    %{
+      workspace: workspace,
+      pull_request: pull_request_without_checks(pull_request),
+      checks: checks_summary(pull_request)
+    }
   end
 
   @spec timeline_payload(String.t(), map(), GenServer.name(), timeout()) ::
@@ -110,13 +123,15 @@ defmodule SymphonyElixirWeb.WorkerApi do
   end
 
   defp status_body(issue_identifier, running, retry) do
+    metadata = worker_metadata(issue_identifier, running, retry)
+
     %{
       issue: issue_summary(issue_identifier, running, retry),
       status: worker_status(running, retry),
       session: session_summary(running, retry),
-      workspace: workspace_summary(issue_identifier, running, retry),
-      pull_request: nil,
-      checks: nil,
+      workspace: metadata.workspace,
+      pull_request: metadata.pull_request,
+      checks: metadata.checks,
       rate_limits: rate_limit_summary(running),
       tokens: token_summary(running),
       command_watchdog: command_watchdog_payload(Map.get(running || %{}, :command_watchdog)),
@@ -145,11 +160,177 @@ defmodule SymphonyElixirWeb.WorkerApi do
   end
 
   defp workspace_summary(issue_identifier, running, retry) do
+    path = workspace_path(issue_identifier, running, retry)
+
     %{
-      path: workspace_path(issue_identifier, running, retry),
+      path: path,
       host: entry_value(running, retry, :worker_host),
-      branch: entry_value(running, retry, :branch_name)
+      branch: entry_value(running, retry, :branch_name) || workspace_branch(path)
     }
+  end
+
+  defp pull_request_summary(running, retry, workspace) do
+    explicit =
+      entry_value(running, retry, :pull_request) ||
+        entry_value(running, retry, :pull_request_url)
+
+    case normalize_pull_request(explicit) do
+      nil -> discover_pull_request(workspace)
+      pull_request -> pull_request
+    end
+  end
+
+  defp discover_pull_request(%{path: workspace_path, branch: branch})
+       when is_binary(workspace_path) and is_binary(branch) and branch != "" do
+    if File.dir?(workspace_path) do
+      case safe_pr_lookup(workspace_path, branch) do
+        {:ok, pull_request} -> normalize_pull_request(pull_request)
+        _ -> nil
+      end
+    end
+  end
+
+  defp discover_pull_request(_workspace), do: nil
+
+  defp pull_request_without_checks(nil), do: nil
+
+  defp pull_request_without_checks(pull_request) do
+    pull_request
+    |> Map.take([:number, :url, :state, :head_ref, :head_sha])
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
+  end
+
+  defp checks_summary(nil), do: nil
+
+  defp checks_summary(pull_request) do
+    items = Map.get(pull_request, :checks, []) |> Enum.map(&check_item/1) |> Enum.reject(&is_nil/1)
+    if items == [], do: nil, else: %{summary: checks_state(items), items: items}
+  end
+
+  defp checks_state(items) do
+    cond do
+      Enum.any?(items, &(String.downcase(to_string(&1.status || "")) not in ["completed", "success"])) ->
+        "pending"
+
+      Enum.any?(items, &(String.downcase(to_string(&1.conclusion || "")) not in ["success", "neutral", "skipped"])) ->
+        "failing"
+
+      true ->
+        "passing"
+    end
+  end
+
+  defp normalize_pull_request(nil), do: nil
+
+  defp normalize_pull_request(url) when is_binary(url) do
+    %{url: Redactor.redact(url), checks: []}
+  end
+
+  defp normalize_pull_request(pull_request) when is_map(pull_request) do
+    checks =
+      value(pull_request, :checks) ||
+        value(pull_request, :status_check_rollup) ||
+        value(pull_request, :statusCheckRollup) ||
+        []
+
+    %{
+      number: value(pull_request, :number),
+      url: Redactor.redact(value(pull_request, :url)),
+      state: value(pull_request, :state),
+      head_ref: value(pull_request, :head_ref) || value(pull_request, :headRefName),
+      head_sha: value(pull_request, :head_sha) || value(pull_request, :headRefOid),
+      checks: checks
+    }
+  end
+
+  defp normalize_pull_request(_pull_request), do: nil
+
+  defp check_item(check) when is_map(check) do
+    state = value(check, :state)
+
+    %{
+      name: value(check, :name) || value(check, :context),
+      status: value(check, :status) || status_context_status(state),
+      conclusion: blank_to_nil(value(check, :conclusion) || status_context_conclusion(state)),
+      details_url: Redactor.redact(value(check, :details_url) || value(check, :detailsUrl) || value(check, :targetUrl))
+    }
+  end
+
+  defp check_item(_check), do: nil
+
+  defp workspace_branch(path) when is_binary(path) do
+    if File.dir?(path) do
+      case git_output(path, ["branch", "--show-current"]) do
+        {:ok, output} ->
+          output |> String.trim() |> blank_to_nil()
+
+        _ ->
+          nil
+      end
+    end
+  end
+
+  defp workspace_branch(_path), do: nil
+
+  defp pr_lookup_fun do
+    Application.get_env(:symphony_elixir, :worker_api_pr_lookup, &default_pr_lookup/2)
+  end
+
+  defp pr_lookup_timeout_ms do
+    Application.get_env(:symphony_elixir, :worker_api_pr_lookup_timeout_ms, @default_pr_lookup_timeout_ms)
+  end
+
+  defp safe_pr_lookup(workspace_path, branch) do
+    task =
+      Task.async(fn ->
+        try do
+          pr_lookup_fun().(workspace_path, branch)
+        rescue
+          _ -> {:error, :pull_request_unavailable}
+        catch
+          :exit, _ -> {:error, :pull_request_unavailable}
+          _kind, _reason -> {:error, :pull_request_unavailable}
+        end
+      end)
+
+    case Task.yield(task, pr_lookup_timeout_ms()) || Task.shutdown(task, :brutal_kill) do
+      {:ok, result} -> result
+      _ -> {:error, :pull_request_unavailable}
+    end
+  end
+
+  defp default_pr_lookup(workspace_path, branch) do
+    args = ["pr", "view", branch, "--json", "number,url,state,headRefName,headRefOid,statusCheckRollup"]
+
+    case System.cmd("gh", args, cd: workspace_path, stderr_to_stdout: true) do
+      {output, 0} ->
+        output
+        |> Redactor.redact()
+        |> Jason.decode()
+
+      _ ->
+        {:error, :pull_request_unavailable}
+    end
+  end
+
+  defp status_context_status(state) do
+    case String.downcase(to_string(state || "")) do
+      value when value in ["success", "failure", "error", "neutral", "skipped"] -> "COMPLETED"
+      value when value in ["pending", "expected"] -> "PENDING"
+      _ -> nil
+    end
+  end
+
+  defp status_context_conclusion(state) do
+    case String.downcase(to_string(state || "")) do
+      "success" -> "SUCCESS"
+      "failure" -> "FAILURE"
+      "error" -> "FAILURE"
+      "neutral" -> "NEUTRAL"
+      "skipped" -> "SKIPPED"
+      _ -> nil
+    end
   end
 
   defp rate_limit_summary(running) do
@@ -577,6 +758,19 @@ defmodule SymphonyElixirWeb.WorkerApi do
   end
 
   defp entry_value(running, retry, key), do: Map.get(running || %{}, key) || Map.get(retry || %{}, key)
+
+  defp value(map, key) do
+    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  end
+
+  defp blank_to_nil(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp blank_to_nil(value), do: value
 
   defp retry_payload(nil), do: nil
 
