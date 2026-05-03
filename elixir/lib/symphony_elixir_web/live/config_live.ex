@@ -5,11 +5,65 @@ defmodule SymphonyElixirWeb.ConfigLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
-  alias SymphonyElixirWeb.WorkflowConfigProjection
+  alias SymphonyElixir.WorkflowConfigEditor
+  alias SymphonyElixirWeb.{Endpoint, Presenter, WorkflowConfigProjection}
 
   @impl true
   def mount(_params, _session, socket) do
-    {:ok, assign(socket, :projection, WorkflowConfigProjection.current())}
+    projection = WorkflowConfigProjection.current()
+
+    {:ok,
+     socket
+     |> assign(:projection, projection)
+     |> assign(:form_values, form_values(projection))
+     |> assign(:preview, nil)
+     |> assign(:active_workers_count, active_workers_count())}
+  end
+
+  @impl true
+  def handle_event("preview_config", %{"workflow" => params}, socket) do
+    case WorkflowConfigEditor.preview(params) do
+      {:ok, preview} ->
+        {:noreply,
+         socket
+         |> assign(:form_values, params)
+         |> assign(:preview, Map.put(preview, :params, params))
+         |> put_flash(:info, "Preview ready. Review the diff before applying.")}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:form_values, params)
+         |> assign(:preview, nil)
+         |> put_flash(:error, editor_error_message(reason))}
+    end
+  end
+
+  def handle_event("apply_config", _params, %{assigns: %{preview: %{params: params}}} = socket) do
+    active_workers_count = active_workers_count()
+
+    case apply_preview(params, active_workers_count) do
+      {:ok, applied} ->
+        projection = WorkflowConfigProjection.current()
+
+        {:noreply,
+         socket
+         |> assign(:projection, projection)
+         |> assign(:form_values, form_values(projection))
+         |> assign(:preview, nil)
+         |> assign(:active_workers_count, active_workers_count())
+         |> put_flash(:info, "Workflow applied. New hash #{applied.applied_hash}; backup written.")}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:active_workers_count, active_workers_count)
+         |> put_flash(:error, editor_error_message(reason))}
+    end
+  end
+
+  def handle_event("apply_config", _params, socket) do
+    {:noreply, put_flash(socket, :error, "Preview the workflow diff before applying.")}
   end
 
   @impl true
@@ -19,7 +73,7 @@ defmodule SymphonyElixirWeb.ConfigLive do
       <header class="page-header">
         <a class="page-back" href="/">‹ Dashboard</a>
         <span class="page-brand">Operator Config</span>
-        <span class="page-brand-sub">Read-only workflow view</span>
+        <span class="page-brand-sub">Safe workflow controls</span>
         <span class={config_status_class(@projection.status)}><%= @projection.status %></span>
       </header>
 
@@ -55,6 +109,108 @@ defmodule SymphonyElixirWeb.ConfigLive do
 
         <section class="page-main">
           <%= if @projection.config do %>
+            <section class="panel-shell config-editor-panel">
+              <div class="section-header">
+                <div>
+                  <h2 class="page-section-title">Safe edits</h2>
+                  <p class="section-copy">
+                    Low-risk runtime knobs only. Prompt, secrets, worker hosts, hooks, and repository identity stay read-only here.
+                  </p>
+                </div>
+                <span class={active_workers_badge_class(@active_workers_count)}>
+                  <%= active_workers_label(@active_workers_count) %>
+                </span>
+              </div>
+
+              <.form for={%{}} as={:workflow} id="workflow-config-editor" phx-submit="preview_config" class="config-edit-form">
+                <fieldset class="config-fieldset">
+                  <legend>Scheduling</legend>
+                  <label>
+                    <span>Max agents</span>
+                    <input type="number" min="1" name="workflow[agent.max_concurrent_agents]" value={@form_values["agent.max_concurrent_agents"]} />
+                  </label>
+                  <label>
+                    <span>Poll interval ms</span>
+                    <input type="number" min="1" name="workflow[polling.interval_ms]" value={@form_values["polling.interval_ms"]} />
+                  </label>
+                  <label>
+                    <span>Max turns</span>
+                    <input type="number" min="1" name="workflow[agent.max_turns]" value={@form_values["agent.max_turns"]} />
+                  </label>
+                  <label class="config-field-wide">
+                    <span>Dispatch states</span>
+                    <textarea name="workflow[tracker.dispatch_states]" rows="3"><%= @form_values["tracker.dispatch_states"] %></textarea>
+                  </label>
+                </fieldset>
+
+                <fieldset class="config-fieldset">
+                  <legend>Codex timeouts</legend>
+                  <label>
+                    <span>Turn timeout ms</span>
+                    <input type="number" min="1" name="workflow[codex.turn_timeout_ms]" value={@form_values["codex.turn_timeout_ms"]} />
+                  </label>
+                  <label>
+                    <span>Read timeout ms</span>
+                    <input type="number" min="1" name="workflow[codex.read_timeout_ms]" value={@form_values["codex.read_timeout_ms"]} />
+                  </label>
+                  <label>
+                    <span>Stall timeout ms</span>
+                    <input type="number" min="0" name="workflow[codex.stall_timeout_ms]" value={@form_values["codex.stall_timeout_ms"]} />
+                  </label>
+                  <label>
+                    <span>Long-running ms</span>
+                    <input type="number" min="0" name="workflow[codex.command_watchdog_long_running_ms]" value={@form_values["codex.command_watchdog_long_running_ms"]} />
+                  </label>
+                  <label>
+                    <span>Idle watchdog ms</span>
+                    <input type="number" min="0" name="workflow[codex.command_watchdog_idle_ms]" value={@form_values["codex.command_watchdog_idle_ms"]} />
+                  </label>
+                  <label>
+                    <span>Stalled watchdog ms</span>
+                    <input type="number" min="0" name="workflow[codex.command_watchdog_stalled_ms]" value={@form_values["codex.command_watchdog_stalled_ms"]} />
+                  </label>
+                  <label>
+                    <span>Repeated output limit</span>
+                    <input type="number" min="1" name="workflow[codex.command_watchdog_repeated_output_limit]" value={@form_values["codex.command_watchdog_repeated_output_limit"]} />
+                  </label>
+                </fieldset>
+
+                <fieldset class="config-fieldset">
+                  <legend>Observability</legend>
+                  <label>
+                    <span>Refresh ms</span>
+                    <input type="number" min="1" name="workflow[observability.refresh_ms]" value={@form_values["observability.refresh_ms"]} />
+                  </label>
+                  <label>
+                    <span>Render interval ms</span>
+                    <input type="number" min="1" name="workflow[observability.render_interval_ms]" value={@form_values["observability.render_interval_ms"]} />
+                  </label>
+                </fieldset>
+
+                <div class="config-actions">
+                  <button type="submit">Preview diff</button>
+                  <button type="button" class="secondary" phx-click="apply_config" disabled={is_nil(@preview)}>Apply</button>
+                </div>
+              </.form>
+
+              <%= if @preview do %>
+                <section class="config-diff-preview">
+                  <div class="section-header">
+                    <div>
+                      <h3 class="page-section-title">Diff preview</h3>
+                      <p class="section-copy">
+                        <%= length(@preview.changed_fields) %> field(s) changed · proposed hash <span class="mono"><%= @preview.proposed_hash %></span>
+                      </p>
+                    </div>
+                  </div>
+                  <%= for warning <- @preview.warnings do %>
+                    <p class="config-warning"><%= warning %></p>
+                  <% end %>
+                  <pre class="code-panel"><%= if @preview.diff == "", do: "No changes.", else: @preview.diff %></pre>
+                </section>
+              <% end %>
+            </section>
+
             <section class="panel-shell">
               <h2 class="page-section-title">Tracker</h2>
               <dl class="page-kv page-kv-wide">
@@ -139,4 +295,58 @@ defmodule SymphonyElixirWeb.ConfigLive do
   defp observability_summary(observability) do
     "refresh #{duration_label(observability.refresh_ms)} · render #{duration_label(observability.render_interval_ms)} · steer token #{observability.steer_token}"
   end
+
+  defp form_values(%{status: :ok, config: config}) do
+    %{
+      "agent.max_concurrent_agents" => config.concurrency.max_agents,
+      "polling.interval_ms" => config.polling.interval_ms,
+      "agent.max_turns" => config.concurrency.max_turns,
+      "tracker.dispatch_states" => Enum.join(config.tracker.dispatch_states, "\n"),
+      "codex.turn_timeout_ms" => config.codex.turn_timeout_ms,
+      "codex.read_timeout_ms" => config.codex.read_timeout_ms,
+      "codex.stall_timeout_ms" => config.codex.stall_timeout_ms,
+      "codex.command_watchdog_long_running_ms" => config.codex.command_watchdog_long_running_ms,
+      "codex.command_watchdog_idle_ms" => config.codex.command_watchdog_idle_ms,
+      "codex.command_watchdog_stalled_ms" => config.codex.command_watchdog_stalled_ms,
+      "codex.command_watchdog_repeated_output_limit" => config.codex.command_watchdog_repeated_output_limit,
+      "observability.refresh_ms" => config.observability.refresh_ms,
+      "observability.render_interval_ms" => config.observability.render_interval_ms
+    }
+  end
+
+  defp form_values(_projection), do: %{}
+
+  defp active_workers_count do
+    case Presenter.state_payload(orchestrator(), snapshot_timeout_ms()) do
+      %{running: running} when is_list(running) -> length(running)
+      _ -> :unknown
+    end
+  end
+
+  defp apply_preview(_params, :unknown), do: {:error, :active_workers_unknown}
+  defp apply_preview(params, active_workers_count), do: WorkflowConfigEditor.apply(params, active_workers_count: active_workers_count)
+
+  defp active_workers_badge_class(0), do: "state-badge"
+  defp active_workers_badge_class(_count), do: "state-badge state-badge-warning"
+
+  defp active_workers_label(:unknown), do: "active workers unknown"
+  defp active_workers_label(count), do: "#{count} active workers"
+
+  defp orchestrator do
+    Endpoint.config(:orchestrator) || SymphonyElixir.Orchestrator
+  end
+
+  defp snapshot_timeout_ms do
+    Endpoint.config(:snapshot_timeout_ms) || 15_000
+  end
+
+  defp editor_error_message({:unsupported_fields, fields}), do: "Unsupported workflow field(s): #{Enum.join(fields, ", ")}."
+
+  defp editor_error_message({:invalid_field, field, message}), do: "#{field} #{message}."
+  defp editor_error_message({:active_workers, count}), do: "Workflow edits are blocked while #{count} worker(s) are active."
+  defp editor_error_message(:active_workers_unknown), do: "Workflow edits are blocked because active workers could not be inspected."
+  defp editor_error_message({:invalid_workflow, reason}), do: "Proposed workflow did not validate: #{inspect(reason)}."
+  defp editor_error_message({:backup_failed, reason}), do: "Workflow backup failed: #{inspect(reason)}."
+  defp editor_error_message({:write_failed, reason}), do: "Workflow write failed: #{inspect(reason)}."
+  defp editor_error_message(reason), do: "Workflow edit failed: #{inspect(reason)}."
 end

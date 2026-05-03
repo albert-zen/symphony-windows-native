@@ -464,6 +464,92 @@ pre,
   word-break: break-word;
 }
 
+.config-editor-panel {
+  display: grid;
+  gap: 1rem;
+}
+
+.config-edit-form {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.config-fieldset {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 0.8rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.config-fieldset legend {
+  padding: 0 0.35rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.config-fieldset label {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+.config-fieldset input,
+.config-fieldset textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: white;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.92rem;
+  padding: 0.58rem 0.65rem;
+  box-shadow: inset 0 1px 1px rgba(15, 23, 42, 0.03);
+}
+
+.config-fieldset textarea {
+  resize: vertical;
+}
+
+.config-field-wide {
+  grid-column: 1 / -1;
+}
+
+.config-actions {
+  display: flex;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.config-diff-preview {
+  display: grid;
+  gap: 0.75rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--line);
+}
+
+.config-warning {
+  margin: 0;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid #f1d8a6;
+  border-radius: 8px;
+  background: #fff7e8;
+  color: #8a5a00;
+  font-size: 0.86rem;
+}
+
 .rate-limit-list {
   display: grid;
   gap: 1rem;

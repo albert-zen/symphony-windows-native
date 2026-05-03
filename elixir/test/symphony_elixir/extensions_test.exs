@@ -3163,9 +3163,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     {:ok, _view, html} = live(build_conn(), "/config")
 
     assert html =~ "Operator Config"
-    assert html =~ "Read-only workflow view"
+    assert html =~ "Safe workflow controls"
     assert html =~ Workflow.workflow_file_path()
     assert html =~ "Workflow file"
+    assert html =~ "Safe edits"
     assert html =~ "Tracker"
     assert html =~ "API key"
     assert html =~ "configured"
@@ -3174,6 +3175,60 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Prompt body"
     assert html =~ "OPENAI_API_KEY=[REDACTED]"
     refute html =~ "sk-live-secret"
+  end
+
+  test "operator config liveview previews and applies safe workflow edits" do
+    workflow_path = Workflow.workflow_file_path()
+
+    write_workflow_file!(workflow_path,
+      max_concurrent_agents: 3,
+      polling_interval_ms: 5_000,
+      observability_refresh_ms: 1_000
+    )
+
+    orchestrator_name = Module.concat(__MODULE__, :ConfigLiveEditOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: %{running: [], retrying: [], codex_totals: %{}, rate_limits: nil}
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 5)
+
+    {:ok, view, _html} = live(build_conn(), "/config")
+
+    html =
+      view
+      |> form("#workflow-config-editor",
+        workflow: %{
+          "agent.max_concurrent_agents" => "4",
+          "polling.interval_ms" => "7500",
+          "agent.max_turns" => "20",
+          "tracker.dispatch_states" => "Todo",
+          "codex.turn_timeout_ms" => "3600000",
+          "codex.read_timeout_ms" => "5000",
+          "codex.stall_timeout_ms" => "300000",
+          "codex.command_watchdog_long_running_ms" => "300000",
+          "codex.command_watchdog_idle_ms" => "120000",
+          "codex.command_watchdog_stalled_ms" => "300000",
+          "codex.command_watchdog_repeated_output_limit" => "20",
+          "observability.refresh_ms" => "2500",
+          "observability.render_interval_ms" => "16"
+        }
+      )
+      |> render_submit()
+
+    assert html =~ "Diff preview"
+    assert html =~ "+  max_concurrent_agents: 4"
+    assert html =~ "+  interval_ms: 7500"
+    assert html =~ "+  refresh_ms: 2500"
+
+    _html = view |> element("button", "Apply") |> render_click()
+
+    assert File.read!(workflow_path) =~ "max_concurrent_agents: 4"
+    assert File.read!(workflow_path) =~ "interval_ms: 7500"
+    assert File.read!(workflow_path) =~ "refresh_ms: 2500"
   end
 
   test "workflow config projection reports redacted settings and prompt metadata" do
