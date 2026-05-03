@@ -3294,6 +3294,35 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert String.downcase(Workflow.workflow_file_path()) == String.downcase(alternate_path)
   end
 
+  test "operator config liveview blocks chosen workflow files while workers are active" do
+    workflow_dir = Path.dirname(Workflow.workflow_file_path())
+    alternate_path = Path.join(workflow_dir, "WORKFLOW.config-live-browse-busy.md")
+    original_path = Workflow.workflow_file_path()
+    write_workflow_file!(alternate_path, max_concurrent_agents: 9)
+
+    Application.put_env(:symphony_elixir, :workflow_config_browse_fun, fn _current_path ->
+      {:ok, alternate_path}
+    end)
+
+    orchestrator_name = Module.concat(__MODULE__, :ConfigLiveBrowseBusyWorkflowOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot()
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 5)
+
+    {:ok, view, _html} = live(build_conn(), "/config")
+
+    html = view |> element("button", "Choose file...") |> render_click()
+
+    assert html =~ "Workflow edits are blocked while 1 worker(s) are active."
+    refute html =~ "max_concurrent_agents: 9"
+    assert Workflow.workflow_file_path() == original_path
+  end
+
   test "operator config liveview reports workflow picker cancellation and failures" do
     original_path = Workflow.workflow_file_path()
 
@@ -3325,6 +3354,36 @@ defmodule SymphonyElixir.ExtensionsTest do
     html = view |> element("button", "Choose file...") |> render_click()
 
     assert html =~ "Workflow file picker failed with status 7: nope."
+    assert Workflow.workflow_file_path() == original_path
+  end
+
+  test "operator config liveview reports workflow default persistence failures" do
+    original_path = Workflow.workflow_file_path()
+    workflow_dir = Path.dirname(original_path)
+    alternate_path = Path.join(workflow_dir, "WORKFLOW.config-live-default-failure.md")
+    defaults_path = Path.join(workflow_dir, "defaults-as-directory")
+    File.mkdir_p!(defaults_path)
+    Application.put_env(:symphony_elixir, :workflow_defaults_path, defaults_path)
+    write_workflow_file!(alternate_path, max_concurrent_agents: 10)
+
+    orchestrator_name = Module.concat(__MODULE__, :ConfigLiveDefaultFailureOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: %{running: [], retrying: [], codex_totals: %{}, rate_limits: nil}
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 5)
+
+    {:ok, view, _html} = live(build_conn(), "/config")
+
+    html =
+      view
+      |> form("#workflow-path-picker", workflow_path: %{"path" => alternate_path})
+      |> render_submit()
+
+    assert html =~ "restart default could not be saved"
     assert Workflow.workflow_file_path() == original_path
   end
 

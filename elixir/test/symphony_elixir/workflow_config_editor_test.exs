@@ -135,6 +135,21 @@ defmodule SymphonyElixir.WorkflowConfigEditorTest do
     refute Workflow.workflow_file_path() == alternate_path
   end
 
+  test "does not switch workflow path when the restart default cannot be written" do
+    original_path = Workflow.workflow_file_path()
+    workflow_dir = Path.dirname(original_path)
+    alternate_path = Path.join(workflow_dir, "WORKFLOW.default-write-fails.md")
+    defaults_path = Path.join(workflow_dir, "defaults-as-directory")
+    File.mkdir_p!(defaults_path)
+    Application.put_env(:symphony_elixir, :workflow_defaults_path, defaults_path)
+    write_workflow_file!(alternate_path, max_concurrent_agents: 6)
+
+    assert {:error, {:workflow_default_write_failed, _reason}} =
+             WorkflowConfigEditor.switch_workflow_path(alternate_path)
+
+    assert Workflow.workflow_file_path() == original_path
+  end
+
   test "rejects invalid workflow path switches before changing the runtime path" do
     original_path = Workflow.workflow_file_path()
     workflow_dir = Path.dirname(original_path)
