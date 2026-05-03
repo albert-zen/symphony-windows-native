@@ -1,9 +1,37 @@
 # Symphony Elixir
 
-This directory contains the Elixir agent orchestration service that polls Linear, creates per-issue workspaces, and runs Codex in app-server mode.
+This directory contains the Elixir agent orchestration service that polls
+Linear, creates per-issue workspaces, and runs Codex in app-server mode.
 
-Start with the repository-level [agent entrypoint playbook](../AGENTS.md), then use this file for
-Elixir-specific conventions.
+Use this file as the worker-facing repo map. It should give enough local
+orientation to choose the right module, command, and validation path without
+forcing every worker to read every project document.
+
+## Code Map
+
+- `lib/symphony_elixir/orchestrator.ex`: polling loop, claim/retry/reconcile
+  behavior, and tracker-driven dispatch.
+- `lib/symphony_elixir/agent_runner.ex`: per-issue worker lifecycle and Codex
+  session execution.
+- `lib/symphony_elixir/codex/`: Codex app-server protocol, rollout/session
+  readers, command watchdog, and validation evidence handling.
+- `lib/symphony_elixir/linear/` and `lib/symphony_elixir/tracker*`: Linear
+  GraphQL adapter, issue model, and tracker abstraction.
+- `lib/symphony_elixir/workflow*.ex`, `config*.ex`: `WORKFLOW.md` parsing,
+  runtime config, prompt loading, and workflow reload/edit support.
+- `lib/symphony_elixir/workspace.ex` and `path_safety.ex`: generated workspace
+  creation, safety checks, and path boundary enforcement.
+- `lib/symphony_elixir/deployment/`, `runtime_info.ex`, and `scripts/*.ps1`:
+  Windows-native start/stop/reload/runtime metadata.
+- `lib/symphony_elixir_web/`: dashboard, worker detail pages, config editor,
+  API payloads, and static dashboard assets.
+- `test/symphony_elixir/`: focused ExUnit coverage for runtime, web, Linear,
+  workspace, Windows, and Codex behavior.
+
+Use [`../SPEC.md`](../SPEC.md) when changing public behavior or contracts. Use
+[`docs/windows-native.md`](docs/windows-native.md) for Windows setup/runtime
+details, and [`docs/agent-quality-flywheel.md`](docs/agent-quality-flywheel.md)
+for PR quality policy.
 
 ## Environment
 

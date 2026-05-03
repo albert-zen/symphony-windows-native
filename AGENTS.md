@@ -4,18 +4,15 @@ Read this first when working as a Windows-native Symphony/Codex worker. Keep the
 run scoped to the current Linear/GitHub issue and update this file when workflow
 policy or recurring pitfalls change.
 
-## Repo Layout
+## Role-Based Reading Path
 
-- `README.md`: project overview and Windows-native starting links.
-- `SPEC.md`: upstream behavior contract; implementation must not conflict with it.
-- `elixir/`: current Symphony implementation and the directory for most commands.
-- `elixir/AGENTS.md`: Elixir-specific coding, spec, PR, and validation rules.
-- `elixir/docs/windows-native.md`: Windows runtime setup, paths, preflight, and pitfalls.
-- `elixir/docs/small-team-agentic-flywheel.md`: Linear/GitHub flywheel operating model.
-- `elixir/docs/agent-quality-flywheel.md`: PR quality gates and review readiness policy.
-- `elixir/docs/manager-agent-runbook.md`: manager/orchestrator loop for review,
-  blocker triage, issue release, waiting, and deployment verification.
-- `.github/pull_request_template.md`: required PR body headings.
+- **Worker agents:** read [`elixir/AGENTS.md`](elixir/AGENTS.md) for the repo
+  map, implementation conventions, validation commands, and PR handoff rules.
+  Follow its links only when they match the issue you are implementing.
+- **Manager/orchestrator agents:** read
+  [`elixir/docs/manager-agent-runbook.md`](elixir/docs/manager-agent-runbook.md)
+  for review, blocker triage, issue release, waiting, and deployment
+  verification.
 
 ## Windows Paths And Commands
 

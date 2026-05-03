@@ -205,6 +205,45 @@ To reuse this pattern outside Symphony:
 7. Expand concurrency only after the team trusts the claim behavior, CI signal,
    review loop, and pause procedure.
 
+### Project configuration checklist
+
+Before moving real work into `Todo`, make these project-specific settings
+explicit. Treat this as the minimum hard configuration for a new repo:
+
+- **Linear routing:** project slug, team, eligible labels if any, and exact state
+  names. Keep `Backlog` out of `tracker.dispatch_states`; normally only `Todo`
+  should be dispatchable.
+- **GitHub routing:** repository owner/name, trusted issue labels, branch base,
+  PR template, and required checks. Required check names must match the checks
+  GitHub actually reports.
+- **Workflow file:** copy the closest `WORKFLOW.*.example.md`, then replace
+  `tracker.project_slug`, `workspace.root`, clone URL, prompt body, concurrency,
+  timeout, sandbox, and review-readiness settings.
+- **Workspace bootstrap:** `hooks.after_create` must clone or prepare the target
+  repo, install only required dependencies, and leave the workspace on the
+  intended base branch with `origin` pointing at the canonical repository.
+- **Quality gates:** define the local focused checks, broad repo gate, CI checks,
+  coverage policy, formatter/lint commands, and any platform-specific lane such
+  as a Windows-native test profile.
+- **Agent entrypoint:** add a repo-level `AGENTS.md` that names the project
+  commands, branch/commit/PR rules, Workpad rules, blocker protocol, and known
+  local pitfalls. Add language- or package-specific nested `AGENTS.md` files
+  when needed.
+- **Manager ownership:** define which work is worker-safe and which must stay
+  manager-owned, such as dependency release decisions, policy changes, CI gate
+  changes, privacy/history cleanup, deployment/restart decisions, and blocker
+  root-cause ownership.
+- **Secrets and auth:** keep tokens in environment variables or local secret
+  stores, not committed workflow files. Preflight should verify Linear, GitHub,
+  Codex, shell, and platform capabilities before unattended dispatch.
+- **Runtime operations:** choose logs root, PID file, dashboard port, workflow
+  path, reload/restart procedure, and how to verify the running process commit
+  after system changes.
+
+If any item is still unknown, keep the project at `agent.max_concurrent_agents:
+1` and release only low-risk, clearly scoped issues until the missing contract is
+proven.
+
 The important property is not the exact tool stack. The important property is
 that work enters through a queue, agents operate in isolated branches with
 evidence, humans manage priority and quality, and the system turns its own
