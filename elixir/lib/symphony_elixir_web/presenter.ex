@@ -3,7 +3,8 @@ defmodule SymphonyElixirWeb.Presenter do
   Shared projections for the observability API and dashboard.
   """
 
-  alias SymphonyElixir.{Config, Deployment.Reload, Orchestrator, Redactor, RuntimeInfo, StatusDashboard}
+  alias SymphonyElixir.{Deployment.Reload, Orchestrator, Redactor, RuntimeInfo, StatusDashboard}
+  alias SymphonyElixirWeb.WorkerApi
 
   @conversation_display_limit 120
   @conversation_event_scan_limit 400
@@ -57,6 +58,30 @@ defmodule SymphonyElixirWeb.Presenter do
           {:error, :issue_not_found}
         else
           {:ok, issue_payload_body(issue_identifier, running, retry)}
+        end
+
+      _ ->
+        {:error, :issue_not_found}
+    end
+  end
+
+  @spec conversation_payload(String.t(), GenServer.name(), timeout()) :: {:ok, map()} | {:error, :issue_not_found}
+  def conversation_payload(issue_identifier, orchestrator, snapshot_timeout_ms) when is_binary(issue_identifier) do
+    case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
+      %{} = snapshot ->
+        running = Enum.find(snapshot.running, &(&1.identifier == issue_identifier))
+        retry = Enum.find(snapshot.retrying, &(&1.identifier == issue_identifier))
+
+        if is_nil(running) and is_nil(retry) do
+          {:error, :issue_not_found}
+        else
+          {:ok,
+           %{
+             issue_identifier: issue_identifier,
+             status: issue_status(running, retry),
+             session: optional_conversation_session(running),
+             items: optional_conversation(running)
+           }}
         end
 
       _ ->
@@ -123,16 +148,17 @@ defmodule SymphonyElixirWeb.Presenter do
   end
 
   defp issue_payload_body(issue_identifier, running, retry) do
+    metadata = WorkerApi.worker_metadata(issue_identifier, running, retry)
+
     %{
       issue_identifier: issue_identifier,
       issue_id: issue_id_from_entries(running, retry),
       title: issue_title(running),
       url: issue_url(running),
       status: issue_status(running, retry),
-      workspace: %{
-        path: workspace_path(issue_identifier, running, retry),
-        host: workspace_host(running, retry)
-      },
+      workspace: metadata.workspace,
+      pull_request: metadata.pull_request,
+      checks: metadata.checks,
       attempts: %{
         restart_count: restart_count(retry),
         current_retry_attempt: retry_attempt(retry)
@@ -185,6 +211,17 @@ defmodule SymphonyElixirWeb.Presenter do
       [_ | _] = messages -> messages
       _ -> Map.get(running, :recent_codex_events, [])
     end
+  end
+
+  defp optional_conversation_session(nil), do: nil
+
+  defp optional_conversation_session(running) do
+    %{
+      session_id: running.session_id,
+      thread_id: running.thread_id,
+      turn_id: running.turn_id,
+      turn_count: running.turn_count
+    }
   end
 
   defp retry_error(nil), do: nil
@@ -274,16 +311,6 @@ defmodule SymphonyElixirWeb.Presenter do
       workspace_path: Map.get(retry, :workspace_path),
       branch_name: Map.get(retry, :branch_name)
     }
-  end
-
-  defp workspace_path(issue_identifier, running, retry) do
-    (running && Map.get(running, :workspace_path)) ||
-      (retry && Map.get(retry, :workspace_path)) ||
-      Path.join(Config.settings!().workspace.root, issue_identifier)
-  end
-
-  defp workspace_host(running, retry) do
-    (running && Map.get(running, :worker_host)) || (retry && Map.get(retry, :worker_host))
   end
 
   defp recent_events_payload(running) do

@@ -46,6 +46,23 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
     end
   end
 
+  @spec worker_conversation(Conn.t(), map()) :: Conn.t()
+  def worker_conversation(conn, %{"issue_identifier" => issue_identifier}) do
+    case Presenter.conversation_payload(issue_identifier, orchestrator(), snapshot_timeout_ms()) do
+      {:ok, payload} ->
+        json(conn, %{
+          issue_identifier: issue_identifier,
+          status: payload.status,
+          source: "conversation",
+          session: payload.session,
+          items: payload.items
+        })
+
+      {:error, :issue_not_found} ->
+        error_response(conn, 404, "worker_not_found", "Worker not found")
+    end
+  end
+
   @spec worker_diff(Conn.t(), map()) :: Conn.t()
   def worker_diff(conn, %{"issue_identifier" => issue_identifier} = params) do
     case WorkerApi.diff_payload(issue_identifier, params, orchestrator(), snapshot_timeout_ms()) do

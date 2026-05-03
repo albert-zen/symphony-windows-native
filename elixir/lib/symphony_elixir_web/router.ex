@@ -41,6 +41,8 @@ defmodule SymphonyElixirWeb.Router do
     match(:*, "/api/v1/runtime/reload", ObservabilityApiController, :method_not_allowed)
     get("/api/v1/workers/:issue_identifier/status", ObservabilityApiController, :worker_status)
     match(:*, "/api/v1/workers/:issue_identifier/status", ObservabilityApiController, :method_not_allowed)
+    get("/api/v1/workers/:issue_identifier/conversation", ObservabilityApiController, :worker_conversation)
+    match(:*, "/api/v1/workers/:issue_identifier/conversation", ObservabilityApiController, :method_not_allowed)
     get("/api/v1/workers/:issue_identifier/timeline", ObservabilityApiController, :worker_timeline)
     match(:*, "/api/v1/workers/:issue_identifier/timeline", ObservabilityApiController, :method_not_allowed)
     get("/api/v1/workers/:issue_identifier/diff", ObservabilityApiController, :worker_diff)
