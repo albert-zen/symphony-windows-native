@@ -4,6 +4,7 @@ defmodule SymphonyElixir.ExtensionsTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
+  alias SymphonyElixir.Codex.RolloutIndex
   alias SymphonyElixir.Linear.Adapter
   alias SymphonyElixir.LogFile.Formatter
   alias SymphonyElixir.Tracker.Memory
@@ -2462,6 +2463,49 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert_received {:steer_worker_called, "MT-HTTP", "Use the narrower UI fix.", "thread-http"}
   end
 
+  test "worker detail transcript disclosures preserve open state across patches" do
+    orchestrator_name = Module.concat(__MODULE__, :WorkerDetailDisclosureOrchestrator)
+    workspace_root = Config.settings!().workspace.root
+    workspace_path = Path.join(workspace_root, "MT-HTTP")
+
+    sessions_root =
+      System.tmp_dir!()
+      |> Path.join("symphony-rollouts-#{System.unique_integer([:positive])}")
+      |> Path.expand()
+
+    write_transcript_disclosure_rollout!(sessions_root, workspace_path)
+    rollout_index_state = :sys.get_state(RolloutIndex)
+
+    on_exit(fn ->
+      :sys.replace_state(RolloutIndex, fn _ -> rollout_index_state end)
+      File.rm_rf(sessions_root)
+    end)
+
+    File.mkdir_p!(workspace_path)
+
+    :sys.replace_state(RolloutIndex, fn state ->
+      %{state | sessions_root: sessions_root, workspace_root: Path.expand(workspace_root)}
+    end)
+
+    RolloutIndex.refresh()
+    assert [_rollout] = RolloutIndex.lookup("MT-HTTP")
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot()
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, html} = live(build_conn(), "/workers/MT-HTTP")
+
+    assert html =~ "tool_call"
+    assert html =~ "thinking deeply"
+    assert html =~ ~s(class="transcript-details")
+    assert html =~ ~s(phx-hook="PreserveDetails")
+  end
+
   test "worker detail projection renders completed agent messages and hides command output" do
     hidden_marker = "TAIL_SHOULD_NOT_RENDER"
     long_output = String.duplicate("a", 2_050) <> hidden_marker <> String.duplicate("b", 600)
@@ -3476,6 +3520,46 @@ defmodule SymphonyElixir.ExtensionsTest do
       {_output, 0} -> :ok
       {output, status} -> flunk("git #{Enum.join(args, " ")} failed with #{status}: #{output}")
     end
+  end
+
+  defp write_transcript_disclosure_rollout!(sessions_root, workspace_path) do
+    date_dir = Path.join([sessions_root, "2026", "05", "03"])
+    File.mkdir_p!(date_dir)
+
+    rollout_path =
+      Path.join(date_dir, "rollout-2026-05-03T10-00-00-#{System.unique_integer([:positive])}.jsonl")
+
+    long_reasoning = "thinking deeply " <> String.duplicate("about preserving disclosure state ", 12)
+
+    lines = [
+      %{
+        "timestamp" => "2026-05-03T10:00:00Z",
+        "type" => "session_meta",
+        "payload" => %{
+          "id" => "session-disclosure",
+          "cwd" => workspace_path,
+          "timestamp" => "2026-05-03T10:00:00Z"
+        }
+      },
+      %{
+        "timestamp" => "2026-05-03T10:00:01Z",
+        "type" => "response_item",
+        "payload" => %{"type" => "reasoning", "text" => long_reasoning}
+      },
+      %{
+        "timestamp" => "2026-05-03T10:00:02Z",
+        "type" => "response_item",
+        "payload" => %{
+          "type" => "function_call",
+          "name" => "tool_call",
+          "arguments" => %{"command" => "mix test"},
+          "call_id" => "call-disclosure"
+        }
+      }
+    ]
+
+    File.write!(rollout_path, Enum.map_join(lines, "\n", &Jason.encode!/1) <> "\n")
+    rollout_path
   end
 
   defp secret_snapshot do

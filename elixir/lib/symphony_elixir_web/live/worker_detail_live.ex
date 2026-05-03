@@ -285,12 +285,12 @@ defmodule SymphonyElixirWeb.WorkerDetailLive do
               </div>
               <%= cond do %>
                 <% item.kind == :reasoning and String.length(item.text) > 200 -> %>
-                  <details class="transcript-details">
+                  <details id={dom_id <> "-details"} class="transcript-details" phx-hook="PreserveDetails">
                     <summary class="transcript-summary"><%= preview_text(item.text) %></summary>
                     <pre class="transcript-pre"><%= item.text %></pre>
                   </details>
                 <% item.kind == :tool_call -> %>
-                  <details class="transcript-details">
+                  <details id={dom_id <> "-details"} class="transcript-details" phx-hook="PreserveDetails">
                     <summary class="transcript-summary"><%= item.text %></summary>
                     <pre class="transcript-pre"><%= format_tool_meta(item) %></pre>
                   </details>
