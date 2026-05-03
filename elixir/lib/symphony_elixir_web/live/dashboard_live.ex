@@ -501,20 +501,20 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   ## --- header / freshness -------------------------------------------------
 
-  defp dashboard_freshness_label(nil, _now), do: "live"
+  defp dashboard_freshness_label(nil, _now), do: "Snapshot current"
 
   defp dashboard_freshness_label(generated_at, %DateTime{} = now) when is_binary(generated_at) do
     case DateTime.from_iso8601(generated_at) do
       {:ok, parsed, _offset} ->
         diff = DateTime.diff(now, parsed, :second)
-        if diff <= 1, do: "live", else: "live · refreshed " <> relative_duration(max(diff, 0)) <> " ago"
+        if diff <= 1, do: "Snapshot current", else: "Snapshot " <> relative_duration(max(diff, 0)) <> " ago"
 
       _ ->
-        "live"
+        "Snapshot current"
     end
   end
 
-  defp dashboard_freshness_label(_, _), do: "live"
+  defp dashboard_freshness_label(_, _), do: "Snapshot current"
 
   defp uptime_label(nil, _now), do: "n/a"
 
