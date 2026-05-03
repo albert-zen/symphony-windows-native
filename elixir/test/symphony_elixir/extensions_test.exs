@@ -3260,9 +3260,59 @@ defmodule SymphonyElixir.ExtensionsTest do
       |> form("#workflow-path-picker", workflow_path: %{"path" => alternate_path})
       |> render_submit()
 
-    assert html =~ alternate_path
+    assert String.contains?(String.downcase(html), String.downcase(alternate_path))
     assert html =~ "max_concurrent_agents: 7"
-    assert Workflow.workflow_file_path() == alternate_path
+    assert String.downcase(Workflow.workflow_file_path()) == String.downcase(alternate_path)
+  end
+
+  test "operator config liveview rejects invalid workflow file selections" do
+    original_path = Workflow.workflow_file_path()
+
+    orchestrator_name = Module.concat(__MODULE__, :ConfigLiveInvalidWorkflowPathOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: %{running: [], retrying: [], codex_totals: %{}, rate_limits: nil}
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 5)
+
+    {:ok, view, _html} = live(build_conn(), "/config")
+
+    html =
+      view
+      |> form("#workflow-path-picker", workflow_path: %{"path" => Path.rootname(original_path) <> ".txt"})
+      |> render_submit()
+
+    assert html =~ "WORKFLOW.txt"
+    assert Workflow.workflow_file_path() == original_path
+  end
+
+  test "operator config liveview blocks workflow file switches while workers are active" do
+    workflow_dir = Path.dirname(Workflow.workflow_file_path())
+    alternate_path = Path.join(workflow_dir, "WORKFLOW.config-live-busy.md")
+    write_workflow_file!(alternate_path, max_concurrent_agents: 7)
+
+    orchestrator_name = Module.concat(__MODULE__, :ConfigLiveBusySwitchWorkflowOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot()
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 5)
+
+    {:ok, view, _html} = live(build_conn(), "/config")
+
+    html =
+      view
+      |> form("#workflow-path-picker", workflow_path: %{"path" => alternate_path})
+      |> render_submit()
+
+    assert html =~ "Workflow edits are blocked while 1 worker(s) are active."
+    refute Workflow.workflow_file_path() == alternate_path
   end
 
   test "operator config liveview requires preview before applying workflow edits" do

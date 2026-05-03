@@ -126,6 +126,26 @@ defmodule SymphonyElixir.WorkflowConfigEditorTest do
     refute Workflow.workflow_file_path() == alternate_path
   end
 
+  test "rejects invalid workflow path switches before changing the runtime path" do
+    original_path = Workflow.workflow_file_path()
+    workflow_dir = Path.dirname(original_path)
+    invalid_path = Path.join(workflow_dir, "WORKFLOW.invalid.md")
+    File.write!(invalid_path, "---\nagent: [\n---\nPrompt\n")
+
+    assert {:error, :workflow_path_not_markdown} =
+             WorkflowConfigEditor.switch_workflow_path(Path.join(workflow_dir, "WORKFLOW.txt"))
+
+    assert {:error, {:missing_workflow_file, missing_path, :enoent}} =
+             WorkflowConfigEditor.switch_workflow_path(Path.join(workflow_dir, "MISSING.md"))
+
+    assert String.ends_with?(missing_path, "MISSING.md")
+
+    assert {:error, {:workflow_parse_error, _reason}} =
+             WorkflowConfigEditor.switch_workflow_path(invalid_path)
+
+    assert Workflow.workflow_file_path() == original_path
+  end
+
   test "reveals workflow paths through Windows Explorer when available" do
     workflow_path = Workflow.workflow_file_path()
     parent = self()
@@ -142,6 +162,31 @@ defmodule SymphonyElixir.WorkflowConfigEditorTest do
     assert :ok = WorkflowConfigEditor.reveal_path(workflow_path, deps: deps)
     assert_received {:explorer_called, "explorer.exe", [select_arg]}
     assert select_arg == "/select,#{Path.expand(workflow_path)}"
+  end
+
+  test "reports Explorer reveal failures" do
+    deps = %{
+      os_type: fn -> {:unix, :linux} end,
+      find_executable: fn _name -> nil end,
+      cmd: fn _executable, _args, _opts -> {"", 0} end
+    }
+
+    assert {:error, {:unsupported_os, {:unix, :linux}}} =
+             WorkflowConfigEditor.reveal_path(Workflow.workflow_file_path(), deps: deps)
+
+    deps = %{deps | os_type: fn -> {:win32, :nt} end}
+
+    assert {:error, :explorer_unavailable} =
+             WorkflowConfigEditor.reveal_path(Workflow.workflow_file_path(), deps: deps)
+
+    deps = %{
+      deps
+      | find_executable: fn "explorer.exe" -> "explorer.exe" end,
+        cmd: fn _executable, _args, _opts -> {"nope", 7} end
+    }
+
+    assert {:error, {:explorer_failed, 7, "nope"}} =
+             WorkflowConfigEditor.reveal_path(Workflow.workflow_file_path(), deps: deps)
   end
 
   test "inserts missing safe fields without rewriting the prompt body" do
