@@ -95,7 +95,7 @@ defmodule SymphonyElixirWeb.ConfigLive do
   end
 
   def handle_event("reveal_workflow_file", _params, socket) do
-    case WorkflowConfigEditor.reveal_path(socket.assigns.projection.workflow.path) do
+    case reveal_workflow_file(socket.assigns.projection.workflow.path) do
       :ok -> {:noreply, put_flash(socket, :info, "Opened Explorer for the active workflow file.")}
       {:error, reason} -> {:noreply, put_flash(socket, :error, editor_error_message(reason))}
     end
@@ -305,6 +305,13 @@ defmodule SymphonyElixirWeb.ConfigLive do
 
   defp apply_content_preview(_content, :unknown), do: {:error, :active_workers_unknown}
   defp apply_content_preview(content, active_workers_count), do: WorkflowConfigEditor.apply_content(content, active_workers_count: active_workers_count)
+
+  defp reveal_workflow_file(path) do
+    case Application.get_env(:symphony_elixir, :workflow_config_reveal_fun) do
+      reveal_fun when is_function(reveal_fun, 1) -> reveal_fun.(path)
+      _ -> WorkflowConfigEditor.reveal_path(path)
+    end
+  end
 
   defp active_workers_badge_class(0), do: "state-badge"
   defp active_workers_badge_class(_count), do: "state-badge state-badge-warning"

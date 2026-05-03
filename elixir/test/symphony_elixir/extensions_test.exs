@@ -3265,6 +3265,71 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert String.downcase(Workflow.workflow_file_path()) == String.downcase(alternate_path)
   end
 
+  test "operator config liveview reveals the active workflow file through the editor header" do
+    workflow_path = Workflow.workflow_file_path()
+    parent = self()
+
+    Application.put_env(:symphony_elixir, :workflow_config_reveal_fun, fn ^workflow_path ->
+      send(parent, {:workflow_revealed, workflow_path})
+      :ok
+    end)
+
+    orchestrator_name = Module.concat(__MODULE__, :ConfigLiveRevealWorkflowOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: %{running: [], retrying: [], codex_totals: %{}, rate_limits: nil}
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 5)
+
+    {:ok, view, _html} = live(build_conn(), "/config")
+
+    html = view |> element("button", "Reveal in Explorer") |> render_click()
+
+    assert_received {:workflow_revealed, ^workflow_path}
+    assert html =~ "Reveal in Explorer"
+  end
+
+  test "operator config liveview reports workflow reveal failures without shelling out" do
+    Application.put_env(:symphony_elixir, :workflow_config_reveal_fun, fn _path ->
+      {:error, :explorer_unavailable}
+    end)
+
+    orchestrator_name = Module.concat(__MODULE__, :ConfigLiveRevealWorkflowErrorOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: %{running: [], retrying: [], codex_totals: %{}, rate_limits: nil}
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 5)
+
+    {:ok, view, _html} = live(build_conn(), "/config")
+
+    html = view |> element("button", "Reveal in Explorer") |> render_click()
+
+    assert html =~ "Reveal in Explorer"
+
+    Application.put_env(:symphony_elixir, :workflow_config_reveal_fun, fn _path ->
+      {:error, {:unsupported_os, {:unix, :linux}}}
+    end)
+
+    html = view |> element("button", "Reveal in Explorer") |> render_click()
+
+    assert html =~ "Reveal in Explorer"
+
+    Application.put_env(:symphony_elixir, :workflow_config_reveal_fun, fn _path ->
+      {:error, {:explorer_failed, 7, "nope"}}
+    end)
+
+    html = view |> element("button", "Reveal in Explorer") |> render_click()
+
+    assert html =~ "Reveal in Explorer"
+  end
+
   test "operator config liveview rejects invalid workflow file selections" do
     original_path = Workflow.workflow_file_path()
 
@@ -3282,10 +3347,28 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     html =
       view
+      |> form("#workflow-path-picker", workflow_path: %{"path" => ""})
+      |> render_submit()
+
+    assert html =~ "Workflow file"
+    assert Workflow.workflow_file_path() == original_path
+
+    html =
+      view
       |> form("#workflow-path-picker", workflow_path: %{"path" => Path.rootname(original_path) <> ".txt"})
       |> render_submit()
 
     assert html =~ "WORKFLOW.txt"
+    assert Workflow.workflow_file_path() == original_path
+
+    missing_path = Path.join(Path.dirname(original_path), "WORKFLOW.missing.md")
+
+    html =
+      view
+      |> form("#workflow-path-picker", workflow_path: %{"path" => missing_path})
+      |> render_submit()
+
+    assert html =~ "WORKFLOW.missing.md"
     assert Workflow.workflow_file_path() == original_path
   end
 
@@ -3329,9 +3412,13 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 5)
 
-    {:ok, _view, html} = live(build_conn(), "/config")
+    {:ok, view, html} = live(build_conn(), "/config")
 
     assert html =~ ~s(disabled)
+    assert html =~ "Apply"
+
+    html = render_click(view, "apply_config", %{})
+
     assert html =~ "Apply"
   end
 
@@ -3359,6 +3446,31 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert html =~ "tracker: ["
     refute html =~ "Diff preview"
+    assert File.read!(workflow_path) == original
+  end
+
+  test "operator config liveview blocks workflow apply when active workers are unknown" do
+    workflow_path = Workflow.workflow_file_path()
+    write_workflow_file!(workflow_path, max_concurrent_agents: 2)
+    original = File.read!(workflow_path)
+
+    start_test_endpoint(
+      orchestrator: Module.concat(__MODULE__, :MissingConfigLiveApplyOrchestrator),
+      snapshot_timeout_ms: 5
+    )
+
+    {:ok, view, _html} = live(build_conn(), "/config")
+
+    proposed = String.replace(original, "max_concurrent_agents: 2", "max_concurrent_agents: 3")
+
+    _html =
+      view
+      |> form("#workflow-config-editor", workflow: %{"content" => proposed})
+      |> render_submit()
+
+    html = view |> element("button", "Apply") |> render_click()
+
+    assert html =~ "active workers unknown"
     assert File.read!(workflow_path) == original
   end
 
