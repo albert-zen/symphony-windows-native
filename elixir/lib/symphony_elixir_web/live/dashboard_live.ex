@@ -83,6 +83,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <span class="page-live-dot"></span>
           <%= dashboard_freshness_label(@payload[:generated_at], @now) %>
         </span>
+        <a class="subtle-button" href="/config">Config</a>
         <.form for={%{}} as={:reload} phx-submit="reload_runtime" class="header-reload">
           <%= if @steer_token_configured do %>
             <input

@@ -2246,6 +2246,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Capacity"
     assert html =~ "page-live"
     assert html =~ "Snapshot current"
+    assert html =~ ~s(href="/config")
+    assert html =~ "Config"
     assert html =~ ~s(id="system-debug")
     assert html =~ ~s(phx-hook="PreserveDetails")
     refute html =~ "Operations Dashboard"
