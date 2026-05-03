@@ -63,6 +63,21 @@ defmodule SymphonyElixirWeb.Layouts do
                 scrollToBottom: function () {
                   this.el.scrollTop = this.el.scrollHeight;
                 }
+              },
+              StickyScroll: {
+                mounted: function () {
+                  this.atBottom = true;
+                  this.el.addEventListener("scroll", () => {
+                    var threshold = 64;
+                    this.atBottom = (this.el.scrollHeight - this.el.scrollTop - this.el.clientHeight) < threshold;
+                  });
+                  this.el.scrollTop = this.el.scrollHeight;
+                },
+                updated: function () {
+                  if (this.atBottom !== false) {
+                    this.el.scrollTop = this.el.scrollHeight;
+                  }
+                }
               }
             };
 

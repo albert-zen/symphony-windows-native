@@ -35,6 +35,8 @@ defmodule SymphonyElixir.Application do
       SymphonyElixir.WorkflowStore,
       SymphonyElixir.Orchestrator,
       SymphonyElixir.Codex.RolloutIndex,
+      {Registry, keys: :unique, name: SymphonyElixirWeb.CodexTailRegistry},
+      {DynamicSupervisor, strategy: :one_for_one, name: SymphonyElixirWeb.CodexTailSupervisor},
       SymphonyElixir.HttpServer,
       SymphonyElixir.StatusDashboard
     ]
