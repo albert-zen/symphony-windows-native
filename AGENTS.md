@@ -42,6 +42,11 @@ mise exec -- mix symphony.preflight.windows .\WORKFLOW.optimization.windows.md
 
 - Run focused checks while iterating, then record exact commands and outcomes in
   the PR body and Linear `## Codex Workpad`.
+- In Codex App sessions, run broad or coverage-heavy gates such as
+  `mix test --cover` with stdout/stderr redirected to a log file, then inspect
+  the tail and searched failure/coverage lines. Avoid bare long-running coverage
+  commands because the app tool can keep waiting after the useful result has
+  already been written.
 - `make all` is the broad local gate when the environment supports it.
 - `make windows-native-test` is required for Windows shell, workspace/config,
   workflow, or path-handling changes.

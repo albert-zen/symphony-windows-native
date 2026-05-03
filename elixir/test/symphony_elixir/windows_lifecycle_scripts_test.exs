@@ -99,6 +99,44 @@ defmodule SymphonyElixir.WindowsLifecycleScriptsTest do
              ])
   end
 
+  test "start script reads persisted workflow default when WorkflowPath is omitted" do
+    script = script_path("start-windows-native.ps1")
+    logs_root = Path.join(System.tmp_dir!(), "symphony-start-default-#{System.unique_integer([:positive])}")
+    workflow_path = Path.join(logs_root, "WORKFLOW.selected.md")
+
+    command = """
+    $script = Get-Content -Raw -LiteralPath #{shell_quote(script)}
+    $entrypoint = $script.IndexOf('$LogsRoot = Resolve-SymphonyPath')
+    if ($entrypoint -lt 0) { throw 'start script entrypoint marker not found' }
+    $helpers = $script.Substring(0, $entrypoint)
+    . ([scriptblock]::Create($helpers))
+
+    New-Item -ItemType Directory -Force -Path #{shell_quote(logs_root)} | Out-Null
+    Set-Content -LiteralPath #{shell_quote(workflow_path)} -Value '---`ntracker:`n  kind: memory`n---`nPrompt'
+    @{ WorkflowPath = #{shell_quote(workflow_path)} } |
+      ConvertTo-Json |
+      Set-Content -LiteralPath (Join-Path #{shell_quote(logs_root)} 'symphony.workflow.json') -Encoding UTF8
+
+    $resolved = Get-SymphonyWorkflowPathDefault #{shell_quote(logs_root)}
+    if ($resolved -ne #{shell_quote(workflow_path)}) {
+      throw "expected persisted workflow path, got $resolved"
+    }
+    """
+
+    try do
+      assert {"", 0} =
+               run_powershell!([
+                 "-NoProfile",
+                 "-ExecutionPolicy",
+                 "Bypass",
+                 "-Command",
+                 command
+               ])
+    after
+      File.rm_rf(logs_root)
+    end
+  end
+
   test "cleanup removes only the requested issue workspace" do
     workspace_root =
       Path.join(

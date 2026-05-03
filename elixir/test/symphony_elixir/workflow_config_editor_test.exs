@@ -103,6 +103,8 @@ defmodule SymphonyElixir.WorkflowConfigEditorTest do
   test "lists candidate markdown files and switches the active workflow path" do
     workflow_dir = Path.dirname(Workflow.workflow_file_path())
     alternate_path = Path.join(workflow_dir, "WORKFLOW.alternate.md")
+    logs_root = Path.join(workflow_dir, "logs")
+    Application.put_env(:symphony_elixir, :logs_root, logs_root)
     write_workflow_file!(alternate_path, max_concurrent_agents: 6)
 
     candidates = WorkflowConfigEditor.workflow_candidates(roots: [workflow_dir])
@@ -113,6 +115,13 @@ defmodule SymphonyElixir.WorkflowConfigEditorTest do
     assert String.downcase(Workflow.workflow_file_path()) == String.downcase(alternate_path)
     assert {:ok, settings} = Config.settings()
     assert settings.agent.max_concurrent_agents == 6
+
+    defaults_path = Path.join(logs_root, "symphony.workflow.json")
+    assert File.exists?(defaults_path)
+    assert %{"WorkflowPath" => persisted_path} = defaults_path |> File.read!() |> Jason.decode!()
+    assert String.downcase(persisted_path) == String.downcase(alternate_path)
+    assert selected.application_effects.restart_reasons == []
+    assert selected.application_effects.restart_required? == false
   end
 
   test "blocks workflow path switches while active workers are running" do

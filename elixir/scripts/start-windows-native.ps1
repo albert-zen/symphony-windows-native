@@ -1,5 +1,5 @@
 param(
-  [string]$WorkflowPath = ".\WORKFLOW.windows.md",
+  [string]$WorkflowPath = "",
   [int]$Port = 4011,
   [string]$LogsRoot = "$env:LOCALAPPDATA\Symphony\logs",
   [string]$PidFile = "",
@@ -23,10 +23,6 @@ if (Get-Command chcp.com -ErrorAction SilentlyContinue) {
   & chcp.com 65001 | Out-Null
 }
 
-if (-not $PidFile) {
-  $PidFile = Join-Path $LogsRoot "symphony.pid.json"
-}
-
 function Resolve-SymphonyPath {
   param(
     [Parameter(Mandatory = $true)]
@@ -34,6 +30,26 @@ function Resolve-SymphonyPath {
   )
 
   $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+}
+
+function Get-SymphonyWorkflowPathDefault {
+  param([string]$ResolvedLogsRoot)
+
+  $defaultPath = Join-Path $ResolvedLogsRoot "symphony.workflow.json"
+
+  if (Test-Path -LiteralPath $defaultPath -PathType Leaf) {
+    try {
+      $default = Get-Content -Raw -LiteralPath $defaultPath | ConvertFrom-Json
+
+      if ($default.WorkflowPath) {
+        return [string]$default.WorkflowPath
+      }
+    } catch {
+      Write-Warning "Unable to read workflow default $defaultPath`: $($_.Exception.Message)"
+    }
+  }
+
+  ".\WORKFLOW.windows.md"
 }
 
 function Test-SymphonyProcessAlive {
@@ -67,9 +83,19 @@ function Join-SymphonyArguments {
   }) -join " "
 }
 
-$WorkflowPath = Resolve-SymphonyPath $WorkflowPath
 $LogsRoot = Resolve-SymphonyPath $LogsRoot
+
+if (-not $PidFile) {
+  $PidFile = Join-Path $LogsRoot "symphony.pid.json"
+}
+
 $PidFile = Resolve-SymphonyPath $PidFile
+
+if (-not $WorkflowPath) {
+  $WorkflowPath = Get-SymphonyWorkflowPathDefault $LogsRoot
+}
+
+$WorkflowPath = Resolve-SymphonyPath $WorkflowPath
 
 if ($Background) {
   if (Test-SymphonyProcessAlive $PidFile) {

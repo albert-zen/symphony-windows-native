@@ -113,6 +113,12 @@ button.secondary:hover {
   box-shadow: var(--shadow-lg);
   font-size: 0.9rem;
   font-weight: 600;
+  animation: flash-auto-dismiss 7s ease forwards;
+}
+
+.flash:hover,
+.flash:focus-within {
+  animation-play-state: paused;
 }
 
 .flash-info {
@@ -125,6 +131,22 @@ button.secondary:hover {
   border-color: #f6d3cf;
   background: var(--danger-soft);
   color: var(--danger);
+}
+
+@keyframes flash-auto-dismiss {
+  0%,
+  72% {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0);
+  }
+
+  100% {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transform: translateY(-0.4rem);
+  }
 }
 
 .subtle-button {

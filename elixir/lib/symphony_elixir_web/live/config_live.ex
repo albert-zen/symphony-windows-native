@@ -271,7 +271,7 @@ defmodule SymphonyElixirWeb.ConfigLive do
          |> assign(:workflow_candidates, WorkflowConfigEditor.workflow_candidates())
          |> assign(:preview, nil)
          |> assign(:active_workers_count, active_workers_count())
-         |> put_flash(:info, "Workflow switched to #{selected.path}. Managed reload will use this path; manual restarts must pass it explicitly.")}
+         |> put_flash(:info, "Workflow switched to #{selected.path}. Saved as the default for future starts and managed reloads.")}
 
       {:error, reason} ->
         {:noreply,
@@ -363,6 +363,7 @@ defmodule SymphonyElixirWeb.ConfigLive do
   defp editor_error_message({:unsupported_os, os}), do: "Explorer reveal is only supported on Windows; current OS is #{inspect(os)}."
   defp editor_error_message({:explorer_failed, status, output}), do: "Explorer failed with status #{status}: #{output}."
   defp editor_error_message({:file_dialog_failed, status, output}), do: "Workflow file picker failed with status #{status}: #{output}."
+  defp editor_error_message({:workflow_default_write_failed, reason}), do: "Workflow switch failed because the restart default could not be saved: #{inspect(reason)}."
   defp editor_error_message({:backup_failed, reason}), do: "Workflow backup failed: #{inspect(reason)}."
   defp editor_error_message({:write_failed, reason}), do: "Workflow write failed: #{inspect(reason)}."
   defp editor_error_message(reason), do: "Workflow edit failed: #{inspect(reason)}."

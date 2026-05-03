@@ -11,6 +11,7 @@ defmodule SymphonyElixir.WorkflowConfigEditor do
   alias SymphonyElixir.{Workflow, WorkflowStore}
 
   @hash_bytes 12
+  @workflow_defaults_file "symphony.workflow.json"
 
   @editable_fields %{
     "agent.max_concurrent_agents" => %{section: "agent", key: "max_concurrent_agents", type: :positive_integer},
@@ -90,7 +91,8 @@ defmodule SymphonyElixir.WorkflowConfigEditor do
     with :ok <- ensure_no_active_workers(active_workers_count, [:workflow_path]),
          :ok <- ensure_markdown_file(expanded_path),
          {:ok, workflow} <- Workflow.load(expanded_path),
-         {:ok, _settings} <- Schema.parse(workflow.config) do
+         {:ok, _settings} <- Schema.parse(workflow.config),
+         :ok <- persist_default_workflow_path(expanded_path) do
       :ok = Workflow.set_workflow_file_path(expanded_path)
 
       {:ok,
@@ -102,9 +104,7 @@ defmodule SymphonyElixir.WorkflowConfigEditor do
            future_work: "Future polls and future worker runs now use this workflow path.",
            active_workers: "Path switching is blocked while workers are active.",
            restart_required?: false,
-           restart_reasons: [
-             "Managed reload uses the current runtime workflow path. External manual restart commands must pass this selected path to keep using it."
-           ]
+           restart_reasons: []
          }
        }}
     else
@@ -594,6 +594,40 @@ defmodule SymphonyElixir.WorkflowConfigEditor do
       not File.regular?(path) -> {:error, {:missing_workflow_file, path, :enoent}}
       true -> :ok
     end
+  end
+
+  defp persist_default_workflow_path(path) do
+    case workflow_defaults_path() do
+      nil ->
+        :ok
+
+      defaults_path ->
+        payload = Jason.encode!(%{"WorkflowPath" => path})
+
+        with :ok <- File.mkdir_p(Path.dirname(defaults_path)),
+             :ok <- File.write(defaults_path, payload <> "\n") do
+          :ok
+        else
+          {:error, reason} -> {:error, {:workflow_default_write_failed, reason}}
+        end
+    end
+  end
+
+  defp workflow_defaults_path do
+    Application.get_env(:symphony_elixir, :workflow_defaults_path) ||
+      case {
+        Application.get_env(:symphony_elixir, :logs_root),
+        Application.get_env(:symphony_elixir, :pid_file)
+      } do
+        {logs_root, _pid_file} when is_binary(logs_root) and logs_root != "" ->
+          Path.join(logs_root, @workflow_defaults_file)
+
+        {_logs_root, pid_file} when is_binary(pid_file) and pid_file != "" ->
+          Path.join(Path.dirname(pid_file), @workflow_defaults_file)
+
+        _ ->
+          nil
+      end
   end
 
   defp existing_parent(path) do
