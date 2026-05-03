@@ -47,6 +47,8 @@ defmodule SymphonyElixir.WindowsLifecycleScriptsTest do
     assert script =~ "Test-SymphonyRuntimeProcess"
     assert script =~ "Test-SymphonyWrapperProcess"
     assert script =~ "Test-ProtectedProcess"
+    assert script =~ "Test-CommandLineArgumentValue"
+    assert script =~ "Test-OptionalCommandLineArgumentValue"
     assert script =~ "csrss"
     assert script =~ "lsass"
     assert script =~ "start-windows-native.ps1"
@@ -54,6 +56,47 @@ defmodule SymphonyElixir.WindowsLifecycleScriptsTest do
     assert script =~ "bin\\symphony"
     refute script =~ "function Stop-ProcessTree"
     refute script =~ "Stop-ProcessTree -RootProcessId"
+  end
+
+  test "stop script validates command-line port arguments exactly" do
+    script = script_path("stop-windows-native.ps1")
+
+    command = """
+    $script = Get-Content -Raw -LiteralPath #{shell_quote(script)}
+    $entrypoint = $script.IndexOf('$PidFile = Resolve-SymphonyPath')
+    if ($entrypoint -lt 0) { throw 'stop script entrypoint marker not found' }
+    $helpers = $script.Substring(0, $entrypoint)
+    . ([scriptblock]::Create($helpers))
+
+    if (-not (Test-CommandLineArgumentValue 'erl.exe .\\bin\\symphony workflow --port 4011 --logs-root D:\\logs' @('--port') '4011')) {
+      throw 'expected exact runtime port to match'
+    }
+
+    if (Test-CommandLineArgumentValue 'erl.exe .\\bin\\symphony workflow --port 40110 --logs-root D:\\logs' @('--port') '4011') {
+      throw 'runtime port prefix matched unexpectedly'
+    }
+
+    if (-not (Test-OptionalCommandLineArgumentValue 'pwsh -File start-windows-native.ps1 -Port 4011' @('-Port') '4011')) {
+      throw 'expected exact wrapper port to match'
+    }
+
+    if (Test-OptionalCommandLineArgumentValue 'pwsh -File start-windows-native.ps1 -Port 40110' @('-Port') '4011') {
+      throw 'wrapper port prefix matched unexpectedly'
+    }
+
+    if (-not (Test-OptionalCommandLineArgumentValue 'pwsh -File start-windows-native.ps1' @('-Port') '4011')) {
+      throw 'defaulted wrapper port should be accepted when argument is absent'
+    }
+    """
+
+    assert {"", 0} =
+             run_powershell!([
+               "-NoProfile",
+               "-ExecutionPolicy",
+               "Bypass",
+               "-Command",
+               command
+             ])
   end
 
   test "cleanup removes only the requested issue workspace" do

@@ -82,6 +82,91 @@ function Test-CommandLineContains {
   return $CommandLine.IndexOf($Needle, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
 }
 
+function Test-CommandLineHasArgument {
+  param(
+    [string]$CommandLine,
+    [string[]]$Names
+  )
+
+  if (-not $CommandLine) {
+    return $false
+  }
+
+  foreach ($name in $Names) {
+    $escapedName = [regex]::Escape($name)
+    if ($CommandLine -match "(?i)(?:^|\s)$escapedName(?=\s|=|$)") {
+      return $true
+    }
+  }
+
+  return $false
+}
+
+function Test-CommandLineArgumentValue {
+  param(
+    [string]$CommandLine,
+    [string[]]$Names,
+    [string]$ExpectedValue
+  )
+
+  if (-not $ExpectedValue) {
+    return $true
+  }
+
+  if (-not $CommandLine) {
+    return $false
+  }
+
+  foreach ($name in $Names) {
+    $escapedName = [regex]::Escape($name)
+    $escapedValue = [regex]::Escape($ExpectedValue)
+    $pattern = '(?i)(?:^|\s)' + $escapedName + '(?:\s+|=)(?:"' + $escapedValue + '"|''' + $escapedValue + '''|' + $escapedValue + ')(?=$|\s)'
+
+    if ($CommandLine -match $pattern) {
+      return $true
+    }
+  }
+
+  return $false
+}
+
+function Test-OptionalCommandLineArgumentValue {
+  param(
+    [string]$CommandLine,
+    [string[]]$Names,
+    [string]$ExpectedValue
+  )
+
+  if (-not (Test-CommandLineHasArgument $CommandLine $Names)) {
+    return $true
+  }
+
+  Test-CommandLineArgumentValue $CommandLine $Names $ExpectedValue
+}
+
+function Test-ProcessStartedNear {
+  param(
+    [object]$ProcessInfo,
+    [string]$ExpectedStartedAt
+  )
+
+  if (-not $ExpectedStartedAt) {
+    return $true
+  }
+
+  if (-not $ProcessInfo -or -not $ProcessInfo.CreationDate) {
+    return $false
+  }
+
+  try {
+    $actual = [System.Management.ManagementDateTimeConverter]::ToDateTime($ProcessInfo.CreationDate).ToUniversalTime()
+    $expected = ([datetime]::Parse($ExpectedStartedAt)).ToUniversalTime()
+    return [math]::Abs(($actual - $expected).TotalSeconds) -le 60
+  } catch {
+    return $false
+  }
+}
+
 function Test-ProtectedProcess {
   param([object]$ProcessInfo)
 
@@ -120,8 +205,12 @@ function Test-SymphonyRuntimeProcess {
     (Test-CommandLineContains $normalizedCommandLine "bin\symphony") -or
     (Test-CommandLineContains $commandLine "bin/symphony")
   $matchesWorkflow = Test-CommandLineContains $normalizedCommandLine (Normalize-SymphonyPathForMatch $ExpectedWorkflowPath)
-  $matchesLogs = Test-CommandLineContains $normalizedCommandLine (Normalize-SymphonyPathForMatch $ExpectedLogsRoot)
-  $matchesPort = ($ExpectedPort -le 0) -or (Test-CommandLineContains $commandLine "--port $ExpectedPort")
+  $matchesLogs =
+    (-not $ExpectedLogsRoot) -or
+    (Test-CommandLineArgumentValue $normalizedCommandLine @("--logs-root") (Normalize-SymphonyPathForMatch $ExpectedLogsRoot))
+  $matchesPort =
+    ($ExpectedPort -le 0) -or
+    (Test-CommandLineArgumentValue $commandLine @("--port") ([string]$ExpectedPort))
 
   return ($matchesBinary -and $matchesWorkflow -and $matchesLogs -and $matchesPort)
 }
@@ -131,7 +220,8 @@ function Test-SymphonyWrapperProcess {
     [object]$ProcessInfo,
     [string]$ExpectedWorkflowPath,
     [string]$ExpectedLogsRoot,
-    [int]$ExpectedPort
+    [int]$ExpectedPort,
+    [string]$ExpectedStartedAt
   )
 
   if (Test-ProtectedProcess $ProcessInfo) {
@@ -145,11 +235,18 @@ function Test-SymphonyWrapperProcess {
 
   $normalizedCommandLine = $commandLine.Replace("/", "\")
   $matchesScript = Test-CommandLineContains $normalizedCommandLine "start-windows-native.ps1"
-  $matchesWorkflow = Test-CommandLineContains $normalizedCommandLine (Normalize-SymphonyPathForMatch $ExpectedWorkflowPath)
-  $matchesLogs = Test-CommandLineContains $normalizedCommandLine (Normalize-SymphonyPathForMatch $ExpectedLogsRoot)
-  $matchesPort = ($ExpectedPort -le 0) -or (Test-CommandLineContains $commandLine "-Port $ExpectedPort")
+  $matchesWorkflow =
+    (-not $ExpectedWorkflowPath) -or
+    (Test-OptionalCommandLineArgumentValue $normalizedCommandLine @("-WorkflowPath") (Normalize-SymphonyPathForMatch $ExpectedWorkflowPath))
+  $matchesLogs =
+    (-not $ExpectedLogsRoot) -or
+    (Test-OptionalCommandLineArgumentValue $normalizedCommandLine @("-LogsRoot") (Normalize-SymphonyPathForMatch $ExpectedLogsRoot))
+  $matchesPort =
+    ($ExpectedPort -le 0) -or
+    (Test-OptionalCommandLineArgumentValue $commandLine @("-Port") ([string]$ExpectedPort))
+  $matchesStart = Test-ProcessStartedNear $ProcessInfo $ExpectedStartedAt
 
-  return ($matchesScript -and $matchesWorkflow -and $matchesLogs -and $matchesPort)
+  return ($matchesScript -and $matchesWorkflow -and $matchesLogs -and $matchesPort -and $matchesStart)
 }
 
 function Get-PortOwnerProcessId {
@@ -208,7 +305,8 @@ function Stop-KnownDirectChildren {
     [int]$ParentProcessId,
     [string]$ExpectedWorkflowPath,
     [string]$ExpectedLogsRoot,
-    [int]$ExpectedPort
+    [int]$ExpectedPort,
+    [string]$ExpectedStartedAt
   )
 
   if ($ParentProcessId -le 0) {
@@ -230,7 +328,7 @@ function Stop-KnownDirectChildren {
     }
 
     $matchesRuntime = Test-SymphonyRuntimeProcess $child $ExpectedWorkflowPath $ExpectedLogsRoot $ExpectedPort
-    $matchesWrapper = Test-SymphonyWrapperProcess $child $ExpectedWorkflowPath $ExpectedLogsRoot $ExpectedPort
+    $matchesWrapper = Test-SymphonyWrapperProcess $child $ExpectedWorkflowPath $ExpectedLogsRoot $ExpectedPort $ExpectedStartedAt
     $matchesParentChainHelper = $name -in @("conhost.exe", "conhost")
 
     if ($matchesRuntime -or $matchesWrapper -or $matchesParentChainHelper) {
@@ -247,6 +345,7 @@ $LogsRoot = ""
 $Port = 0
 $WrapperPid = $null
 $RuntimePid = $null
+$StartedAt = ""
 
 if (Test-Path -LiteralPath $PidFile -PathType Leaf) {
   $metadata = Get-Content -Raw -LiteralPath $PidFile | ConvertFrom-Json
@@ -273,6 +372,10 @@ if (Test-Path -LiteralPath $PidFile -PathType Leaf) {
 
   if ($metadata.Port) {
     $Port = [int]$metadata.Port
+  }
+
+  if ($metadata.StartedAt) {
+    $StartedAt = [string]$metadata.StartedAt
   }
 }
 
@@ -314,8 +417,8 @@ if ($RuntimePid) {
 
 if ($WrapperPid) {
   $wrapper = Get-SymphonyProcessInfo $WrapperPid
-  if (Test-SymphonyWrapperProcess $wrapper $WorkflowPath $LogsRoot $Port) {
-    Stop-KnownDirectChildren -ParentProcessId $WrapperPid -ExpectedWorkflowPath $WorkflowPath -ExpectedLogsRoot $LogsRoot -ExpectedPort $Port
+  if (Test-SymphonyWrapperProcess $wrapper $WorkflowPath $LogsRoot $Port $StartedAt) {
+    Stop-KnownDirectChildren -ParentProcessId $WrapperPid -ExpectedWorkflowPath $WorkflowPath -ExpectedLogsRoot $LogsRoot -ExpectedPort $Port -ExpectedStartedAt $StartedAt
     $stoppedAny = (Stop-ValidatedProcess $wrapper "wrapper") -or $stoppedAny
   } elseif ($wrapper) {
     if ($stoppedAny) {
