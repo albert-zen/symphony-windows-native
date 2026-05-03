@@ -1222,7 +1222,9 @@ defmodule SymphonyElixir.ExtensionsTest do
                "payload_truncated?" => issue_payload["debug"]["payload_truncated?"]
              },
              "last_error" => nil,
-             "tracked" => %{}
+             "tracked" => %{},
+             "rollouts" => [],
+             "current_rollout" => nil
            }
 
     conn = get(build_conn(), "/api/v1/MT-RETRY")
@@ -1494,7 +1496,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     {:ok, _view, html} = live(build_conn(), "/workers/MT-API")
     assert html =~ "codex/ALB-63-rate-limit-card"
     assert html =~ "https://github.com/albert-zen/symphony-windows-native/pull/110"
-    assert html =~ "pending"
+    # Check summary ("pending") only appears in the API projection above —
+    # the new LiveView shell surfaces the PR URL but not the rollup status.
   end
 
   test "agent worker status discovers branch and PR checks from workspace git and authenticated lookup" do
@@ -2333,7 +2336,7 @@ defmodule SymphonyElixir.ExtensionsTest do
         {:ok, _detail_view, detail_html} = live(build_conn(), "/workers/MT-HTTP")
 
         assert index_html =~ "Operations Dashboard"
-        assert detail_html =~ "Worker Detail"
+        assert detail_html =~ ~s|class="worker-id">MT-HTTP|
       end)
 
     assert log =~ "Replied in 409µs"
@@ -2457,15 +2460,13 @@ defmodule SymphonyElixir.ExtensionsTest do
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
     {:ok, view, html} = live(build_conn(), "/workers/MT-HTTP")
-    assert html =~ "Worker Detail"
-    assert html =~ "Agent Messages"
+    # New rollout-backed shell: identifier, sidebar/status block, and the steer composer.
+    assert html =~ ~s|class="worker-id">MT-HTTP|
     assert html =~ "thread-http"
-    assert html =~ "Agent update complete."
-    assert html =~ "Worker debug payload"
+    assert html =~ "Transcript"
+    assert html =~ "Steer the agent"
     refute html =~ "Keep the PR focused."
     refute html =~ "Debug JSON"
-    refute html =~ "Steer worker"
-    refute html =~ "Timeline"
     refute html =~ "Raw worker payload"
 
     render_submit(view, "steer", %{
@@ -2509,9 +2510,12 @@ defmodule SymphonyElixir.ExtensionsTest do
     rendered_payload = inspect(issue_payload, limit: :infinity)
     refute rendered_payload =~ hidden_marker
 
+    # The LiveView no longer renders orchestrator-buffered conversation —
+    # transcript is sourced from the on-disk Codex JSONL via RolloutReader.
+    # We still verify the API projection above; the LiveView shell renders
+    # the worker identifier and the empty-rollouts state in this fixture.
     {:ok, _view, html} = live(build_conn(), "/workers/MT-HTTP")
-    assert html =~ "Hello manager."
-    refute html =~ "mix test"
+    assert html =~ ~s|class="worker-id">MT-HTTP|
     refute html =~ hidden_marker
   end
 
@@ -2542,8 +2546,11 @@ defmodule SymphonyElixir.ExtensionsTest do
     issue_payload = json_response(get(build_conn(), "/api/v1/MT-HTTP"), 200)
     assert [%{"type" => "assistant", "excerpt" => "Durable message survives noise."}] = issue_payload["conversation"]
 
+    # LiveView transcript is sourced from on-disk Codex JSONL, not the
+    # orchestrator's in-memory completed_agent_messages — verified at the
+    # API layer above. The shell still renders for an active worker.
     {:ok, _view, html} = live(build_conn(), "/workers/MT-HTTP")
-    assert html =~ "Durable message survives noise."
+    assert html =~ ~s|class="worker-id">MT-HTTP|
     refute html =~ "noise 80"
   end
 
@@ -3019,12 +3026,15 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     {:ok, _view, html} = live(build_conn(), "/workers/MT-SECRET")
 
+    # Negative assertions still matter — confirm none of the orchestrator
+    # buffers leak into the new shell. The "[REDACTED]" marker only
+    # appears in the API/Presenter projection, not the LiveView shell,
+    # because the new transcript reads from on-disk Codex JSONL.
     refute html =~ "sk-live-secret"
     refute html =~ "p4ss"
     refute html =~ "live-token"
     refute html =~ "user:pass"
     refute html =~ "token=abc123"
-    assert html =~ "[REDACTED]"
   end
 
   test "worker detail liveview requires operator token when steer auth is enabled" do
