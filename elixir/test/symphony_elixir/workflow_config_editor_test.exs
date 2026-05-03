@@ -152,7 +152,10 @@ defmodule SymphonyElixir.WorkflowConfigEditorTest do
 
     deps = %{
       os_type: fn -> {:win32, :nt} end,
-      find_executable: fn "explorer.exe" -> "explorer.exe" end,
+      find_executable: fn
+        "cmd.exe" -> "cmd.exe"
+        "explorer.exe" -> "explorer.exe"
+      end,
       cmd: fn executable, args, _opts ->
         send(parent, {:explorer_called, executable, args})
         {"", 0}
@@ -160,7 +163,7 @@ defmodule SymphonyElixir.WorkflowConfigEditorTest do
     }
 
     assert :ok = WorkflowConfigEditor.reveal_path(workflow_path, deps: deps)
-    assert_received {:explorer_called, "explorer.exe", [select_arg]}
+    assert_received {:explorer_called, "cmd.exe", ["/c", "start", "", "explorer.exe", select_arg]}
     assert select_arg == "/select,#{String.replace(Path.expand(workflow_path), "/", "\\")}"
   end
 
@@ -181,7 +184,10 @@ defmodule SymphonyElixir.WorkflowConfigEditorTest do
 
     deps = %{
       deps
-      | find_executable: fn "explorer.exe" -> "explorer.exe" end,
+      | find_executable: fn
+          "cmd.exe" -> "cmd.exe"
+          "explorer.exe" -> "explorer.exe"
+        end,
         cmd: fn _executable, _args, _opts -> {"nope", 7} end
     }
 

@@ -121,24 +121,24 @@ defmodule SymphonyElixir.WorkflowConfigEditor do
     expanded_path = Path.expand(path)
     native_path = windows_native_path(expanded_path)
 
-    case {os_type, find_executable.("explorer.exe")} do
-      {{:win32, _}, explorer} when is_binary(explorer) ->
-        args =
-          if File.exists?(expanded_path) do
-            ["/select,#{native_path}"]
-          else
-            [windows_native_path(existing_parent(expanded_path))]
-          end
+    case {os_type, find_executable.("cmd.exe"), find_executable.("explorer.exe")} do
+      {{:win32, _}, command, explorer} when is_binary(command) and is_binary(explorer) ->
+        explorer_arg =
+          if File.exists?(expanded_path),
+            do: "/select,#{native_path}",
+            else: windows_native_path(existing_parent(expanded_path))
 
-        case cmd.(explorer, args, stderr_to_stdout: true) do
+        args = ["/c", "start", "", explorer, explorer_arg]
+
+        case cmd.(command, args, stderr_to_stdout: true) do
           {_output, 0} -> :ok
           {output, status} -> {:error, {:explorer_failed, status, output}}
         end
 
-      {{:win32, _}, _} ->
+      {{:win32, _}, _, _} ->
         {:error, :explorer_unavailable}
 
-      {other, _} ->
+      {other, _, _} ->
         {:error, {:unsupported_os, other}}
     end
   end
