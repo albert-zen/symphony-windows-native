@@ -81,6 +81,21 @@ defmodule SymphonyElixir.Codex.RolloutIndexTest do
       assert first.issue_identifier == "ALB-39"
     end
 
+    test "looks up rollouts by path",
+         %{sessions_root: sessions_root, workspace_root: workspace_root} do
+      alb_workspace = Path.join(workspace_root, "ALB-GET")
+      File.mkdir_p!(alb_workspace)
+      path = write_rollout!(sessions_root, cwd: alb_workspace, session_id: "get-session")
+
+      name = start_index!(sessions_root: sessions_root, workspace_root: workspace_root)
+
+      assert %{session_id: "get-session", path: entry_path, mtime: mtime} = RolloutIndex.get(path, name: name)
+      assert normalize_for_assertion(entry_path) == normalize_for_assertion(path)
+      assert is_integer(mtime)
+      assert RolloutIndex.get(Path.join(sessions_root, "missing.jsonl"), name: name) == nil
+      assert RolloutIndex.get(path, name: :rollout_index_unstarted_get) == nil
+    end
+
     test "filters out rollouts whose cwd is outside the configured workspace root",
          %{sessions_root: sessions_root, workspace_root: workspace_root} do
       # Inside workspace root
@@ -109,6 +124,32 @@ defmodule SymphonyElixir.Codex.RolloutIndexTest do
     test "returns [] when the index process is not running" do
       assert RolloutIndex.lookup("ALB-1", name: :rollout_index_unstarted_xyz) == []
     end
+
+    test "ignores malformed rollouts and missing session roots",
+         %{sessions_root: sessions_root, workspace_root: workspace_root, base: base} do
+      bad_dir = Path.join([sessions_root, "2026", "05", "03"])
+      File.mkdir_p!(bad_dir)
+      File.write!(Path.join(bad_dir, "rollout-bad.jsonl"), "not-json\n")
+
+      bad_name = start_index!(sessions_root: sessions_root, workspace_root: workspace_root)
+      assert RolloutIndex.lookup("ALB-BAD", name: bad_name) == []
+
+      missing_root = Path.join(base, "missing-sessions")
+      name = start_index!(sessions_root: missing_root, workspace_root: workspace_root)
+
+      assert RolloutIndex.lookup("ALB-BAD", name: name) == []
+      assert RolloutIndex.refresh(name: name) == :ok
+      assert RolloutIndex.lookup("ALB-BAD", name: name) == []
+    end
+
+    test "handles nil sessions root without crashing",
+         %{workspace_root: workspace_root} do
+      name = start_index!(sessions_root: nil, workspace_root: workspace_root)
+
+      assert RolloutIndex.lookup("ALB-NIL", name: name) == []
+      assert RolloutIndex.refresh(name: name) == :ok
+      assert RolloutIndex.lookup("ALB-NIL", name: name) == []
+    end
   end
 
   describe "refresh/0" do
@@ -124,6 +165,32 @@ defmodule SymphonyElixir.Codex.RolloutIndexTest do
 
       assert :ok = RolloutIndex.refresh(name: name)
       assert [%{session_id: "fresh-session"}] = RolloutIndex.lookup("ALB-7", name: name)
+    end
+
+    test "returns :ok when the index process is not running" do
+      assert :ok = RolloutIndex.refresh(name: :rollout_index_unstarted_refresh)
+    end
+
+    test "periodic refresh picks up new rollouts",
+         %{sessions_root: sessions_root, workspace_root: workspace_root} do
+      alb_workspace = Path.join(workspace_root, "ALB-TICK")
+      File.mkdir_p!(alb_workspace)
+
+      name = start_index!(sessions_root: sessions_root, workspace_root: workspace_root)
+      write_rollout!(sessions_root, cwd: alb_workspace, session_id: "tick-session")
+
+      pid = Process.whereis(name)
+      send(pid, :refresh)
+
+      assert eventually(fn ->
+               case RolloutIndex.lookup("ALB-TICK", name: name) do
+                 [%{session_id: "tick-session"}] -> true
+                 _ -> false
+               end
+             end)
+
+      send(pid, :unexpected)
+      assert Process.alive?(pid)
     end
   end
 
@@ -147,5 +214,60 @@ defmodule SymphonyElixir.Codex.RolloutIndexTest do
     test "passes through when no workspace root configured" do
       assert RolloutIndex.derive_issue_identifier("/anywhere/ALB-9", nil) == "ALB-9"
     end
+
+    test "returns nil for empty basenames" do
+      assert RolloutIndex.derive_issue_identifier("/", nil) == nil
+    end
+  end
+
+  describe "default_sessions_root/0" do
+    test "uses application override" do
+      previous = Application.get_env(:symphony_elixir, :codex_sessions_root)
+      override = Path.join(System.tmp_dir!(), "codex-sessions-override")
+      Application.put_env(:symphony_elixir, :codex_sessions_root, override)
+
+      on_exit(fn ->
+        if previous do
+          Application.put_env(:symphony_elixir, :codex_sessions_root, previous)
+        else
+          Application.delete_env(:symphony_elixir, :codex_sessions_root)
+        end
+      end)
+
+      assert RolloutIndex.default_sessions_root() == override
+    end
+
+    test "falls back to the user codex sessions directory" do
+      previous = Application.get_env(:symphony_elixir, :codex_sessions_root)
+      Application.delete_env(:symphony_elixir, :codex_sessions_root)
+
+      on_exit(fn ->
+        if previous do
+          Application.put_env(:symphony_elixir, :codex_sessions_root, previous)
+        end
+      end)
+
+      assert RolloutIndex.default_sessions_root() =~ ".codex"
+      assert RolloutIndex.default_sessions_root() =~ "sessions"
+    end
+  end
+
+  defp eventually(fun, attempts \\ 20)
+  defp eventually(_fun, 0), do: false
+
+  defp eventually(fun, attempts) do
+    if fun.() do
+      true
+    else
+      Process.sleep(10)
+      eventually(fun, attempts - 1)
+    end
+  end
+
+  defp normalize_for_assertion(path) do
+    path
+    |> Path.expand()
+    |> String.replace("\\", "/")
+    |> String.downcase()
   end
 end

@@ -98,6 +98,7 @@ defmodule SymphonyElixir.Codex.RolloutIndex do
   @spec get(Path.t(), keyword()) :: entry() | nil
   def get(path, opts \\ []) when is_binary(path) do
     server = name(opts)
+    path = normalize_path(path)
 
     case Process.whereis(server) do
       pid when is_pid(pid) -> GenServer.call(server, {:get, path})
@@ -188,9 +189,7 @@ defmodule SymphonyElixir.Codex.RolloutIndex do
         index_entries(state, entries)
 
       false ->
-        Logger.debug(
-          "rollout_index: sessions root does not exist yet, skipping scan: #{inspect(root)}"
-        )
+        Logger.debug("rollout_index: sessions root does not exist yet, skipping scan: #{inspect(root)}")
 
         state
     end
@@ -222,6 +221,8 @@ defmodule SymphonyElixir.Codex.RolloutIndex do
   end
 
   defp entry_for_path(path, %State{} = state) do
+    path = normalize_path(path)
+
     case RolloutReader.read_meta(path) do
       {:ok, meta} ->
         cwd = meta.cwd
@@ -286,8 +287,6 @@ defmodule SymphonyElixir.Codex.RolloutIndex do
   defp sanitize_identifier(value) when is_binary(value) do
     String.replace(value, ~r/[^a-zA-Z0-9._-]/, "_")
   end
-
-  defp sanitize_identifier(_), do: ""
 
   defp normalize_path(nil), do: nil
 

@@ -240,12 +240,12 @@ defmodule SymphonyElixirWeb.WorkerDetailLive do
 
   # ---- panels ------------------------------------------------------------
 
-  attr :detail, :map, required: true
-  attr :current_rollout, :map, default: nil
-  attr :transcript_count, :integer, default: 0
-  attr :steer_auth_required, :boolean, required: true
-  attr :steer_token_configured, :boolean, required: true
-  attr :streams, :map, required: true
+  attr(:detail, :map, required: true)
+  attr(:current_rollout, :map, default: nil)
+  attr(:transcript_count, :integer, default: 0)
+  attr(:steer_auth_required, :boolean, required: true)
+  attr(:steer_token_configured, :boolean, required: true)
+  attr(:streams, :map, required: true)
 
   defp transcript_panel(assigns) do
     ~H"""
@@ -333,7 +333,7 @@ defmodule SymphonyElixirWeb.WorkerDetailLive do
     """
   end
 
-  attr :detail, :map, required: true
+  attr(:detail, :map, required: true)
 
   defp logs_panel(assigns) do
     ~H"""
@@ -353,7 +353,7 @@ defmodule SymphonyElixirWeb.WorkerDetailLive do
     """
   end
 
-  attr :detail, :map, required: true
+  attr(:detail, :map, required: true)
 
   defp workspace_panel(assigns) do
     ~H"""
@@ -368,7 +368,7 @@ defmodule SymphonyElixirWeb.WorkerDetailLive do
     """
   end
 
-  attr :detail, :map, required: true
+  attr(:detail, :map, required: true)
 
   defp pr_panel(assigns) do
     ~H"""

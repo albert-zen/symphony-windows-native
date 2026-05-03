@@ -44,6 +44,40 @@ defmodule SymphonyElixir.Codex.RolloutReaderTest do
       assert %DateTime{} = meta.started_at
     end
 
+    test "prefers explicit model and tolerates invalid timestamps" do
+      path =
+        write_jsonl!([
+          %{
+            "timestamp" => "not-a-timestamp",
+            "type" => "session_meta",
+            "payload" => %{
+              "id" => "session-model",
+              "cwd" => "/tmp/workspaces/ALB-4",
+              "model" => "gpt-test",
+              "model_provider" => "fallback-provider",
+              "timestamp" => "also-not-a-timestamp"
+            }
+          }
+        ])
+
+      assert {:ok, meta} = RolloutReader.read_meta(path)
+      assert meta.model == "gpt-test"
+      assert meta.started_at == nil
+    end
+
+    test "returns nil model when rollout metadata has no model fields" do
+      path =
+        write_jsonl!([
+          %{
+            "timestamp" => "2026-05-02T10:43:37.948Z",
+            "type" => "session_meta",
+            "payload" => %{"id" => "session-no-model", "cwd" => "/tmp/workspaces/ALB-5"}
+          }
+        ])
+
+      assert {:ok, %{model: nil}} = RolloutReader.read_meta(path)
+    end
+
     test "returns :empty_file when the file is empty" do
       path = Path.join(@tmp_dir, "rollout-empty-#{System.unique_integer([:positive])}.jsonl")
       File.write!(path, "")
@@ -130,6 +164,7 @@ defmodule SymphonyElixir.Codex.RolloutReaderTest do
 
     test "skips malformed JSON lines without crashing" do
       path = Path.join(@tmp_dir, "rollout-bad-#{System.unique_integer([:positive])}.jsonl")
+
       File.write!(
         path,
         Enum.join(
@@ -161,6 +196,32 @@ defmodule SymphonyElixir.Codex.RolloutReaderTest do
       assert [%{kind: :assistant_message, text: "ok"}] = items
     end
 
+    test "skips blank and unknown JSON lines" do
+      path = Path.join(@tmp_dir, "rollout-unknown-#{System.unique_integer([:positive])}.jsonl")
+
+      File.write!(
+        path,
+        [
+          "",
+          Jason.encode!(%{"timestamp" => "x", "type" => "unknown_type", "payload" => %{}}),
+          Jason.encode!(%{
+            "timestamp" => "2026-05-02T10:00:00Z",
+            "type" => "response_item",
+            "payload" => %{"type" => "message", "role" => "assistant", "content" => "ok"}
+          })
+        ]
+        |> Enum.join("\n")
+      )
+
+      on_exit_cleanup(path)
+
+      parsed = Enum.to_list(RolloutReader.stream(path))
+      assert [:unknown, {:response, _}] = parsed
+
+      assert [nil, %{kind: :assistant_message, text: "ok"}] =
+               Enum.map(parsed, &RolloutReader.to_conversation_item/1)
+    end
+
     test "extracts function_call name and reasoning text" do
       assert %{kind: :tool_call, text: "rg"} =
                RolloutReader.to_conversation_item(
@@ -179,6 +240,132 @@ defmodule SymphonyElixir.Codex.RolloutReaderTest do
                     "payload" => %{"type" => "reasoning", "text" => "thinking"}
                   }}
                )
+    end
+
+    test "projects reasoning content before text fallback and drops empty reasoning" do
+      assert %{kind: :reasoning, text: "content thinking"} =
+               RolloutReader.to_conversation_item(
+                 {:response,
+                  %{
+                    "timestamp" => "2026-05-02T10:00:01Z",
+                    "payload" => %{
+                      "type" => "reasoning",
+                      "content" => [%{"type" => "output_text", "text" => "content thinking"}],
+                      "text" => "fallback thinking"
+                    }
+                  }}
+               )
+
+      assert nil ==
+               RolloutReader.to_conversation_item(
+                 {:response,
+                  %{
+                    "timestamp" => "2026-05-02T10:00:02Z",
+                    "payload" => %{"type" => "reasoning", "content" => [], "text" => ""}
+                  }}
+               )
+    end
+
+    test "projects function output variants" do
+      assert %{kind: :tool_call, text: "line one\nline two", meta: %{is_output: true, call_id: "call-1"}} =
+               RolloutReader.to_conversation_item(
+                 {:response,
+                  %{
+                    "timestamp" => "2026-05-02T10:00:00Z",
+                    "payload" => %{
+                      "type" => "function_call_output",
+                      "call_id" => "call-1",
+                      "output" => %{
+                        "content" => [
+                          %{"type" => "input_text", "text" => "line one"},
+                          %{"type" => "output_text", "text" => "line two"}
+                        ]
+                      }
+                    }
+                  }}
+               )
+
+      assert %{kind: :tool_call, text: "plain output"} =
+               RolloutReader.to_conversation_item(
+                 {:response,
+                  %{
+                    "timestamp" => "2026-05-02T10:00:01Z",
+                    "payload" => %{"type" => "function_call_output", "output" => "plain output"}
+                  }}
+               )
+
+      assert %{kind: :tool_call, text: ""} =
+               RolloutReader.to_conversation_item(
+                 {:response,
+                  %{
+                    "timestamp" => "2026-05-02T10:00:02Z",
+                    "payload" => %{"type" => "function_call_output", "output" => %{}}
+                  }}
+               )
+    end
+
+    test "drops low-signal response and event variants" do
+      assert nil == RolloutReader.to_conversation_item(:unknown)
+      assert nil == RolloutReader.to_conversation_item({:meta, %{}})
+      assert nil == RolloutReader.to_conversation_item({:response, %{"timestamp" => "x", "payload" => %{"type" => "file_search"}}})
+      assert nil == RolloutReader.to_conversation_item({:event, %{"timestamp" => "x", "payload" => %{"type" => "heartbeat"}}})
+      assert nil == RolloutReader.to_conversation_item(%{})
+    end
+
+    test "drops empty or unsupported message roles" do
+      assert nil ==
+               RolloutReader.to_conversation_item(
+                 {:response,
+                  %{
+                    "timestamp" => "2026-05-02T10:00:00Z",
+                    "payload" => %{"type" => "message", "role" => "assistant", "content" => []}
+                  }}
+               )
+
+      assert nil ==
+               RolloutReader.to_conversation_item(
+                 {:response,
+                  %{
+                    "timestamp" => "2026-05-02T10:00:00Z",
+                    "payload" => %{"type" => "message", "role" => "critic", "content" => "note"}
+                  }}
+               )
+    end
+
+    test "projects state changes without timestamps and default tool-call labels" do
+      assert %{kind: :state_change, at: nil, text: "thread_started", meta: %{"thread_id" => "thread-1"}} =
+               RolloutReader.to_conversation_item(
+                 {:event,
+                  %{
+                    "timestamp" => nil,
+                    "payload" => %{"type" => "thread_started", "thread_id" => "thread-1"}
+                  }}
+               )
+
+      assert %{kind: :tool_call, text: "tool_call", meta: %{name: nil}} =
+               RolloutReader.to_conversation_item(
+                 {:response,
+                  %{
+                    "timestamp" => "2026-05-02T10:00:00Z",
+                    "payload" => %{"type" => "function_call", "name" => 123}
+                  }}
+               )
+    end
+
+    test "truncates very large transcript text" do
+      long_text = String.duplicate("a", 8_050)
+
+      assert %{text: text} =
+               RolloutReader.to_conversation_item(
+                 {:response,
+                  %{
+                    "timestamp" => "2026-05-02T10:00:00Z",
+                    "payload" => %{"type" => "message", "role" => "assistant", "content" => long_text}
+                  }}
+               )
+
+      assert byte_size(text) > 8_000
+      assert String.ends_with?(text, " …[truncated]")
     end
   end
 end

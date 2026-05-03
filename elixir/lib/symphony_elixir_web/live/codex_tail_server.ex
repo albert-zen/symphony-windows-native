@@ -130,6 +130,7 @@ defmodule SymphonyElixirWeb.CodexTailServer do
 
       true ->
         Process.send_after(self(), :poll, @poll_interval_ms)
+
         state =
           if no_subscribers?(state),
             do: state,

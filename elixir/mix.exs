@@ -30,6 +30,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.LogFile,
           SymphonyElixir.Workspace,
           SymphonyElixir.WindowsPreflight,
+          SymphonyElixirWeb.CodexTailServer,
           SymphonyElixirWeb.DashboardLive,
           SymphonyElixirWeb.Endpoint,
           SymphonyElixirWeb.ErrorHTML,
@@ -39,6 +40,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixirWeb.Presenter,
           SymphonyElixirWeb.StaticAssetController,
           SymphonyElixirWeb.StaticAssets,
+          SymphonyElixirWeb.WorkerDetailLive,
           SymphonyElixirWeb.Router,
           SymphonyElixirWeb.Router.Helpers
         ]

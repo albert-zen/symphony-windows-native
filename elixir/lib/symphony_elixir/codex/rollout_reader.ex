@@ -81,8 +81,17 @@ defmodule SymphonyElixir.Codex.RolloutReader do
   """
   @spec stream(Path.t()) :: Enumerable.t()
   def stream(path) when is_binary(path) do
-    path
-    |> File.stream!([:read_ahead], :line)
+    Stream.resource(
+      fn -> File.open!(path, [:read, :binary]) end,
+      fn io ->
+        case IO.binread(io, :line) do
+          :eof -> {:halt, io}
+          {:error, reason} -> raise File.Error, reason: reason, action: "read", path: path
+          line when is_binary(line) -> {[line], io}
+        end
+      end,
+      &File.close/1
+    )
     |> Stream.map(&decode_line(&1, path))
     |> Stream.reject(&is_nil/1)
   end
@@ -150,9 +159,7 @@ defmodule SymphonyElixir.Codex.RolloutReader do
             :unknown
 
           {:error, reason} ->
-            Logger.debug(
-              "rollout_reader: skipping malformed line in #{path}: #{inspect(reason)}"
-            )
+            Logger.debug("rollout_reader: skipping malformed line in #{path}: #{inspect(reason)}")
 
             nil
         end
@@ -202,8 +209,6 @@ defmodule SymphonyElixir.Codex.RolloutReader do
       :binary.part(text, 0, @max_text_bytes) <> " …[truncated]"
     end
   end
-
-  defp truncate_text(_), do: ""
 
   # response_item dispatch
   defp response_item_to_conversation_item(%{"type" => "message"} = payload, ts) do
@@ -316,8 +321,6 @@ defmodule SymphonyElixir.Codex.RolloutReader do
     content
     |> Enum.map(fn
       %{"text" => text} when is_binary(text) -> text
-      %{"type" => "input_text", "text" => text} when is_binary(text) -> text
-      %{"type" => "output_text", "text" => text} when is_binary(text) -> text
       _ -> ""
     end)
     |> Enum.reject(&(&1 == ""))
