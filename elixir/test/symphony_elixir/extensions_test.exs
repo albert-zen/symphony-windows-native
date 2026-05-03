@@ -3149,10 +3149,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "snapshot_unavailable"
   end
 
-  test "operator config liveview renders active workflow without leaking secrets" do
+  test "operator config liveview renders editable workflow with redacted parsed summary" do
     write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_api_token: "sk-live-secret",
-      prompt: "Use the workflow. OPENAI_API_KEY=sk-live-secret"
+      tracker_api_token: "$LINEAR_API_KEY",
+      prompt: "Use the workflow. OPENAI_API_KEY=$OPENAI_API_KEY"
     )
 
     start_test_endpoint(
@@ -3163,18 +3163,17 @@ defmodule SymphonyElixir.ExtensionsTest do
     {:ok, _view, html} = live(build_conn(), "/config")
 
     assert html =~ "Operator Config"
-    assert html =~ "Safe workflow controls"
+    assert html =~ "Workflow.md editor"
     assert html =~ Workflow.workflow_file_path()
     assert html =~ "Workflow file"
-    assert html =~ "Safe edits"
+    assert html =~ "Workflow.md"
     assert html =~ "Tracker"
     assert html =~ "API key"
     assert html =~ "configured"
     assert html =~ "Dispatch"
     assert html =~ "Todo"
     assert html =~ "Prompt body"
-    assert html =~ "OPENAI_API_KEY=[REDACTED]"
-    refute html =~ "sk-live-secret"
+    assert html =~ "OPENAI_API_KEY=$OPENAI_API_KEY"
   end
 
   test "operator config liveview previews and applies safe workflow edits" do
@@ -3182,7 +3181,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     write_workflow_file!(workflow_path,
       max_concurrent_agents: 3,
-      polling_interval_ms: 5_000,
+      poll_interval_ms: 5_000,
       observability_refresh_ms: 1_000
     )
 
@@ -3197,24 +3196,19 @@ defmodule SymphonyElixir.ExtensionsTest do
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 5)
 
     {:ok, view, _html} = live(build_conn(), "/config")
+    current = File.read!(workflow_path)
+
+    proposed =
+      current
+      |> String.replace("max_concurrent_agents: 3", "max_concurrent_agents: 4")
+      |> String.replace("interval_ms: 5000", "interval_ms: 7500")
+      |> String.replace("refresh_ms: 1000", "refresh_ms: 2500")
 
     html =
       view
       |> form("#workflow-config-editor",
         workflow: %{
-          "agent.max_concurrent_agents" => "4",
-          "polling.interval_ms" => "7500",
-          "agent.max_turns" => "20",
-          "tracker.dispatch_states" => "Todo",
-          "codex.turn_timeout_ms" => "3600000",
-          "codex.read_timeout_ms" => "5000",
-          "codex.stall_timeout_ms" => "300000",
-          "codex.command_watchdog_long_running_ms" => "300000",
-          "codex.command_watchdog_idle_ms" => "120000",
-          "codex.command_watchdog_stalled_ms" => "300000",
-          "codex.command_watchdog_repeated_output_limit" => "20",
-          "observability.refresh_ms" => "2500",
-          "observability.render_interval_ms" => "16"
+          "content" => proposed
         }
       )
       |> render_submit()

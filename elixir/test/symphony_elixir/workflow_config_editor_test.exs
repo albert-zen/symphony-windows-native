@@ -48,6 +48,35 @@ defmodule SymphonyElixir.WorkflowConfigEditorTest do
     assert preview.current_hash == preview.proposed_hash
   end
 
+  test "previews and applies a full workflow document edit" do
+    workflow_path = Workflow.workflow_file_path()
+    current = File.read!(workflow_path)
+    proposed = String.replace(current, "max_concurrent_agents: 10", "max_concurrent_agents: 4")
+
+    assert {:ok, preview} = WorkflowConfigEditor.preview_content(proposed)
+    assert preview.changed_fields == [:full_workflow]
+    assert preview.diff =~ "-  max_concurrent_agents: 10"
+    assert preview.diff =~ "+  max_concurrent_agents: 4"
+
+    assert {:ok, applied} = WorkflowConfigEditor.apply_content(proposed)
+    assert File.exists?(applied.backup_path)
+    assert File.read!(workflow_path) == proposed
+    assert {:ok, settings} = Config.settings()
+    assert settings.agent.max_concurrent_agents == 4
+  end
+
+  test "rejects invalid full workflow document edits before writing" do
+    workflow_path = Workflow.workflow_file_path()
+    current = File.read!(workflow_path)
+    invalid = String.replace(current, "max_concurrent_agents: 10", "max_concurrent_agents: 0")
+
+    assert {:error, {:invalid_workflow, {:invalid_workflow_config, message}}} =
+             WorkflowConfigEditor.preview_content(invalid)
+
+    assert message =~ "max_concurrent_agents"
+    assert File.read!(workflow_path) == current
+  end
+
   test "inserts missing safe fields without rewriting the prompt body" do
     workflow_path = Workflow.workflow_file_path()
 

@@ -59,6 +59,58 @@ defmodule SymphonyElixir.WorkflowConfigEditor do
   @spec editable_fields() :: [String.t()]
   def editable_fields, do: @field_order
 
+  @spec current_content(keyword()) :: {:ok, String.t()} | {:error, term()}
+  def current_content(opts \\ []) do
+    opts
+    |> Keyword.get(:path, Workflow.workflow_file_path())
+    |> File.read()
+  end
+
+  @spec preview_content(String.t(), keyword()) :: {:ok, preview_result()} | {:error, term()}
+  def preview_content(proposed_content, opts \\ []) when is_binary(proposed_content) do
+    path = Keyword.get(opts, :path, Workflow.workflow_file_path())
+
+    with {:ok, current} <- File.read(path),
+         :ok <- validate_content(proposed_content) do
+      {:ok,
+       %{
+         current_hash: content_hash(current),
+         proposed_hash: content_hash(proposed_content),
+         changed_fields: [:full_workflow],
+         warnings: [],
+         diff: diff(current, proposed_content),
+         proposed_content: proposed_content
+       }}
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @spec apply_content(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def apply_content(proposed_content, opts \\ []) when is_binary(proposed_content) do
+    active_workers_count = Keyword.get(opts, :active_workers_count, 0)
+    path = Keyword.get(opts, :path, Workflow.workflow_file_path())
+
+    with {:ok, preview} <- preview_content(proposed_content, path: path),
+         :ok <- ensure_no_active_workers(active_workers_count, preview.changed_fields),
+         {:ok, backup_path} <- write_backup(path),
+         :ok <- write_workflow(path, preview.proposed_content),
+         :ok <- reload_workflow_store(),
+         {:ok, applied} <- File.read(path) do
+      {:ok,
+       %{
+         previous_hash: preview.current_hash,
+         proposed_hash: preview.proposed_hash,
+         applied_hash: content_hash(applied),
+         changed_fields: preview.changed_fields,
+         warnings: preview.warnings,
+         backup_path: backup_path
+       }}
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   @spec preview(map(), keyword()) :: {:ok, preview_result()} | {:error, term()}
   def preview(params, opts \\ []) when is_map(params) do
     path = Keyword.get(opts, :path, Workflow.workflow_file_path())

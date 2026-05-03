@@ -1,6 +1,6 @@
 defmodule SymphonyElixirWeb.ConfigLive do
   @moduledoc """
-  Read-only operator view of the active workflow configuration.
+  Operator editor for the active workflow configuration.
   """
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
@@ -16,11 +16,30 @@ defmodule SymphonyElixirWeb.ConfigLive do
      socket
      |> assign(:projection, projection)
      |> assign(:form_values, form_values(projection))
+     |> assign(:workflow_content, workflow_content())
      |> assign(:preview, nil)
      |> assign(:active_workers_count, active_workers_count())}
   end
 
   @impl true
+  def handle_event("preview_config", %{"workflow" => %{"content" => content}}, socket) do
+    case WorkflowConfigEditor.preview_content(content) do
+      {:ok, preview} ->
+        {:noreply,
+         socket
+         |> assign(:workflow_content, content)
+         |> assign(:preview, Map.put(preview, :content, content))
+         |> put_flash(:info, "Preview ready. Review the diff before applying.")}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:workflow_content, content)
+         |> assign(:preview, nil)
+         |> put_flash(:error, editor_error_message(reason))}
+    end
+  end
+
   def handle_event("preview_config", %{"workflow" => params}, socket) do
     case WorkflowConfigEditor.preview(params) do
       {:ok, preview} ->
@@ -35,6 +54,30 @@ defmodule SymphonyElixirWeb.ConfigLive do
          socket
          |> assign(:form_values, params)
          |> assign(:preview, nil)
+         |> put_flash(:error, editor_error_message(reason))}
+    end
+  end
+
+  def handle_event("apply_config", _params, %{assigns: %{preview: %{content: content}}} = socket) do
+    active_workers_count = active_workers_count()
+
+    case apply_content_preview(content, active_workers_count) do
+      {:ok, applied} ->
+        projection = WorkflowConfigProjection.current()
+
+        {:noreply,
+         socket
+         |> assign(:projection, projection)
+         |> assign(:form_values, form_values(projection))
+         |> assign(:workflow_content, workflow_content())
+         |> assign(:preview, nil)
+         |> assign(:active_workers_count, active_workers_count())
+         |> put_flash(:info, "Workflow applied. New hash #{applied.applied_hash}; backup written.")}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:active_workers_count, active_workers_count)
          |> put_flash(:error, editor_error_message(reason))}
     end
   end
@@ -73,7 +116,7 @@ defmodule SymphonyElixirWeb.ConfigLive do
       <header class="page-header">
         <a class="page-back" href="/">‹ Dashboard</a>
         <span class="page-brand">Operator Config</span>
-        <span class="page-brand-sub">Safe workflow controls</span>
+        <span class="page-brand-sub">Workflow.md editor</span>
         <span class={config_status_class(@projection.status)}><%= @projection.status %></span>
       </header>
 
@@ -112,10 +155,7 @@ defmodule SymphonyElixirWeb.ConfigLive do
             <section class="panel-shell config-editor-panel">
               <div class="section-header">
                 <div>
-                  <h2 class="page-section-title">Safe edits</h2>
-                  <p class="section-copy">
-                    Low-risk runtime knobs only. Prompt, secrets, worker hosts, hooks, and repository identity stay read-only here.
-                  </p>
+                  <h2 class="page-section-title">Workflow.md</h2>
                 </div>
                 <span class={active_workers_badge_class(@active_workers_count)}>
                   <%= active_workers_label(@active_workers_count) %>
@@ -123,69 +163,7 @@ defmodule SymphonyElixirWeb.ConfigLive do
               </div>
 
               <.form for={%{}} as={:workflow} id="workflow-config-editor" phx-submit="preview_config" class="config-edit-form">
-                <fieldset class="config-fieldset">
-                  <legend>Scheduling</legend>
-                  <label>
-                    <span>Max agents</span>
-                    <input type="number" min="1" name="workflow[agent.max_concurrent_agents]" value={@form_values["agent.max_concurrent_agents"]} />
-                  </label>
-                  <label>
-                    <span>Poll interval ms</span>
-                    <input type="number" min="1" name="workflow[polling.interval_ms]" value={@form_values["polling.interval_ms"]} />
-                  </label>
-                  <label>
-                    <span>Max turns</span>
-                    <input type="number" min="1" name="workflow[agent.max_turns]" value={@form_values["agent.max_turns"]} />
-                  </label>
-                  <label class="config-field-wide">
-                    <span>Dispatch states</span>
-                    <textarea name="workflow[tracker.dispatch_states]" rows="3"><%= @form_values["tracker.dispatch_states"] %></textarea>
-                  </label>
-                </fieldset>
-
-                <fieldset class="config-fieldset">
-                  <legend>Codex timeouts</legend>
-                  <label>
-                    <span>Turn timeout ms</span>
-                    <input type="number" min="1" name="workflow[codex.turn_timeout_ms]" value={@form_values["codex.turn_timeout_ms"]} />
-                  </label>
-                  <label>
-                    <span>Read timeout ms</span>
-                    <input type="number" min="1" name="workflow[codex.read_timeout_ms]" value={@form_values["codex.read_timeout_ms"]} />
-                  </label>
-                  <label>
-                    <span>Stall timeout ms</span>
-                    <input type="number" min="0" name="workflow[codex.stall_timeout_ms]" value={@form_values["codex.stall_timeout_ms"]} />
-                  </label>
-                  <label>
-                    <span>Long-running ms</span>
-                    <input type="number" min="0" name="workflow[codex.command_watchdog_long_running_ms]" value={@form_values["codex.command_watchdog_long_running_ms"]} />
-                  </label>
-                  <label>
-                    <span>Idle watchdog ms</span>
-                    <input type="number" min="0" name="workflow[codex.command_watchdog_idle_ms]" value={@form_values["codex.command_watchdog_idle_ms"]} />
-                  </label>
-                  <label>
-                    <span>Stalled watchdog ms</span>
-                    <input type="number" min="0" name="workflow[codex.command_watchdog_stalled_ms]" value={@form_values["codex.command_watchdog_stalled_ms"]} />
-                  </label>
-                  <label>
-                    <span>Repeated output limit</span>
-                    <input type="number" min="1" name="workflow[codex.command_watchdog_repeated_output_limit]" value={@form_values["codex.command_watchdog_repeated_output_limit"]} />
-                  </label>
-                </fieldset>
-
-                <fieldset class="config-fieldset">
-                  <legend>Observability</legend>
-                  <label>
-                    <span>Refresh ms</span>
-                    <input type="number" min="1" name="workflow[observability.refresh_ms]" value={@form_values["observability.refresh_ms"]} />
-                  </label>
-                  <label>
-                    <span>Render interval ms</span>
-                    <input type="number" min="1" name="workflow[observability.render_interval_ms]" value={@form_values["observability.render_interval_ms"]} />
-                  </label>
-                </fieldset>
+                <textarea class="workflow-file-editor mono" name="workflow[content]" rows="32"><%= @workflow_content %></textarea>
 
                 <div class="config-actions">
                   <button type="submit">Preview diff</button>
@@ -322,6 +300,16 @@ defmodule SymphonyElixirWeb.ConfigLive do
       _ -> :unknown
     end
   end
+
+  defp workflow_content do
+    case WorkflowConfigEditor.current_content() do
+      {:ok, content} -> content
+      {:error, reason} -> "Unable to read workflow file: #{inspect(reason)}"
+    end
+  end
+
+  defp apply_content_preview(_content, :unknown), do: {:error, :active_workers_unknown}
+  defp apply_content_preview(content, active_workers_count), do: WorkflowConfigEditor.apply_content(content, active_workers_count: active_workers_count)
 
   defp apply_preview(_params, :unknown), do: {:error, :active_workers_unknown}
   defp apply_preview(params, active_workers_count), do: WorkflowConfigEditor.apply(params, active_workers_count: active_workers_count)
