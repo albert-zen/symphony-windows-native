@@ -16,6 +16,8 @@ defmodule SymphonyElixirWeb.ConfigLive do
      socket
      |> assign(:projection, projection)
      |> assign(:workflow_content, workflow_content())
+     |> assign(:workflow_path_input, projection.workflow.path)
+     |> assign(:workflow_candidates, WorkflowConfigEditor.workflow_candidates())
      |> assign(:preview, nil)
      |> assign(:active_workers_count, active_workers_count())}
   end
@@ -66,6 +68,39 @@ defmodule SymphonyElixirWeb.ConfigLive do
     {:noreply, put_flash(socket, :error, "Preview the workflow diff before applying.")}
   end
 
+  def handle_event("select_workflow", %{"workflow_path" => %{"path" => path}}, socket) do
+    active_workers_count = active_workers_count()
+
+    case WorkflowConfigEditor.switch_workflow_path(path, active_workers_count: active_workers_count) do
+      {:ok, selected} ->
+        projection = WorkflowConfigProjection.current()
+
+        {:noreply,
+         socket
+         |> assign(:projection, projection)
+         |> assign(:workflow_content, workflow_content())
+         |> assign(:workflow_path_input, projection.workflow.path)
+         |> assign(:workflow_candidates, WorkflowConfigEditor.workflow_candidates())
+         |> assign(:preview, nil)
+         |> assign(:active_workers_count, active_workers_count())
+         |> put_flash(:info, "Workflow switched to #{selected.path}. Managed reload will use this path; manual restarts must pass it explicitly.")}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:workflow_path_input, path)
+         |> assign(:active_workers_count, active_workers_count)
+         |> put_flash(:error, editor_error_message(reason))}
+    end
+  end
+
+  def handle_event("reveal_workflow_file", _params, socket) do
+    case WorkflowConfigEditor.reveal_path(socket.assigns.projection.workflow.path) do
+      :ok -> {:noreply, put_flash(socket, :info, "Opened Explorer for the active workflow file.")}
+      {:error, reason} -> {:noreply, put_flash(socket, :error, editor_error_message(reason))}
+    end
+  end
+
   @impl true
   def render(assigns) do
     ~H"""
@@ -84,40 +119,39 @@ defmodule SymphonyElixirWeb.ConfigLive do
         </section>
       <% end %>
 
-      <div class="page-grid">
-        <aside class="page-sidebar">
-          <section class="page-sidebar-section">
-            <h3 class="page-section-title">Workflow file</h3>
-            <dl class="page-kv">
-              <div><dt>Path</dt><dd class="detail-path"><%= @projection.workflow.path %></dd></div>
-              <div><dt>Status</dt><dd><%= if @projection.workflow.exists?, do: "present", else: "missing" %></dd></div>
-              <div><dt>Hash</dt><dd class="mono"><%= @projection.workflow.hash || "n/a" %></dd></div>
-              <div><dt>Bytes</dt><dd class="numeric"><%= format_value(@projection.workflow.bytes) %></dd></div>
-              <div><dt>Modified</dt><dd class="mono"><%= @projection.workflow.modified_at || "n/a" %></dd></div>
-            </dl>
-          </section>
-
-          <section :if={@projection.prompt} class="page-sidebar-section">
-            <h3 class="page-section-title">Prompt</h3>
-            <dl class="page-kv">
-              <div><dt>Lines</dt><dd class="numeric"><%= @projection.prompt.lines %></dd></div>
-              <div><dt>Bytes</dt><dd class="numeric"><%= @projection.prompt.bytes %></dd></div>
-            </dl>
-            <p class="config-preview"><%= @projection.prompt.preview %></p>
-          </section>
-        </aside>
-
-        <section class="page-main">
+      <section class="page-main page-main-full">
           <%= if @projection.config do %>
             <section class="panel-shell config-editor-panel">
-              <div class="section-header">
+              <div class="section-header config-editor-header">
                 <div>
                   <h2 class="page-section-title">Workflow.md</h2>
+                  <p class="section-copy detail-path"><%= @projection.workflow.path %></p>
                 </div>
+                <.form for={%{}} as={:workflow_path} id="workflow-path-picker" phx-submit="select_workflow" class="workflow-path-picker">
+                  <label>
+                    <span>Workflow file</span>
+                    <input name="workflow_path[path]" list="workflow-candidates" value={@workflow_path_input} placeholder="Choose or enter a .md path" />
+                  </label>
+                  <datalist id="workflow-candidates">
+                    <%= for path <- @workflow_candidates do %>
+                      <option value={path}></option>
+                    <% end %>
+                  </datalist>
+                  <button type="submit" class="secondary">Use file</button>
+                  <button type="button" class="secondary" phx-click="reveal_workflow_file">Reveal in Explorer</button>
+                </.form>
                 <span class={active_workers_badge_class(@active_workers_count)}>
                   <%= active_workers_label(@active_workers_count) %>
                 </span>
               </div>
+
+              <dl class="config-meta-strip">
+                <div><dt>Status</dt><dd><%= if @projection.workflow.exists?, do: "present", else: "missing" %></dd></div>
+                <div><dt>Hash</dt><dd class="mono"><%= @projection.workflow.hash || "n/a" %></dd></div>
+                <div><dt>Bytes</dt><dd class="numeric"><%= format_value(@projection.workflow.bytes) %></dd></div>
+                <div><dt>Modified</dt><dd class="mono"><%= @projection.workflow.modified_at || "n/a" %></dd></div>
+                <div :if={@projection.prompt}><dt>Prompt</dt><dd><%= @projection.prompt.lines %> lines · <%= @projection.prompt.bytes %> bytes</dd></div>
+              </dl>
 
               <.form for={%{}} as={:workflow} id="workflow-config-editor" phx-submit="preview_config" class="config-edit-form">
                 <textarea class="workflow-file-editor mono" name="workflow[content]" rows="32"><%= @workflow_content %></textarea>
@@ -229,7 +263,6 @@ defmodule SymphonyElixirWeb.ConfigLive do
             </details>
           <% end %>
         </section>
-      </div>
     </section>
     """
   end
@@ -293,6 +326,12 @@ defmodule SymphonyElixirWeb.ConfigLive do
   defp editor_error_message({:active_workers, count}), do: "Workflow edits are blocked while #{count} worker(s) are active."
   defp editor_error_message(:active_workers_unknown), do: "Workflow edits are blocked because active workers could not be inspected."
   defp editor_error_message({:invalid_workflow, reason}), do: "Proposed workflow did not validate: #{inspect(reason)}."
+  defp editor_error_message(:blank_workflow_path), do: "Workflow path is blank."
+  defp editor_error_message(:workflow_path_not_markdown), do: "Workflow path must point to a .md file."
+  defp editor_error_message({:missing_workflow_file, path, reason}), do: "Workflow file is unavailable: #{path} (#{reason})."
+  defp editor_error_message(:explorer_unavailable), do: "Explorer is unavailable on this machine."
+  defp editor_error_message({:unsupported_os, os}), do: "Explorer reveal is only supported on Windows; current OS is #{inspect(os)}."
+  defp editor_error_message({:explorer_failed, status, output}), do: "Explorer failed with status #{status}: #{output}."
   defp editor_error_message({:backup_failed, reason}), do: "Workflow backup failed: #{inspect(reason)}."
   defp editor_error_message({:write_failed, reason}), do: "Workflow write failed: #{inspect(reason)}."
   defp editor_error_message(reason), do: "Workflow edit failed: #{inspect(reason)}."

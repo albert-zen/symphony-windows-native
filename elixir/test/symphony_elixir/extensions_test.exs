@@ -3173,6 +3173,9 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Workflow.md"
     assert html =~ "Apply behavior"
     assert html =~ "reloads WorkflowStore immediately"
+    assert html =~ "Use file"
+    assert html =~ "Reveal in Explorer"
+    refute html =~ ~s(class="page-sidebar")
     assert html =~ "Tracker"
     assert html =~ "API key"
     assert html =~ "configured"
@@ -3233,6 +3236,33 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert File.read!(workflow_path) =~ "max_concurrent_agents: 4"
     assert File.read!(workflow_path) =~ "interval_ms: 7500"
     assert File.read!(workflow_path) =~ "refresh_ms: 2500"
+  end
+
+  test "operator config liveview switches workflow files from the editor header" do
+    workflow_dir = Path.dirname(Workflow.workflow_file_path())
+    alternate_path = Path.join(workflow_dir, "WORKFLOW.config-live-alternate.md")
+    write_workflow_file!(alternate_path, max_concurrent_agents: 7)
+
+    orchestrator_name = Module.concat(__MODULE__, :ConfigLiveSwitchWorkflowOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: %{running: [], retrying: [], codex_totals: %{}, rate_limits: nil}
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 5)
+
+    {:ok, view, _html} = live(build_conn(), "/config")
+
+    html =
+      view
+      |> form("#workflow-path-picker", workflow_path: %{"path" => alternate_path})
+      |> render_submit()
+
+    assert html =~ alternate_path
+    assert html =~ "max_concurrent_agents: 7"
+    assert Workflow.workflow_file_path() == alternate_path
   end
 
   test "operator config liveview requires preview before applying workflow edits" do

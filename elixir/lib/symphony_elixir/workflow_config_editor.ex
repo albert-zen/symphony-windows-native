@@ -67,6 +67,81 @@ defmodule SymphonyElixir.WorkflowConfigEditor do
     |> File.read()
   end
 
+  @spec workflow_candidates(keyword()) :: [Path.t()]
+  def workflow_candidates(opts \\ []) do
+    roots =
+      opts
+      |> Keyword.get_lazy(:roots, &candidate_roots/0)
+      |> Enum.reject(&blank?/1)
+      |> Enum.map(&Path.expand/1)
+      |> Enum.uniq()
+
+    roots
+    |> Enum.flat_map(&candidate_files/1)
+    |> Enum.uniq()
+    |> Enum.sort_by(&String.downcase/1)
+  end
+
+  @spec switch_workflow_path(Path.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def switch_workflow_path(path, opts \\ []) when is_binary(path) do
+    active_workers_count = Keyword.get(opts, :active_workers_count, 0)
+    expanded_path = Path.expand(String.trim(path))
+
+    with :ok <- ensure_no_active_workers(active_workers_count, [:workflow_path]),
+         :ok <- ensure_markdown_file(expanded_path),
+         {:ok, workflow} <- Workflow.load(expanded_path),
+         {:ok, _settings} <- Schema.parse(workflow.config) do
+      :ok = Workflow.set_workflow_file_path(expanded_path)
+
+      {:ok,
+       %{
+         path: expanded_path,
+         hash: expanded_path |> File.read!() |> content_hash(),
+         application_effects: %{
+           workflow_store: "WorkflowStore reloaded the selected file immediately.",
+           future_work: "Future polls and future worker runs now use this workflow path.",
+           active_workers: "Path switching is blocked while workers are active.",
+           restart_required?: false,
+           restart_reasons: [
+             "Managed reload uses the current runtime workflow path. External manual restart commands must pass this selected path to keep using it."
+           ]
+         }
+       }}
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @spec reveal_path(Path.t(), keyword()) :: :ok | {:error, term()}
+  def reveal_path(path, opts \\ []) when is_binary(path) do
+    deps = Keyword.get(opts, :deps, %{})
+    os_type = Map.get(deps, :os_type, &:os.type/0).()
+    find_executable = Map.get(deps, :find_executable, &System.find_executable/1)
+    cmd = Map.get(deps, :cmd, &System.cmd/3)
+    expanded_path = Path.expand(path)
+
+    case {os_type, find_executable.("explorer.exe")} do
+      {{:win32, _}, explorer} when is_binary(explorer) ->
+        args =
+          if File.exists?(expanded_path) do
+            ["/select,#{expanded_path}"]
+          else
+            [existing_parent(expanded_path)]
+          end
+
+        case cmd.(explorer, args, stderr_to_stdout: true) do
+          {_output, 0} -> :ok
+          {output, status} -> {:error, {:explorer_failed, status, output}}
+        end
+
+      {{:win32, _}, _} ->
+        {:error, :explorer_unavailable}
+
+      {other, _} ->
+        {:error, {:unsupported_os, other}}
+    end
+  end
+
   @spec preview_content(String.t(), keyword()) :: {:ok, preview_result()} | {:error, term()}
   def preview_content(proposed_content, opts \\ []) when is_binary(proposed_content) do
     path = Keyword.get(opts, :path, Workflow.workflow_file_path())
@@ -430,8 +505,46 @@ defmodule SymphonyElixir.WorkflowConfigEditor do
   defp maybe_add_restart_reason(reasons, true, reason), do: [reason | reasons]
   defp maybe_add_restart_reason(reasons, false, _reason), do: reasons
 
+  defp candidate_roots do
+    cwd = File.cwd!()
+    workflow_dir = Workflow.workflow_file_path() |> Path.expand() |> Path.dirname()
+
+    [workflow_dir, cwd, Path.dirname(cwd)]
+  end
+
+  defp candidate_files(root) do
+    if File.dir?(root) do
+      root
+      |> Path.join("*.md")
+      |> Path.wildcard()
+      |> Enum.filter(&File.regular?/1)
+      |> Enum.map(&Path.expand/1)
+    else
+      []
+    end
+  end
+
+  defp ensure_markdown_file(path) do
+    cond do
+      path == "" -> {:error, :blank_workflow_path}
+      Path.extname(path) |> String.downcase() != ".md" -> {:error, :workflow_path_not_markdown}
+      not File.regular?(path) -> {:error, {:missing_workflow_file, path, :enoent}}
+      true -> :ok
+    end
+  end
+
+  defp existing_parent(path) do
+    path
+    |> Stream.iterate(&Path.dirname/1)
+    |> Enum.find(fn candidate -> candidate == Path.dirname(candidate) or File.dir?(candidate) end)
+  end
+
+  defp blank?(value), do: is_nil(value) or String.trim(to_string(value)) == ""
+
   defp ensure_no_active_workers(count, changed_fields) when is_integer(count) and count > 0 and changed_fields != [],
     do: {:error, {:active_workers, count}}
+
+  defp ensure_no_active_workers(:unknown, changed_fields) when changed_fields != [], do: {:error, :active_workers_unknown}
 
   defp ensure_no_active_workers(_count, _changed_fields), do: :ok
 

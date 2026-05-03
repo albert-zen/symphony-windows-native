@@ -469,6 +469,76 @@ pre,
   gap: 1rem;
 }
 
+.config-editor-header {
+  gap: 1rem;
+  align-items: start;
+}
+
+.workflow-path-picker {
+  display: grid;
+  grid-template-columns: minmax(18rem, 1fr) auto auto;
+  gap: 0.55rem;
+  align-items: end;
+  flex: 1 1 34rem;
+  min-width: min(100%, 32rem);
+}
+
+.workflow-path-picker label {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.workflow-path-picker input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: white;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.86rem;
+  letter-spacing: 0;
+  padding: 0.58rem 0.65rem;
+  text-transform: none;
+  box-shadow: inset 0 1px 1px rgba(15, 23, 42, 0.03);
+}
+
+.config-meta-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.6rem;
+  margin: 0;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card-muted);
+}
+
+.config-meta-strip div {
+  min-width: 0;
+}
+
+.config-meta-strip dt {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.config-meta-strip dd {
+  margin: 0.2rem 0 0;
+  color: var(--ink);
+  font-size: 0.85rem;
+  word-break: break-word;
+}
+
 .config-edit-form {
   display: grid;
   gap: 0.9rem;
@@ -1298,6 +1368,10 @@ pre,
   flex-direction: column;
   gap: 0.8rem;
   min-height: 60vh;
+}
+
+.page-main-full {
+  width: 100%;
 }
 
 .worker-tabs {

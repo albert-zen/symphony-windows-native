@@ -100,6 +100,50 @@ defmodule SymphonyElixir.WorkflowConfigEditorTest do
     assert Enum.any?(preview.application_effects.restart_reasons, &String.contains?(&1, "steer token"))
   end
 
+  test "lists candidate markdown files and switches the active workflow path" do
+    workflow_dir = Path.dirname(Workflow.workflow_file_path())
+    alternate_path = Path.join(workflow_dir, "WORKFLOW.alternate.md")
+    write_workflow_file!(alternate_path, max_concurrent_agents: 6)
+
+    candidates = WorkflowConfigEditor.workflow_candidates(roots: [workflow_dir])
+    assert Enum.any?(candidates, &(String.downcase(&1) == String.downcase(alternate_path)))
+
+    assert {:ok, selected} = WorkflowConfigEditor.switch_workflow_path(alternate_path)
+    assert String.downcase(selected.path) == String.downcase(alternate_path)
+    assert String.downcase(Workflow.workflow_file_path()) == String.downcase(alternate_path)
+    assert {:ok, settings} = Config.settings()
+    assert settings.agent.max_concurrent_agents == 6
+  end
+
+  test "blocks workflow path switches while active workers are running" do
+    workflow_dir = Path.dirname(Workflow.workflow_file_path())
+    alternate_path = Path.join(workflow_dir, "WORKFLOW.busy.md")
+    write_workflow_file!(alternate_path, max_concurrent_agents: 6)
+
+    assert {:error, {:active_workers, 1}} =
+             WorkflowConfigEditor.switch_workflow_path(alternate_path, active_workers_count: 1)
+
+    refute Workflow.workflow_file_path() == alternate_path
+  end
+
+  test "reveals workflow paths through Windows Explorer when available" do
+    workflow_path = Workflow.workflow_file_path()
+    parent = self()
+
+    deps = %{
+      os_type: fn -> {:win32, :nt} end,
+      find_executable: fn "explorer.exe" -> "explorer.exe" end,
+      cmd: fn executable, args, _opts ->
+        send(parent, {:explorer_called, executable, args})
+        {"", 0}
+      end
+    }
+
+    assert :ok = WorkflowConfigEditor.reveal_path(workflow_path, deps: deps)
+    assert_received {:explorer_called, "explorer.exe", [select_arg]}
+    assert select_arg == "/select,#{Path.expand(workflow_path)}"
+  end
+
   test "inserts missing safe fields without rewriting the prompt body" do
     workflow_path = Workflow.workflow_file_path()
 
