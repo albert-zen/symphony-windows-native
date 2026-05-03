@@ -3311,7 +3311,8 @@ defmodule SymphonyElixir.ExtensionsTest do
       |> form("#workflow-path-picker", workflow_path: %{"path" => alternate_path})
       |> render_submit()
 
-    assert html =~ "Workflow edits are blocked while 1 worker(s) are active."
+    assert html =~ "1 active workers"
+    refute html =~ "max_concurrent_agents: 7"
     refute Workflow.workflow_file_path() == alternate_path
   end
 
