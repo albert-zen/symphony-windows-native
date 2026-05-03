@@ -1314,6 +1314,37 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "attempt=3"
   end
 
+  test "prompt builder renders redacted workflow configuration values" do
+    workflow_prompt = """
+    Repo: {{ workflow.codex.review_readiness_repository }}
+    Project: {{ workflow.prompt_context.linear_project_name }}
+    Token: {{ workflow.tracker.api_key }}
+    """
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: "linear-secret-token",
+      codex_review_readiness_repository: "albert-zen/symphony-windows-native",
+      prompt_context: %{linear_project_name: "Symphony 优化"},
+      prompt: workflow_prompt
+    )
+
+    issue = %Issue{
+      identifier: "S-2",
+      title: "Parameterize prompt context",
+      description: "Replace hard-coded repo text",
+      state: "Todo",
+      url: "https://example.org/issues/S-2",
+      labels: []
+    }
+
+    prompt = PromptBuilder.build_prompt(issue)
+
+    assert prompt =~ "Repo: albert-zen/symphony-windows-native"
+    assert prompt =~ "Project: Symphony 优化"
+    assert prompt =~ "Token: [REDACTED]"
+    refute prompt =~ "linear-secret-token"
+  end
+
   test "prompt builder renders issue datetime fields without crashing" do
     workflow_prompt = "Ticket {{ issue.identifier }} created={{ issue.created_at }} updated={{ issue.updated_at }}"
 

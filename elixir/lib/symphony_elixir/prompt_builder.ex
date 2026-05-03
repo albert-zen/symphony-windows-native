@@ -3,14 +3,16 @@ defmodule SymphonyElixir.PromptBuilder do
   Builds agent prompts from Linear issue data.
   """
 
-  alias SymphonyElixir.{Config, Workflow}
+  alias SymphonyElixir.{Config, Redactor, Workflow}
 
   @render_opts [strict_variables: true, strict_filters: true]
 
   @spec build_prompt(SymphonyElixir.Linear.Issue.t(), keyword()) :: String.t()
   def build_prompt(issue, opts \\ []) do
+    workflow = Workflow.current()
+
     template =
-      Workflow.current()
+      workflow
       |> prompt_template!()
       |> parse_template!()
 
@@ -25,7 +27,8 @@ defmodule SymphonyElixir.PromptBuilder do
         "retry_workspace_path" => Keyword.get(opts, :retry_workspace_path),
         "retry_branch_name" => Keyword.get(opts, :retry_branch_name),
         "retry_worker_host" => Keyword.get(opts, :retry_worker_host),
-        "issue" => issue |> Map.from_struct() |> to_solid_map()
+        "issue" => issue |> Map.from_struct() |> to_solid_map(),
+        "workflow" => workflow_context!(workflow)
       },
       @render_opts
     )
@@ -35,6 +38,18 @@ defmodule SymphonyElixir.PromptBuilder do
   defp prompt_template!({:ok, %{prompt_template: prompt}}), do: default_prompt(prompt)
 
   defp prompt_template!({:error, reason}) do
+    raise RuntimeError, "workflow_unavailable: #{inspect(reason)}"
+  end
+
+  defp workflow_context!({:ok, %{config: config}}) when is_map(config) do
+    config
+    |> Redactor.redact()
+    |> to_solid_map()
+  end
+
+  defp workflow_context!({:ok, _workflow}), do: %{}
+
+  defp workflow_context!({:error, reason}) do
     raise RuntimeError, "workflow_unavailable: #{inspect(reason)}"
   end
 

@@ -1,4 +1,7 @@
 ---
+prompt_context:
+  linear_project_name: YOUR_LINEAR_PROJECT_NAME
+  github_issue_label: symphony-optimization
 tracker:
   kind: linear
   api_key: $LINEAR_API_KEY
@@ -101,7 +104,7 @@ Operating model:
     issue in `In Progress` or return it to `Todo`; only a manager may explicitly override this.
     When checks are verified through GitHub CLI, connector, or another non-REST path, record this
     exact machine-readable evidence in the `## Codex Workpad`:
-    `PR: https://github.com/albert-zen/symphony-windows-native/pull/<number>`
+    `PR: https://github.com/{{ workflow.codex.review_readiness_repository }}/pull/<number>`
     `Head \`<full-head-sha>\``
     `- make-all run <run-id>: success.`
     `- validate-pr-description run <run-id>: success.`
@@ -112,9 +115,9 @@ Operating model:
       cause before creating anything new.
     - If a canonical issue exists, add a concise comment there with the new evidence, affected
       issue/PR/log, and impact instead of creating a duplicate.
-    - If no canonical issue exists, create a GitHub issue with the configured optimization label,
+    - If no canonical issue exists, create a GitHub issue with label `{{ workflow.prompt_context.github_issue_label }}`,
       including observed symptoms, suspected root cause, impact, and acceptance criteria, then add a
-      Linear mirror in the configured Linear project if the Linear tool is available.
+      Linear mirror in project `{{ workflow.prompt_context.linear_project_name }}` if the Linear tool is available.
     - If you discover duplicates, link them back to the canonical issue and leave final duplicate
       cleanup to the manager.
 13. Leave problem breadcrumbs without spamming:

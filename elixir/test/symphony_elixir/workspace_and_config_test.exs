@@ -1491,6 +1491,26 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert workflow.prompt =~ "manager action needed"
     assert workflow.prompt =~ "canonical issue exists"
     assert workflow.prompt =~ "If a true blocker prevents completion"
+    assert workflow.prompt =~ "{{ workflow.codex.review_readiness_repository }}"
+    assert workflow.prompt =~ "{{ workflow.prompt_context.linear_project_name }}"
+    refute workflow.prompt =~ "albert-zen/symphony-windows-native"
+
+    Workflow.set_workflow_file_path(path)
+
+    on_exit(fn -> Workflow.clear_workflow_file_path() end)
+
+    prompt =
+      PromptBuilder.build_prompt(%Issue{
+        identifier: "ALB-1",
+        title: "Render configured repository",
+        description: "Template should not hard-code the Symphony repository.",
+        state: "Todo",
+        url: "https://linear.example/ALB-1",
+        labels: []
+      })
+
+    assert prompt =~ "https://github.com/YOUR_GITHUB_OWNER/YOUR_REPO/pull/<number>"
+    assert prompt =~ "project `YOUR_LINEAR_PROJECT_NAME`"
   end
 
   test "workflow prompt is used when building base prompt" do
