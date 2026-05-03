@@ -3,7 +3,7 @@ defmodule SymphonyElixirWeb.Presenter do
   Shared projections for the observability API and dashboard.
   """
 
-  alias SymphonyElixir.{Deployment.Reload, Orchestrator, Redactor, RuntimeInfo, StatusDashboard}
+  alias SymphonyElixir.{Codex.RolloutIndex, Deployment.Reload, Orchestrator, Redactor, RuntimeInfo, StatusDashboard}
   alias SymphonyElixirWeb.WorkerApi
 
   @conversation_display_limit 120
@@ -49,19 +49,33 @@ defmodule SymphonyElixirWeb.Presenter do
 
   @spec issue_payload(String.t(), GenServer.name(), timeout()) :: {:ok, map()} | {:error, :issue_not_found}
   def issue_payload(issue_identifier, orchestrator, snapshot_timeout_ms) when is_binary(issue_identifier) do
+    rollouts = lookup_rollouts(issue_identifier)
+
     case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
       %{} = snapshot ->
         running = Enum.find(snapshot.running, &(&1.identifier == issue_identifier))
         retry = Enum.find(snapshot.retrying, &(&1.identifier == issue_identifier))
 
-        if is_nil(running) and is_nil(retry) do
-          {:error, :issue_not_found}
-        else
-          {:ok, issue_payload_body(issue_identifier, running, retry)}
+        cond do
+          not is_nil(running) or not is_nil(retry) ->
+            payload =
+              issue_identifier
+              |> issue_payload_body(running, retry)
+              |> attach_rollouts(rollouts)
+
+            {:ok, payload}
+
+          rollouts != [] ->
+            {:ok, historical_issue_payload(issue_identifier, rollouts)}
+
+          true ->
+            {:error, :issue_not_found}
         end
 
       _ ->
-        {:error, :issue_not_found}
+        if rollouts == [],
+          do: {:error, :issue_not_found},
+          else: {:ok, historical_issue_payload(issue_identifier, rollouts)}
     end
   end
 
@@ -176,6 +190,78 @@ defmodule SymphonyElixirWeb.Presenter do
       tracked: %{}
     }
   end
+
+  defp lookup_rollouts(issue_identifier) do
+    try do
+      RolloutIndex.lookup(issue_identifier)
+    rescue
+      _ -> []
+    catch
+      _, _ -> []
+    end
+  end
+
+  defp attach_rollouts(payload, rollouts) do
+    rollout_summaries = Enum.map(rollouts, &rollout_summary/1)
+
+    payload
+    |> Map.put(:rollouts, rollout_summaries)
+    |> Map.put(:current_rollout, List.first(rollout_summaries))
+    |> Map.update(:logs, %{codex_session_logs: rollout_log_paths(rollouts)}, fn logs ->
+      Map.put(logs, :codex_session_logs, rollout_log_paths(rollouts))
+    end)
+  end
+
+  defp historical_issue_payload(issue_identifier, [latest | _] = rollouts) do
+    rollout_summaries = Enum.map(rollouts, &rollout_summary/1)
+
+    %{
+      issue_identifier: issue_identifier,
+      issue_id: nil,
+      title: nil,
+      url: nil,
+      status: "ended",
+      workspace: %{path: latest.cwd, host: nil, branch: nil},
+      pull_request: nil,
+      checks: nil,
+      attempts: %{restart_count: nil, current_retry_attempt: nil},
+      running: nil,
+      retry: nil,
+      logs: %{codex_session_logs: rollout_log_paths(rollouts)},
+      recent_events: [],
+      timeline: [],
+      conversation: [],
+      debug: nil,
+      last_error: nil,
+      tracked: %{},
+      rollouts: rollout_summaries,
+      current_rollout: List.first(rollout_summaries)
+    }
+  end
+
+  defp rollout_summary(entry) do
+    %{
+      session_id: entry.session_id,
+      path: entry.path,
+      cwd: entry.cwd,
+      started_at: format_iso(entry.started_at),
+      model: entry.model
+    }
+  end
+
+  defp rollout_log_paths(rollouts) do
+    rollouts
+    |> Enum.map(fn entry ->
+      %{
+        label: entry.session_id || Path.basename(entry.path),
+        path: entry.path,
+        url: nil
+      }
+    end)
+  end
+
+  defp format_iso(nil), do: nil
+  defp format_iso(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
 
   defp issue_id_from_entries(running, retry),
     do: (running && running.issue_id) || (retry && retry.issue_id)

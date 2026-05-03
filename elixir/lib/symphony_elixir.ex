@@ -34,6 +34,7 @@ defmodule SymphonyElixir.Application do
       {Task.Supervisor, name: SymphonyElixir.TaskSupervisor},
       SymphonyElixir.WorkflowStore,
       SymphonyElixir.Orchestrator,
+      SymphonyElixir.Codex.RolloutIndex,
       SymphonyElixir.HttpServer,
       SymphonyElixir.StatusDashboard
     ]
