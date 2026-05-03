@@ -30,4 +30,18 @@ defmodule SymphonyElixirWeb.StaticAssets do
       :error -> :error
     end
   end
+
+  @spec path(String.t()) :: String.t()
+  def path(path) when is_binary(path) do
+    case fetch(path) do
+      {:ok, _content_type, body} -> path <> "?v=" <> version(body)
+      :error -> path
+    end
+  end
+
+  defp version(body) do
+    :crypto.hash(:sha256, body)
+    |> Base.url_encode64(padding: false)
+    |> binary_part(0, 12)
+  end
 end

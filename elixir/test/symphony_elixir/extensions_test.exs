@@ -2191,10 +2191,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
     html = html_response(get(build_conn(), "/"), 200)
-    assert html =~ "/dashboard.css"
-    assert html =~ "/vendor/phoenix_html/phoenix_html.js"
-    assert html =~ "/vendor/phoenix/phoenix.js"
-    assert html =~ "/vendor/phoenix_live_view/phoenix_live_view.js"
+    assert html =~ ~r"/dashboard\.css\?v=[A-Za-z0-9_-]+"
+    assert html =~ ~r"/vendor/phoenix_html/phoenix_html\.js\?v=[A-Za-z0-9_-]+"
+    assert html =~ ~r"/vendor/phoenix/phoenix\.js\?v=[A-Za-z0-9_-]+"
+    assert html =~ ~r"/vendor/phoenix_live_view/phoenix_live_view\.js\?v=[A-Za-z0-9_-]+"
     refute html =~ "/assets/app.js"
     refute html =~ "<style>"
 
@@ -2203,6 +2203,9 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert dashboard_css =~ ".status-badge-live"
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-live"
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-offline"
+
+    versioned_dashboard_css = response(get(build_conn(), "/dashboard.css?v=cache-busted"), 200)
+    assert versioned_dashboard_css == dashboard_css
 
     phoenix_html_js = response(get(build_conn(), "/vendor/phoenix_html/phoenix_html.js"), 200)
     assert phoenix_html_js =~ "phoenix.link.click"
