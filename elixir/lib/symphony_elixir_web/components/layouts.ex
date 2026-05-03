@@ -80,6 +80,14 @@ defmodule SymphonyElixirWeb.Layouts do
                     this.el.scrollTop = this.el.scrollHeight;
                   }
                 }
+              },
+              PreserveDetails: {
+                beforeUpdate: function () {
+                  this.wasOpen = this.el.open;
+                },
+                updated: function () {
+                  this.el.open = this.wasOpen === true;
+                }
               }
             };
 

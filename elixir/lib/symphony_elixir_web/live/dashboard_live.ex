@@ -333,7 +333,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <% end %>
             </section>
 
-            <details class="system-debug">
+            <details id="system-debug" class="system-debug" phx-hook="PreserveDetails">
               <summary>System debug</summary>
               <div class="system-debug-body">
                 <h4 class="page-section-title">Workflow</h4>
