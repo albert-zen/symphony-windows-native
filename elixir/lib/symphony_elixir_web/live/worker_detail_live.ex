@@ -299,31 +299,35 @@ defmodule SymphonyElixirWeb.WorkerDetailLive do
         </ol>
       </div>
 
-      <%= if @detail.running do %>
-        <.form for={%{}} as={:steer} phx-submit="steer" class="composer-form">
-          <input type="hidden" name="steer[session_id]" value={session_id_or_empty(@detail)} />
-          <%= if @steer_auth_required and @steer_token_configured do %>
-            <input
-              type="password"
-              name="steer[operator_token]"
-              class="steer-token"
-              placeholder="Operator token"
-              autocomplete="off"
-            />
-          <% end %>
-          <div class="composer-row">
-            <textarea
-              name="steer[message]"
-              class="composer-input"
-              rows="2"
-              placeholder="Steer the agent…"
-              disabled={steer_locked?(@steer_auth_required, @steer_token_configured)}
-            ></textarea>
-            <button type="submit" disabled={steer_locked?(@steer_auth_required, @steer_token_configured)}>Send</button>
-          </div>
-        </.form>
-      <% else %>
-        <p class="composer-disabled">Worker is not running — steering is disabled.</p>
+      <%= cond do %>
+        <% @steer_auth_required and not @steer_token_configured -> %>
+          <p class="composer-disabled">Steering is locked — this dashboard is exposed without an operator token.</p>
+
+        <% @detail.running -> %>
+          <.form for={%{}} as={:steer} phx-submit="steer" class="composer-form">
+            <input type="hidden" name="steer[session_id]" value={session_id_or_empty(@detail)} />
+            <%= if @steer_auth_required and @steer_token_configured do %>
+              <input
+                type="password"
+                name="steer[operator_token]"
+                class="steer-token"
+                placeholder="Operator token"
+                autocomplete="off"
+              />
+            <% end %>
+            <div class="composer-row">
+              <textarea
+                name="steer[message]"
+                class="composer-input"
+                rows="2"
+                placeholder="Steer the agent…"
+              ></textarea>
+              <button type="submit">Send</button>
+            </div>
+          </.form>
+
+        <% true -> %>
+          <p class="composer-disabled">Worker is not running — steering is disabled.</p>
       <% end %>
     </div>
     """
@@ -686,9 +690,6 @@ defmodule SymphonyElixirWeb.WorkerDetailLive do
 
   defp non_blank_binary?(value) when is_binary(value), do: String.trim(value) != ""
   defp non_blank_binary?(_), do: false
-
-  defp steer_locked?(true, false), do: true
-  defp steer_locked?(_required, _configured), do: false
 
   defp steer_error_message(:blank_message), do: "Steer message cannot be blank."
   defp steer_error_message(:worker_not_running), do: "Worker is no longer running."
