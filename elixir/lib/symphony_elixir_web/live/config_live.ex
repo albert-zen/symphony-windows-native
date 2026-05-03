@@ -128,6 +128,15 @@ defmodule SymphonyElixirWeb.ConfigLive do
                 </div>
               </.form>
 
+              <section class="config-apply-note">
+                <h3 class="page-section-title">Apply behavior</h3>
+                <ul>
+                  <li>Apply validates the whole file, writes a backup, updates WORKFLOW.md, and reloads WorkflowStore immediately.</li>
+                  <li>Changes affect future polls and future worker runs; active workers are blocked from mid-run config changes.</li>
+                  <li>Server listener and operator auth changes may still require a runtime restart; preview the diff to see exact notes.</li>
+                </ul>
+              </section>
+
               <%= if @preview do %>
                 <section class="config-diff-preview">
                   <div class="section-header">
@@ -141,6 +150,22 @@ defmodule SymphonyElixirWeb.ConfigLive do
                   <%= for warning <- @preview.warnings do %>
                     <p class="config-warning"><%= warning %></p>
                   <% end %>
+                  <section class="config-apply-note">
+                    <h4 class="page-section-title">Application notes</h4>
+                    <p><%= @preview.application_effects.workflow_store %></p>
+                    <p><%= @preview.application_effects.future_work %></p>
+                    <p><%= @preview.application_effects.active_workers %></p>
+                    <%= if @preview.application_effects.restart_required? do %>
+                      <p class="config-warning">Runtime restart recommended after Apply.</p>
+                      <ul>
+                        <%= for reason <- @preview.application_effects.restart_reasons do %>
+                          <li><%= reason %></li>
+                        <% end %>
+                      </ul>
+                    <% else %>
+                      <p>No runtime restart is expected for the proposed diff.</p>
+                    <% end %>
+                  </section>
                   <pre class="code-panel"><%= if @preview.diff == "", do: "No changes.", else: @preview.diff %></pre>
                 </section>
               <% end %>

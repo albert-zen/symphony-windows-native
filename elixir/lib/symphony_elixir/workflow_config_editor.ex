@@ -52,6 +52,7 @@ defmodule SymphonyElixir.WorkflowConfigEditor do
           proposed_hash: String.t(),
           changed_fields: [String.t()],
           warnings: [String.t()],
+          application_effects: map(),
           diff: String.t(),
           proposed_content: String.t()
         }
@@ -78,6 +79,7 @@ defmodule SymphonyElixir.WorkflowConfigEditor do
          proposed_hash: content_hash(proposed_content),
          changed_fields: [:full_workflow],
          warnings: [],
+         application_effects: application_effects(current, proposed_content),
          diff: diff(current, proposed_content),
          proposed_content: proposed_content
        }}
@@ -125,6 +127,7 @@ defmodule SymphonyElixir.WorkflowConfigEditor do
          proposed_hash: content_hash(proposed),
          changed_fields: changed_fields,
          warnings: warnings_for(changed_fields),
+         application_effects: application_effects(current, proposed),
          diff: diff(current, proposed),
          proposed_content: proposed
        }}
@@ -381,6 +384,51 @@ defmodule SymphonyElixir.WorkflowConfigEditor do
       {:error, reason} -> {:error, {:invalid_workflow, reason}}
     end
   end
+
+  defp application_effects(current_content, proposed_content) do
+    restart_reasons =
+      with {:ok, current_settings} <- parse_settings(current_content),
+           {:ok, proposed_settings} <- parse_settings(proposed_content) do
+        restart_reasons(current_settings, proposed_settings)
+      else
+        {:error, _reason} -> []
+      end
+
+    %{
+      workflow_store: "Reloaded immediately after Apply.",
+      future_work: "Polling, dispatch, prompt, tracker, Codex, worker, and workspace settings affect future polls and future worker runs.",
+      active_workers: "Apply is blocked while workers are active; already-running worker sessions do not receive mid-run prompt/config changes.",
+      restart_required?: restart_reasons != [],
+      restart_reasons: restart_reasons
+    }
+  end
+
+  defp parse_settings(content) do
+    case Workflow.parse_content(content) do
+      {:ok, workflow} -> Schema.parse(workflow.config)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp restart_reasons(current, proposed) do
+    []
+    |> maybe_add_restart_reason(
+      current.server.host != proposed.server.host or current.server.port != proposed.server.port,
+      "HTTP server host/port changes require a runtime restart to rebind the listener."
+    )
+    |> maybe_add_restart_reason(
+      current.observability.steer_token != proposed.observability.steer_token,
+      "Operator steer token changes require a runtime restart because endpoint auth is configured at server start."
+    )
+    |> maybe_add_restart_reason(
+      current.workspace.startup_cleanup_ttl_ms != proposed.workspace.startup_cleanup_ttl_ms,
+      "Startup cleanup TTL changes apply to the next startup cleanup run; restart when you want that cleanup policy applied immediately."
+    )
+    |> Enum.reverse()
+  end
+
+  defp maybe_add_restart_reason(reasons, true, reason), do: [reason | reasons]
+  defp maybe_add_restart_reason(reasons, false, _reason), do: reasons
 
   defp ensure_no_active_workers(count, changed_fields) when is_integer(count) and count > 0 and changed_fields != [],
     do: {:error, {:active_workers, count}}

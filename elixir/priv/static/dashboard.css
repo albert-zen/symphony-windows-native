@@ -554,6 +554,26 @@ pre,
   border-top: 1px solid var(--line);
 }
 
+.config-apply-note {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.75rem;
+  border: 1px solid #c7d2fe;
+  border-radius: 8px;
+  background: #f6f7ff;
+  color: var(--ink);
+  font-size: 0.86rem;
+}
+
+.config-apply-note p,
+.config-apply-note ul {
+  margin: 0;
+}
+
+.config-apply-note ul {
+  padding-left: 1.1rem;
+}
+
 .config-warning {
   margin: 0;
   padding: 0.65rem 0.75rem;

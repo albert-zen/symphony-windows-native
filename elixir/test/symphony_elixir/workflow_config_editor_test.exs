@@ -57,6 +57,8 @@ defmodule SymphonyElixir.WorkflowConfigEditorTest do
     assert preview.changed_fields == [:full_workflow]
     assert preview.diff =~ "-  max_concurrent_agents: 10"
     assert preview.diff =~ "+  max_concurrent_agents: 4"
+    assert preview.application_effects.restart_required? == false
+    assert preview.application_effects.restart_reasons == []
 
     assert {:ok, applied} = WorkflowConfigEditor.apply_content(proposed)
     assert File.exists?(applied.backup_path)
@@ -75,6 +77,27 @@ defmodule SymphonyElixir.WorkflowConfigEditorTest do
 
     assert message =~ "max_concurrent_agents"
     assert File.read!(workflow_path) == current
+  end
+
+  test "previews restart requirements for endpoint-bound workflow edits" do
+    workflow_path = Workflow.workflow_file_path()
+    write_workflow_file!(workflow_path, server_port: 4011)
+
+    workflow_path
+    |> File.read!()
+    |> String.replace("render_interval_ms: 16", "render_interval_ms: 16\n  steer_token: 'old-token'")
+    |> then(&File.write!(workflow_path, &1))
+
+    proposed =
+      workflow_path
+      |> File.read!()
+      |> String.replace("port: 4011", "port: 4012")
+      |> String.replace("steer_token: 'old-token'", "steer_token: 'new-token'")
+
+    assert {:ok, preview} = WorkflowConfigEditor.preview_content(proposed)
+    assert preview.application_effects.restart_required? == true
+    assert Enum.any?(preview.application_effects.restart_reasons, &String.contains?(&1, "host/port"))
+    assert Enum.any?(preview.application_effects.restart_reasons, &String.contains?(&1, "steer token"))
   end
 
   test "inserts missing safe fields without rewriting the prompt body" do

@@ -3171,6 +3171,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ Workflow.workflow_file_path()
     assert html =~ "Workflow file"
     assert html =~ "Workflow.md"
+    assert html =~ "Apply behavior"
+    assert html =~ "reloads WorkflowStore immediately"
     assert html =~ "Tracker"
     assert html =~ "API key"
     assert html =~ "configured"
@@ -3220,6 +3222,8 @@ defmodule SymphonyElixir.ExtensionsTest do
       |> render_submit()
 
     assert html =~ "Diff preview"
+    assert html =~ "Application notes"
+    assert html =~ "No runtime restart is expected"
     assert html =~ "+  max_concurrent_agents: 4"
     assert html =~ "+  interval_ms: 7500"
     assert html =~ "+  refresh_ms: 2500"
