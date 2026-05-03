@@ -71,26 +71,21 @@ defmodule SymphonyElixirWeb.ConfigLive do
   def handle_event("select_workflow", %{"workflow_path" => %{"path" => path}}, socket) do
     active_workers_count = active_workers_count()
 
-    case WorkflowConfigEditor.switch_workflow_path(path, active_workers_count: active_workers_count) do
-      {:ok, selected} ->
-        projection = WorkflowConfigProjection.current()
+    select_workflow_path(socket, path, active_workers_count)
+  end
 
-        {:noreply,
-         socket
-         |> assign(:projection, projection)
-         |> assign(:workflow_content, workflow_content())
-         |> assign(:workflow_path_input, projection.workflow.path)
-         |> assign(:workflow_candidates, WorkflowConfigEditor.workflow_candidates())
-         |> assign(:preview, nil)
-         |> assign(:active_workers_count, active_workers_count())
-         |> put_flash(:info, "Workflow switched to #{selected.path}. Managed reload will use this path; manual restarts must pass it explicitly.")}
+  def handle_event("browse_workflow_file", _params, socket) do
+    active_workers_count = active_workers_count()
+
+    case browse_workflow_file(socket.assigns.projection.workflow.path) do
+      {:ok, path} ->
+        select_workflow_path(socket, path, active_workers_count)
+
+      :cancel ->
+        {:noreply, put_flash(socket, :info, "Workflow file selection cancelled.")}
 
       {:error, reason} ->
-        {:noreply,
-         socket
-         |> assign(:workflow_path_input, path)
-         |> assign(:active_workers_count, active_workers_count)
-         |> put_flash(:error, editor_error_message(reason))}
+        {:noreply, put_flash(socket, :error, editor_error_message(reason))}
     end
   end
 
@@ -123,10 +118,6 @@ defmodule SymphonyElixirWeb.ConfigLive do
           <%= if @projection.config do %>
             <section class="panel-shell config-editor-panel">
               <div class="section-header config-editor-header">
-                <div>
-                  <h2 class="page-section-title">Workflow.md</h2>
-                  <p class="section-copy detail-path"><%= @projection.workflow.path %></p>
-                </div>
                 <.form for={%{}} as={:workflow_path} id="workflow-path-picker" phx-submit="select_workflow" class="workflow-path-picker">
                   <label>
                     <span>Workflow file</span>
@@ -138,7 +129,7 @@ defmodule SymphonyElixirWeb.ConfigLive do
                     <% end %>
                   </datalist>
                   <button type="submit" class="secondary">Use file</button>
-                  <button type="button" class="secondary" phx-click="reveal_workflow_file">Reveal in Explorer</button>
+                  <button type="button" class="secondary" phx-click="browse_workflow_file">Choose file...</button>
                 </.form>
                 <span class={active_workers_badge_class(@active_workers_count)}>
                   <%= active_workers_label(@active_workers_count) %>
@@ -267,6 +258,30 @@ defmodule SymphonyElixirWeb.ConfigLive do
     """
   end
 
+  defp select_workflow_path(socket, path, active_workers_count) do
+    case WorkflowConfigEditor.switch_workflow_path(path, active_workers_count: active_workers_count) do
+      {:ok, selected} ->
+        projection = WorkflowConfigProjection.current()
+
+        {:noreply,
+         socket
+         |> assign(:projection, projection)
+         |> assign(:workflow_content, workflow_content())
+         |> assign(:workflow_path_input, projection.workflow.path)
+         |> assign(:workflow_candidates, WorkflowConfigEditor.workflow_candidates())
+         |> assign(:preview, nil)
+         |> assign(:active_workers_count, active_workers_count())
+         |> put_flash(:info, "Workflow switched to #{selected.path}. Managed reload will use this path; manual restarts must pass it explicitly.")}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:workflow_path_input, path)
+         |> assign(:active_workers_count, active_workers_count)
+         |> put_flash(:error, editor_error_message(reason))}
+    end
+  end
+
   defp config_status_class(:ok), do: "state-badge state-badge-active"
   defp config_status_class(:error), do: "state-badge state-badge-danger"
 
@@ -313,6 +328,13 @@ defmodule SymphonyElixirWeb.ConfigLive do
     end
   end
 
+  defp browse_workflow_file(path) do
+    case Application.get_env(:symphony_elixir, :workflow_config_browse_fun) do
+      browse_fun when is_function(browse_fun, 1) -> browse_fun.(path)
+      _ -> WorkflowConfigEditor.browse_workflow_path(path)
+    end
+  end
+
   defp active_workers_badge_class(0), do: "state-badge"
   defp active_workers_badge_class(_count), do: "state-badge state-badge-warning"
 
@@ -337,8 +359,10 @@ defmodule SymphonyElixirWeb.ConfigLive do
   defp editor_error_message(:workflow_path_not_markdown), do: "Workflow path must point to a .md file."
   defp editor_error_message({:missing_workflow_file, path, reason}), do: "Workflow file is unavailable: #{path} (#{reason})."
   defp editor_error_message(:explorer_unavailable), do: "Explorer is unavailable on this machine."
+  defp editor_error_message(:powershell_unavailable), do: "PowerShell is unavailable on this machine."
   defp editor_error_message({:unsupported_os, os}), do: "Explorer reveal is only supported on Windows; current OS is #{inspect(os)}."
   defp editor_error_message({:explorer_failed, status, output}), do: "Explorer failed with status #{status}: #{output}."
+  defp editor_error_message({:file_dialog_failed, status, output}), do: "Workflow file picker failed with status #{status}: #{output}."
   defp editor_error_message({:backup_failed, reason}), do: "Workflow backup failed: #{inspect(reason)}."
   defp editor_error_message({:write_failed, reason}), do: "Workflow write failed: #{inspect(reason)}."
   defp editor_error_message(reason), do: "Workflow edit failed: #{inspect(reason)}."

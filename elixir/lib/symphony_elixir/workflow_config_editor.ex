@@ -143,7 +143,67 @@ defmodule SymphonyElixir.WorkflowConfigEditor do
     end
   end
 
+  @spec browse_workflow_path(Path.t(), keyword()) :: {:ok, Path.t()} | :cancel | {:error, term()}
+  def browse_workflow_path(current_path, opts \\ []) when is_binary(current_path) do
+    deps = Keyword.get(opts, :deps, %{})
+    os_type = Map.get(deps, :os_type, &:os.type/0).()
+    find_executable = Map.get(deps, :find_executable, &System.find_executable/1)
+    cmd = Map.get(deps, :cmd, &System.cmd/3)
+
+    case {os_type, find_executable.("powershell.exe")} do
+      {{:win32, _}, powershell} when is_binary(powershell) ->
+        script = file_dialog_script(current_path)
+
+        powershell
+        |> run_file_dialog(cmd, script)
+        |> file_dialog_result()
+
+      {{:win32, _}, _} ->
+        {:error, :powershell_unavailable}
+
+      {other, _} ->
+        {:error, {:unsupported_os, other}}
+    end
+  end
+
   defp windows_native_path(path), do: String.replace(path, "/", "\\")
+
+  defp run_file_dialog(powershell, cmd, script) do
+    cmd.(powershell, ["-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-Command", script], stderr_to_stdout: true)
+  end
+
+  defp file_dialog_result({output, 0}) do
+    case String.trim(output) do
+      "" -> :cancel
+      path -> {:ok, path}
+    end
+  end
+
+  defp file_dialog_result({_output, 2}), do: :cancel
+  defp file_dialog_result({output, status}), do: {:error, {:file_dialog_failed, status, output}}
+
+  defp file_dialog_script(current_path) do
+    initial_dir =
+      current_path
+      |> Path.expand()
+      |> Path.dirname()
+      |> windows_native_path()
+      |> String.replace("'", "''")
+
+    """
+    Add-Type -AssemblyName System.Windows.Forms
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    $dialog = New-Object System.Windows.Forms.OpenFileDialog
+    $dialog.Title = 'Select Symphony workflow file'
+    $dialog.Filter = 'Markdown workflow files (*.md)|*.md|All files (*.*)|*.*'
+    $dialog.InitialDirectory = '#{initial_dir}'
+    if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+      Write-Output $dialog.FileName
+      exit 0
+    }
+    exit 2
+    """
+  end
 
   @spec preview_content(String.t(), keyword()) :: {:ok, preview_result()} | {:error, term()}
   def preview_content(proposed_content, opts \\ []) when is_binary(proposed_content) do

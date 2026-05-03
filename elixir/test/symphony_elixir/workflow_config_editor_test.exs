@@ -195,6 +195,57 @@ defmodule SymphonyElixir.WorkflowConfigEditorTest do
              WorkflowConfigEditor.reveal_path(Workflow.workflow_file_path(), deps: deps)
   end
 
+  test "browses workflow paths through a Windows file dialog when available" do
+    workflow_path = Workflow.workflow_file_path()
+    selected_path = Path.join(Path.dirname(workflow_path), "WORKFLOW.selected.md")
+    parent = self()
+
+    deps = %{
+      os_type: fn -> {:win32, :nt} end,
+      find_executable: fn "powershell.exe" -> "powershell.exe" end,
+      cmd: fn executable, args, _opts ->
+        send(parent, {:file_dialog_called, executable, args})
+        {"#{selected_path}\n", 0}
+      end
+    }
+
+    assert {:ok, ^selected_path} = WorkflowConfigEditor.browse_workflow_path(workflow_path, deps: deps)
+    assert_received {:file_dialog_called, "powershell.exe", ["-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-Command", script]}
+    assert script =~ "OpenFileDialog"
+    assert script =~ "Markdown workflow files"
+  end
+
+  test "reports workflow file dialog cancellation and failures" do
+    workflow_path = Workflow.workflow_file_path()
+
+    deps = %{
+      os_type: fn -> {:unix, :linux} end,
+      find_executable: fn _name -> nil end,
+      cmd: fn _executable, _args, _opts -> {"", 0} end
+    }
+
+    assert {:error, {:unsupported_os, {:unix, :linux}}} =
+             WorkflowConfigEditor.browse_workflow_path(workflow_path, deps: deps)
+
+    deps = %{deps | os_type: fn -> {:win32, :nt} end}
+
+    assert {:error, :powershell_unavailable} =
+             WorkflowConfigEditor.browse_workflow_path(workflow_path, deps: deps)
+
+    deps = %{
+      deps
+      | find_executable: fn "powershell.exe" -> "powershell.exe" end,
+        cmd: fn _executable, _args, _opts -> {"", 2} end
+    }
+
+    assert :cancel = WorkflowConfigEditor.browse_workflow_path(workflow_path, deps: deps)
+
+    deps = %{deps | cmd: fn _executable, _args, _opts -> {"nope", 7} end}
+
+    assert {:error, {:file_dialog_failed, 7, "nope"}} =
+             WorkflowConfigEditor.browse_workflow_path(workflow_path, deps: deps)
+  end
+
   test "inserts missing safe fields without rewriting the prompt body" do
     workflow_path = Workflow.workflow_file_path()
 

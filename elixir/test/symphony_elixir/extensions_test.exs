@@ -3174,7 +3174,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Apply behavior"
     assert html =~ "reloads WorkflowStore immediately"
     assert html =~ "Use file"
-    assert html =~ "Reveal in Explorer"
+    assert html =~ "Choose file..."
+    refute html =~ "Reveal in Explorer"
     refute html =~ ~s(class="page-sidebar")
     assert html =~ "Tracker"
     assert html =~ "API key"
@@ -3265,16 +3266,16 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert String.downcase(Workflow.workflow_file_path()) == String.downcase(alternate_path)
   end
 
-  test "operator config liveview reveals the active workflow file through the editor header" do
-    workflow_path = Workflow.workflow_file_path()
-    parent = self()
+  test "operator config liveview chooses a workflow file and switches immediately" do
+    workflow_dir = Path.dirname(Workflow.workflow_file_path())
+    alternate_path = Path.join(workflow_dir, "WORKFLOW.config-live-browse.md")
+    write_workflow_file!(alternate_path, max_concurrent_agents: 8)
 
-    Application.put_env(:symphony_elixir, :workflow_config_reveal_fun, fn ^workflow_path ->
-      send(parent, {:workflow_revealed, workflow_path})
-      :ok
+    Application.put_env(:symphony_elixir, :workflow_config_browse_fun, fn _current_path ->
+      {:ok, alternate_path}
     end)
 
-    orchestrator_name = Module.concat(__MODULE__, :ConfigLiveRevealWorkflowOrchestrator)
+    orchestrator_name = Module.concat(__MODULE__, :ConfigLiveBrowseWorkflowOrchestrator)
 
     {:ok, _pid} =
       StaticOrchestrator.start_link(
@@ -3286,19 +3287,21 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     {:ok, view, _html} = live(build_conn(), "/config")
 
-    html = view |> element("button", "Reveal in Explorer") |> render_click()
+    html = view |> element("button", "Choose file...") |> render_click()
 
-    assert_received {:workflow_revealed, ^workflow_path}
-    assert html =~ "Opened Explorer for the active workflow file."
-    assert html =~ "Reveal in Explorer"
+    assert String.contains?(String.downcase(html), String.downcase(alternate_path))
+    assert html =~ "max_concurrent_agents: 8"
+    assert String.downcase(Workflow.workflow_file_path()) == String.downcase(alternate_path)
   end
 
-  test "operator config liveview reports workflow reveal failures without shelling out" do
-    Application.put_env(:symphony_elixir, :workflow_config_reveal_fun, fn _path ->
-      {:error, :explorer_unavailable}
+  test "operator config liveview reports workflow picker cancellation and failures" do
+    original_path = Workflow.workflow_file_path()
+
+    Application.put_env(:symphony_elixir, :workflow_config_browse_fun, fn _path ->
+      :cancel
     end)
 
-    orchestrator_name = Module.concat(__MODULE__, :ConfigLiveRevealWorkflowErrorOrchestrator)
+    orchestrator_name = Module.concat(__MODULE__, :ConfigLiveBrowseWorkflowErrorOrchestrator)
 
     {:ok, _pid} =
       StaticOrchestrator.start_link(
@@ -3310,28 +3313,19 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     {:ok, view, _html} = live(build_conn(), "/config")
 
-    html = view |> element("button", "Reveal in Explorer") |> render_click()
+    html = view |> element("button", "Choose file...") |> render_click()
 
-    assert html =~ "Explorer is unavailable on this machine."
-    assert html =~ "Reveal in Explorer"
+    assert html =~ "Workflow file selection cancelled."
+    assert Workflow.workflow_file_path() == original_path
 
-    Application.put_env(:symphony_elixir, :workflow_config_reveal_fun, fn _path ->
-      {:error, {:unsupported_os, {:unix, :linux}}}
+    Application.put_env(:symphony_elixir, :workflow_config_browse_fun, fn _path ->
+      {:error, {:file_dialog_failed, 7, "nope"}}
     end)
 
-    html = view |> element("button", "Reveal in Explorer") |> render_click()
+    html = view |> element("button", "Choose file...") |> render_click()
 
-    assert html =~ "Explorer reveal is only supported on Windows"
-    assert html =~ "Reveal in Explorer"
-
-    Application.put_env(:symphony_elixir, :workflow_config_reveal_fun, fn _path ->
-      {:error, {:explorer_failed, 7, "nope"}}
-    end)
-
-    html = view |> element("button", "Reveal in Explorer") |> render_click()
-
-    assert html =~ "Explorer failed with status 7: nope."
-    assert html =~ "Reveal in Explorer"
+    assert html =~ "Workflow file picker failed with status 7: nope."
+    assert Workflow.workflow_file_path() == original_path
   end
 
   test "operator config liveview rejects invalid workflow file selections" do

@@ -79,6 +79,7 @@ defmodule SymphonyElixir.TestSupport do
           Application.delete_env(:symphony_elixir, :reload_now_fun)
           Application.delete_env(:symphony_elixir, :reload_id_fun)
           Application.delete_env(:symphony_elixir, :workflow_config_reveal_fun)
+          Application.delete_env(:symphony_elixir, :workflow_config_browse_fun)
           File.rm_rf(workflow_root)
         end)
 
