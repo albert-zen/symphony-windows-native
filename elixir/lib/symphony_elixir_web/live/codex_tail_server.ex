@@ -87,6 +87,7 @@ defmodule SymphonyElixirWeb.CodexTailServer do
     PubSub.unsubscribe(pubsub, topic(rollout_id))
   end
 
+  @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(opts) do
     %{
       id: {__MODULE__, Keyword.fetch!(opts, :rollout_id)},
