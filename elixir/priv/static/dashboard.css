@@ -476,11 +476,12 @@ pre,
 
 .workflow-path-picker {
   display: grid;
-  grid-template-columns: minmax(18rem, 1fr) auto auto;
+  grid-template-columns: minmax(16rem, 1fr) max-content max-content;
   gap: 0.55rem;
   align-items: end;
   flex: 1 1 34rem;
-  min-width: min(100%, 32rem);
+  min-width: 0;
+  max-width: 100%;
 }
 
 .workflow-path-picker label {
@@ -507,6 +508,13 @@ pre,
   padding: 0.58rem 0.65rem;
   text-transform: none;
   box-shadow: inset 0 1px 1px rgba(15, 23, 42, 0.03);
+}
+
+.workflow-path-picker button {
+  align-self: end;
+  min-height: 2.55rem;
+  padding: 0.58rem 0.88rem;
+  white-space: nowrap;
 }
 
 .config-meta-strip {
@@ -2085,6 +2093,14 @@ pre,
 @media (max-width: 720px) {
   .dashboard-header {
     flex-wrap: wrap;
+  }
+
+  .workflow-path-picker {
+    grid-template-columns: 1fr;
+  }
+
+  .workflow-path-picker button {
+    justify-self: start;
   }
 
   .header-reload {
