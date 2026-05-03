@@ -3313,6 +3313,36 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert File.read!(workflow_path) =~ "max_concurrent_agents: 2"
   end
 
+  test "operator config liveview previews restart notes for endpoint-bound edits" do
+    workflow_path = Workflow.workflow_file_path()
+    write_workflow_file!(workflow_path, server_port: 4011)
+
+    orchestrator_name = Module.concat(__MODULE__, :ConfigLiveRestartNotesOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: %{running: [], retrying: [], codex_totals: %{}, rate_limits: nil}
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 5)
+
+    {:ok, view, _html} = live(build_conn(), "/config")
+
+    proposed =
+      workflow_path
+      |> File.read!()
+      |> String.replace("port: 4011", "port: 4012")
+
+    html =
+      view
+      |> form("#workflow-config-editor", workflow: %{"content" => proposed})
+      |> render_submit()
+
+    assert html =~ "Runtime restart recommended after Apply."
+    assert html =~ "HTTP server host/port changes require a runtime restart"
+  end
+
   test "workflow config projection reports redacted settings and prompt metadata" do
     long_prompt =
       "Use the workflow. OPENAI_API_KEY=sk-live-secret\n" <>
