@@ -3147,6 +3147,114 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "snapshot_unavailable"
   end
 
+  test "operator config liveview renders active workflow without leaking secrets" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: "sk-live-secret",
+      prompt: "Use the workflow. OPENAI_API_KEY=sk-live-secret"
+    )
+
+    start_test_endpoint(
+      orchestrator: Module.concat(__MODULE__, :ConfigLiveOrchestrator),
+      snapshot_timeout_ms: 50
+    )
+
+    {:ok, _view, html} = live(build_conn(), "/config")
+
+    assert html =~ "Operator Config"
+    assert html =~ "Read-only workflow view"
+    assert html =~ Workflow.workflow_file_path()
+    assert html =~ "Workflow file"
+    assert html =~ "Tracker"
+    assert html =~ "API key"
+    assert html =~ "configured"
+    assert html =~ "Dispatch"
+    assert html =~ "Todo"
+    assert html =~ "Prompt body"
+    assert html =~ "OPENAI_API_KEY=[REDACTED]"
+    refute html =~ "sk-live-secret"
+  end
+
+  test "workflow config projection reports redacted settings and prompt metadata" do
+    long_prompt =
+      "Use the workflow. OPENAI_API_KEY=sk-live-secret\n" <>
+        String.duplicate("Keep config visible without leaking secrets. ", 12)
+
+    previous_steer_token = System.get_env("SYMPHONY_STEER_TOKEN")
+    System.put_env("SYMPHONY_STEER_TOKEN", "steer-secret")
+    on_exit(fn -> restore_env("SYMPHONY_STEER_TOKEN", previous_steer_token) end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: "sk-live-secret",
+      tracker_assignee: "operator@example.test",
+      tracker_labels: ["Ops", "ops", "Support"],
+      max_concurrent_agents_by_state: %{"Todo" => 5},
+      worker_max_concurrent_agents_per_host: 3,
+      codex_turn_sandbox_policy: %{"type" => "workspaceWrite", "token" => "sk-live-secret"},
+      hook_after_create: "powershell setup.ps1",
+      observability_refresh_ms: 5_000,
+      prompt: long_prompt
+    )
+
+    projection = SymphonyElixirWeb.WorkflowConfigProjection.current()
+
+    assert projection.status == :ok
+    assert projection.workflow.exists? == true
+    assert projection.workflow.hash =~ ~r/^[a-f0-9]{12}$/
+    assert projection.config.tracker.api_key == "configured"
+    assert projection.config.tracker.assignee == "configured"
+    assert projection.config.tracker.labels == ["ops", "support"]
+    assert projection.config.concurrency.per_host == 3
+    assert projection.config.concurrency.by_state == %{"todo" => 5}
+    assert projection.config.hooks.after_create == "configured"
+    assert projection.config.observability.refresh_ms == 5_000
+    assert projection.config.observability.steer_token == "configured"
+    assert projection.config.codex.turn_sandbox_policy["token"] == "[REDACTED]"
+    assert projection.prompt.lines == 2
+    assert projection.prompt.preview =~ "OPENAI_API_KEY=[REDACTED]"
+    assert String.ends_with?(projection.prompt.preview, "...")
+
+    rendered = inspect(projection, limit: :infinity)
+    refute rendered =~ "sk-live-secret"
+    refute rendered =~ "steer-secret"
+  end
+
+  test "operator config liveview renders missing workflow errors" do
+    workflow_store_pid = Process.whereis(WorkflowStore)
+    missing_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "MISSING_CONFIG_WORKFLOW.md")
+
+    if is_pid(workflow_store_pid) do
+      :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, WorkflowStore)
+    end
+
+    Workflow.set_workflow_file_path(missing_path)
+
+    on_exit(fn ->
+      Workflow.clear_workflow_file_path()
+
+      if is_pid(workflow_store_pid) and is_nil(Process.whereis(WorkflowStore)) do
+        case Supervisor.restart_child(SymphonyElixir.Supervisor, WorkflowStore) do
+          {:ok, _pid} -> :ok
+          {:ok, _pid, _info} -> :ok
+          {:error, :running} -> :ok
+          {:error, :not_found} -> :ok
+          {:error, _reason} -> :ok
+        end
+      end
+    end)
+
+    start_test_endpoint(
+      orchestrator: Module.concat(__MODULE__, :ConfigLiveMissingWorkflowOrchestrator),
+      snapshot_timeout_ms: 50
+    )
+
+    {:ok, _view, html} = live(build_conn(), "/config")
+
+    assert html =~ "Operator Config"
+    assert html =~ "Workflow unavailable"
+    assert html =~ "missing"
+    assert html =~ missing_path
+  end
+
   test "http server serves embedded assets, accepts form posts, and rejects invalid hosts" do
     spec = HttpServer.child_spec(port: 0)
     assert spec.id == HttpServer
