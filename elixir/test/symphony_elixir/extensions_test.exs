@@ -3289,6 +3289,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     html = view |> element("button", "Reveal in Explorer") |> render_click()
 
     assert_received {:workflow_revealed, ^workflow_path}
+    assert html =~ "Opened Explorer for the active workflow file."
     assert html =~ "Reveal in Explorer"
   end
 
@@ -3311,6 +3312,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     html = view |> element("button", "Reveal in Explorer") |> render_click()
 
+    assert html =~ "Explorer is unavailable on this machine."
     assert html =~ "Reveal in Explorer"
 
     Application.put_env(:symphony_elixir, :workflow_config_reveal_fun, fn _path ->
@@ -3319,6 +3321,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     html = view |> element("button", "Reveal in Explorer") |> render_click()
 
+    assert html =~ "Explorer reveal is only supported on Windows"
     assert html =~ "Reveal in Explorer"
 
     Application.put_env(:symphony_elixir, :workflow_config_reveal_fun, fn _path ->
@@ -3327,6 +3330,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     html = view |> element("button", "Reveal in Explorer") |> render_click()
 
+    assert html =~ "Explorer failed with status 7: nope."
     assert html =~ "Reveal in Explorer"
   end
 

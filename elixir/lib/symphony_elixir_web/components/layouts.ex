@@ -113,6 +113,14 @@ defmodule SymphonyElixirWeb.Layouts do
   def app(assigns) do
     ~H"""
     <main class="app-shell">
+      <div class="flash-stack" aria-live="polite">
+        <p :if={Phoenix.Flash.get(@flash, :info)} class="flash flash-info">
+          <%= Phoenix.Flash.get(@flash, :info) %>
+        </p>
+        <p :if={Phoenix.Flash.get(@flash, :error)} class="flash flash-error">
+          <%= Phoenix.Flash.get(@flash, :error) %>
+        </p>
+      </div>
       {@inner_content}
     </main>
     """

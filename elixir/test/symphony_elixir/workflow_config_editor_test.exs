@@ -161,7 +161,7 @@ defmodule SymphonyElixir.WorkflowConfigEditorTest do
 
     assert :ok = WorkflowConfigEditor.reveal_path(workflow_path, deps: deps)
     assert_received {:explorer_called, "explorer.exe", [select_arg]}
-    assert select_arg == "/select,#{Path.expand(workflow_path)}"
+    assert select_arg == "/select,#{String.replace(Path.expand(workflow_path), "/", "\\")}"
   end
 
   test "reports Explorer reveal failures" do

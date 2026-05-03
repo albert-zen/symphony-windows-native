@@ -119,14 +119,15 @@ defmodule SymphonyElixir.WorkflowConfigEditor do
     find_executable = Map.get(deps, :find_executable, &System.find_executable/1)
     cmd = Map.get(deps, :cmd, &System.cmd/3)
     expanded_path = Path.expand(path)
+    native_path = windows_native_path(expanded_path)
 
     case {os_type, find_executable.("explorer.exe")} do
       {{:win32, _}, explorer} when is_binary(explorer) ->
         args =
           if File.exists?(expanded_path) do
-            ["/select,#{expanded_path}"]
+            ["/select,#{native_path}"]
           else
-            [existing_parent(expanded_path)]
+            [windows_native_path(existing_parent(expanded_path))]
           end
 
         case cmd.(explorer, args, stderr_to_stdout: true) do
@@ -141,6 +142,8 @@ defmodule SymphonyElixir.WorkflowConfigEditor do
         {:error, {:unsupported_os, other}}
     end
   end
+
+  defp windows_native_path(path), do: String.replace(path, "/", "\\")
 
   @spec preview_content(String.t(), keyword()) :: {:ok, preview_result()} | {:error, term()}
   def preview_content(proposed_content, opts \\ []) when is_binary(proposed_content) do
