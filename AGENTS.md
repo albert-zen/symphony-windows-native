@@ -31,10 +31,12 @@ Useful commands:
 
 ```powershell
 cd elixir
-make all
-make windows-native-test
-make.cmd all
-make.cmd windows-native-test
+$log = Join-Path $env:TEMP ("symphony-make-all-" + [guid]::NewGuid() + ".log")
+make all > $log 2>&1; $code = $LASTEXITCODE; Get-Content $log -Tail 120; exit $code
+$log = Join-Path $env:TEMP ("symphony-windows-native-test-" + [guid]::NewGuid() + ".log")
+make.cmd windows-native-test > $log 2>&1; $code = $LASTEXITCODE; Get-Content $log -Tail 120; exit $code
+$log = Join-Path $env:TEMP ("symphony-coverage-" + [guid]::NewGuid() + ".log")
+mise exec -- mix test --cover > $log 2>&1; $code = $LASTEXITCODE; Select-String -Path $log -Pattern "Coverage|Threshold|failures|Generated HTML coverage results"; Get-Content $log -Tail 80; exit $code
 mise exec -- mix symphony.preflight.windows .\WORKFLOW.optimization.windows.md
 ```
 
@@ -42,16 +44,22 @@ mise exec -- mix symphony.preflight.windows .\WORKFLOW.optimization.windows.md
 
 - Run focused checks while iterating, then record exact commands and outcomes in
   the PR body and Linear `## Codex Workpad`.
-- In Codex App sessions, run broad or coverage-heavy gates such as
-  `mix test --cover` with stdout/stderr redirected to a log file, then inspect
-  the tail and searched failure/coverage lines. Avoid bare long-running coverage
-  commands because the app tool can keep waiting after the useful result has
-  already been written.
 - `make all` is the broad local gate when the environment supports it.
 - `make windows-native-test` is required for Windows shell, workspace/config,
   workflow, or path-handling changes.
 - Run `mix format` for touched Elixir files and `mix specs.check` when public
   `lib/` functions are added or changed.
+- In Codex App sessions, run broad or coverage-heavy gates such as
+  `mix test --cover` with stdout/stderr redirected to a log file. If the tool
+  call times out or is interrupted, inspect the log for final result markers
+  such as `Coverage`, `Threshold`, `failures`, and
+  `Generated HTML coverage results`, then check for residual `mix`, `beam`,
+  `erl`, `elixir`, or `mise` processes before retrying.
+- Do not repeatedly rerun ambiguous local broad gates. If the log lacks a final
+  result and no matching process remains, rerun at most once with a fresh log
+  path when a local result is required before pushing. Otherwise push and use
+  GitHub CI as the verification source, recording the command, log path, process
+  check, and CI handoff reason.
 - Do not skip, weaken, disable, or hide failures from format, lint, coverage,
   tests, CI, review-readiness, or PR-body checks to land unrelated work. Quality
   gate policy changes require a dedicated manager-owned issue, PR, and review.
