@@ -156,10 +156,13 @@ Write-Host "Terminal dashboard: $(if ($TerminalDashboard) { 'enabled' } else { "
 
 $metadata = [ordered]@{
   ProcessId = $PID
+  RuntimeProcessId = $null
+  RuntimeStartedAt = $null
   StartedAt = (Get-Date).ToUniversalTime().ToString("o")
   WorkflowPath = $WorkflowPath
   LogsRoot = $LogsRoot
   Port = $Port
+  RepoRoot = (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSCommandPath)))
   ScriptPath = $PSCommandPath
   Kind = "symphony-windows-native"
 }

@@ -40,6 +40,22 @@ defmodule SymphonyElixir.WindowsLifecycleScriptsTest do
     end
   end
 
+  test "stop script uses bounded process targeting safeguards" do
+    script = File.read!(script_path("stop-windows-native.ps1"))
+
+    assert script =~ "Get-NetTCPConnection"
+    assert script =~ "Test-SymphonyRuntimeProcess"
+    assert script =~ "Test-SymphonyWrapperProcess"
+    assert script =~ "Test-ProtectedProcess"
+    assert script =~ "csrss"
+    assert script =~ "lsass"
+    assert script =~ "start-windows-native.ps1"
+    assert script =~ "bin/symphony"
+    assert script =~ "bin\\symphony"
+    refute script =~ "function Stop-ProcessTree"
+    refute script =~ "Stop-ProcessTree -RootProcessId"
+  end
+
   test "cleanup removes only the requested issue workspace" do
     workspace_root =
       Path.join(
