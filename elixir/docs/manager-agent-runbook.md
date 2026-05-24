@@ -86,13 +86,13 @@ Examples:
 Workers are a good fit for bounded implementation tasks with a complete public
 spec, test intent, acceptance criteria, and no need to decide cross-system
 policy. If a manager-owned issue can be decomposed, create narrower worker-safe
-subtasks and keep the policy decision in the manager Workpad.
+subtasks and keep the policy decision in a manager note.
 
 Mark manager-owned work explicitly so it is not released accidentally:
 
 - Add the GitHub label `manager-owned` when it exists.
-- Record `Manager classification: manager-owned` in the Linear `## Codex
-  Workpad`.
+- Record `Manager classification: manager-owned` in Linear, preferably in a
+  manager note or the issue description.
 - Keep the issue in `Backlog` until a manager handles it or creates narrower
   worker-safe subtasks.
 - Do not move manager-owned issues to `Ready for Agent` merely to keep
@@ -104,19 +104,19 @@ Workers should not burn long sessions rediscovering orchestration failures. When
 a worker hits a blocker it cannot resolve within its issue scope, the desired
 handoff is:
 
-1. Update the single `## Codex Workpad` with the exact failure, command or
+1. Create a new `## Codex Worker Note` with the exact failure, command or
    subsystem, affected PR/check/log, local recovery attempted, and the next
    operator action needed.
-   For environment or pipeline blockers, the Workpad should also include
+   For environment or pipeline blockers, the worker note should also include
    capability/preflight evidence from
    `mix symphony.preflight.windows --capabilities-only --json <WORKFLOW>` or a
    manager-approved equivalent. The minimum fields are failed command,
    capability result, local recovery attempted, and manager action needed.
-2. Add a short Linear comment only when the Workpad is not enough to make the
+2. Add a short Linear problem comment only when the worker note is not enough to make the
    blocker visible to a manager scanning the board.
 3. Move the issue to `Blocked` when that state exists, then release any durable
    claim so another worker does not immediately reclaim it.
-4. Do not repeatedly retry a failing shared gate unless the Workpad records new
+4. Do not repeatedly retry a failing shared gate unless an agent note records new
    evidence that the root cause changed.
 
 The manager owns the next step after this handoff. The manager should classify
@@ -152,7 +152,7 @@ Run this loop until the operator deliberately pauses the flywheel.
      warnings into completed agent messages. Use
      `/api/v1/workers/<issue>/timeline` or debug events only for diagnosis.
 2. Review completed work first.
-   - Read the original human request, the GitHub issue, the Linear Workpad, the
+   - Read the original human request, the GitHub issue, the Linear worker/review notes, the
      PR diff, CI results, and review evidence.
    - Inspect `Agent Review` items through reviewer Symphony. Do not substitute
      green CI for reviewer judgment.
@@ -166,7 +166,7 @@ Run this loop until the operator deliberately pauses the flywheel.
      duplicate/canonical issue confusion.
    - If several workers hit the same class of blocker, pause release of related
      work and solve the shared system defect before increasing concurrency.
-   - Record the exact failure and next operator action in the Workpad.
+   - Record the exact failure and next operator action in a worker/review note.
    - Create or update one canonical GitHub issue labeled
      `symphony-optimization`, plus a Linear mirror, for system defects.
 4. Feed the next work.
@@ -207,7 +207,7 @@ Use this checklist before accepting a PR:
   describe system behavior beyond the active PR.
 
 When a PR fails this checklist, leave a specific GitHub PR review comment and
-update the Linear Workpad with the review outcome before moving the issue to
+create a `## Codex Review Note` with the review outcome before moving the issue to
 `Rework` or `Needs Human Context`. Do not leave it in `Agent Review` just
 because a branch exists.
 
@@ -215,7 +215,7 @@ because a branch exists.
 
 Blocked work is manager-owned until the root cause is understood.
 
-Start with the latest `## Codex Workpad`, then inspect the PR, CI logs, worker
+Start with the latest `## Codex Worker Note` and `## Codex Review Note`, then inspect the PR, CI logs, worker
 logs, dashboard state, and runtime logs. Ask these questions:
 
 - Did the worker finish but fail a quality gate?
@@ -242,7 +242,7 @@ Before creating a new system issue:
    `symphony-optimization` label.
 2. Search the Linear project for similar titles, GitHub links, and blocker text.
 3. If a canonical issue exists, add a comment with the new evidence and link the
-   affected PR, Workpad, or log excerpt.
+   affected PR, agent note, or log excerpt.
 4. If no canonical issue exists, create a GitHub issue labeled
    `symphony-optimization` with spec, testing intent, and acceptance criteria,
    then create the Linear mirror.
@@ -276,7 +276,7 @@ system capability. Do not move that issue to `Ready for Agent` while the
 dependency is active, unmerged, blocked, or merged-but-not-deployed when
 deployment matters.
 After the dependency is resolved, mark it with `[x]`, `resolved by`, `merged in`,
-or `deployed in`, then record the dependency resolution in the Workpad when
+or `deployed in`, then record the dependency resolution in a manager or worker note when
 releasing the issue.
 
 Before release, run the local dry-run guard against the shaped GitHub issue text
@@ -293,7 +293,7 @@ tripwire that prevents known dependency chains from being released as if they
 were independent work.
 
 After the worker claims the issue, avoid changing the task underneath it. If the
-intent changes, update the GitHub issue and Workpad, then decide whether to let
+intent changes, update the GitHub issue and add an agent note, then decide whether to let
 the current worker continue, move the issue to `Needs Human Context`, or return
 it to `Ready for Agent`.
 

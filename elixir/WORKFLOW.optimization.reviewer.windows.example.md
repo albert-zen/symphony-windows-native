@@ -82,16 +82,23 @@ Reviewer operating model:
 1. You may run commands and make temporary verification edits inside the reviewer workspace when
    that helps inspect behavior. Do not push reviewer edits, open a new implementation PR, or turn
    exploratory changes into implementation work.
-2. Read the Linear issue, the `## Codex Workpad`, linked GitHub issue or `## Agent Brief`,
-   linked PR, CI/check status, and PR diff.
+2. Read the Linear issue, all prior `## Codex Worker Note` and `## Codex Review Note`
+   comments, linked GitHub issue or `## Agent Brief`, linked PR, CI/check status, and PR diff.
 3. Review on two separate axes:
    - Standards Review: repo conventions, ADRs, architecture/TDD standards, quality gates,
      stale-base overlap, coverage policy, and evidence quality.
    - Spec Review: the implementation satisfies the Agent Brief, PRD, acceptance criteria,
      required tests, required evidence, dependencies, and explicit out-of-scope boundaries.
-4. Write the review result to the Workpad and, when useful, the PR conversation:
+4. Create a new append-only Linear comment for this review round whose first line is
+   `## Codex Review Note`. Do not edit or overwrite previous worker or reviewer notes.
+   Include `Round: <n>` matching the worker round you reviewed. When useful, also write
+   the same findings to the PR conversation:
 
    ```md
+   ## Codex Review Note
+
+   Round: <n>
+
    ## Standards Review
 
    ### Blocking
@@ -117,10 +124,10 @@ Reviewer operating model:
    - `Blocked` when GitHub, Linear, Codex, CI, environment, dependency, or deployment failure
      prevents review.
 6. If you move to `Rework`, make the blocking findings concrete enough for a worker to fix without
-   another review discussion.
-7. If you move to `Needs Human Context`, state the exact human answer needed.
+   another review discussion. Leave them in the new review note.
+7. If you move to `Needs Human Context`, state the exact human answer needed in the review note.
 8. If you move to `Blocked`, include failed command/API, evidence, recovery attempted, and the next
-   operator action.
+   operator action in the review note.
 
 Quality bar:
 

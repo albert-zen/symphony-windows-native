@@ -77,16 +77,8 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
   """
 
   @create_comment_mutation """
-  mutation SymphonyReviewReadinessCreateWorkpad($issueId: String!, $body: String!) {
+  mutation SymphonyReviewReadinessCreateWorkerNote($issueId: String!, $body: String!) {
     commentCreate(input: {issueId: $issueId, body: $body}) {
-      success
-    }
-  }
-  """
-
-  @update_comment_mutation """
-  mutation SymphonyReviewReadinessUpdateWorkpad($commentId: String!, $body: String!) {
-    commentUpdate(id: $commentId, input: {body: $body}) {
       success
     }
   }
@@ -484,10 +476,10 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
     required_contexts = Enum.map(required_checks, & &1.context)
 
     with [_ | _] <- required_contexts,
-         {:ok, workpad} <- workpad_body(issue),
-         true <- workpad_references_pr?(workpad, owner, repo, number),
-         true <- workpad_references_head_sha?(workpad, head_sha) do
-      successful_checks = MapSet.new(workpad_successful_checks(workpad))
+         {:ok, notes} <- agent_evidence_notes(issue),
+         true <- agent_notes_reference_pr?(notes, owner, repo, number),
+         true <- agent_notes_reference_head_sha?(notes, head_sha) do
+      successful_checks = MapSet.new(agent_notes_successful_checks(notes))
 
       required_contexts
       |> MapSet.new()
@@ -499,10 +491,10 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
 
   defp connector_required_checks_or_error(issue, %{owner: owner, repo: repo, number: number, head_sha: head_sha}, reason) do
     with true <- github_auth_unavailable?(reason),
-         {:ok, workpad} <- workpad_body(issue),
-         true <- workpad_references_pr?(workpad, owner, repo, number),
-         true <- workpad_references_head_sha?(workpad, head_sha),
-         [_ | _] = checks <- workpad_successful_checks(workpad) do
+         {:ok, notes} <- agent_evidence_notes(issue),
+         true <- agent_notes_reference_pr?(notes, owner, repo, number),
+         true <- agent_notes_reference_head_sha?(notes, head_sha),
+         [_ | _] = checks <- agent_notes_successful_checks(notes) do
       {:ok, Enum.map(checks, &%{context: &1, app_id: nil})}
     else
       _ -> {:error, reason}
@@ -519,41 +511,66 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
 
   defp github_auth_required?(_reason), do: false
 
-  defp workpad_body(issue) do
-    case workpad_comment(issue) do
-      %{"body" => body} when is_binary(body) -> {:ok, body}
-      _ -> :error
+  defp agent_evidence_notes(issue) do
+    notes =
+      issue
+      |> get_in(["comments", "nodes"])
+      |> case do
+        comments when is_list(comments) ->
+          comments
+          |> Enum.map(&agent_evidence_comment_body/1)
+          |> Enum.reject(&is_nil/1)
+
+        _ ->
+          []
+      end
+
+    case notes do
+      [] -> :error
+      [_ | _] -> {:ok, Enum.join(notes, "\n\n")}
     end
   end
 
-  defp workpad_references_pr?(workpad, owner, repo, number) do
-    String.contains?(workpad, "https://github.com/#{owner}/#{repo}/pull/#{number}")
+  defp agent_evidence_comment_body(%{"body" => body}) when is_binary(body) do
+    trimmed = String.trim_leading(body)
+
+    cond do
+      String.starts_with?(trimmed, "## Codex Worker Note") -> body
+      String.starts_with?(trimmed, "## Codex Workpad") -> body
+      true -> nil
+    end
   end
 
-  defp workpad_references_head_sha?(workpad, head_sha) do
+  defp agent_evidence_comment_body(_comment), do: nil
+
+  defp agent_notes_reference_pr?(notes, owner, repo, number) do
+    String.contains?(notes, "https://github.com/#{owner}/#{repo}/pull/#{number}")
+  end
+
+  defp agent_notes_reference_head_sha?(notes, head_sha) do
     normalized_head_sha = String.downcase(head_sha)
 
-    workpad
-    |> workpad_head_sha_candidates()
+    notes
+    |> agent_notes_head_sha_candidates()
     |> Enum.any?(fn candidate ->
       String.starts_with?(normalized_head_sha, candidate)
     end)
   end
 
-  defp workpad_head_sha_candidates(workpad) do
+  defp agent_notes_head_sha_candidates(notes) do
     [
       ~r/\b(?:current\s+head|final\s+head|head)\s+`?([a-f0-9]{6,40})`?/i,
       ~r/\bgithub\s+checks\s+on\s+`?([a-f0-9]{6,40})`?/i,
       ~r/\bverified\s+checks\s+for\s+`?([a-f0-9]{6,40})`?/i
     ]
-    |> Enum.flat_map(fn regex -> Regex.scan(regex, workpad) end)
+    |> Enum.flat_map(fn regex -> Regex.scan(regex, notes) end)
     |> Enum.map(fn [_, sha] -> String.downcase(sha) end)
     |> Enum.uniq()
   end
 
-  defp workpad_successful_checks(workpad) do
+  defp agent_notes_successful_checks(notes) do
     ~r/^\s*-\s*`?([^`:\r\n]+?)`?\s*(?:run\s+\d+\s*)?(?::|\s)\s*success\s*\.?\s*$/im
-    |> Regex.scan(workpad)
+    |> Regex.scan(notes)
     |> Enum.map(fn [_, check] -> String.trim(check) end)
     |> Enum.reject(&(&1 == ""))
   end
@@ -1409,7 +1426,7 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
     message = rejection_message(reason)
 
     if is_binary(issue["id"]) do
-      _ = upsert_workpad(issue, readiness_note(issue, "Review readiness transition rejected", message), linear_client)
+      _ = create_worker_note(issue, readiness_note(issue, "Review readiness transition rejected", message), linear_client)
     end
 
     {:error,
@@ -1423,42 +1440,16 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
       }}}
   end
 
-  defp upsert_workpad(issue, note, linear_client) do
-    case workpad_comment(issue) do
-      %{"id" => comment_id, "body" => body} when is_binary(comment_id) and is_binary(body) ->
-        linear_client.(@update_comment_mutation, %{"commentId" => comment_id, "body" => append_workpad_note(body, note)}, [])
-        |> comment_result("commentUpdate")
-
-      _ ->
-        linear_client.(@create_comment_mutation, %{"issueId" => issue["id"], "body" => "## Codex Workpad\n\n" <> note}, [])
-        |> comment_result("commentCreate")
-    end
-  end
-
-  defp workpad_comment(issue) do
-    issue
-    |> get_in(["comments", "nodes"])
-    |> case do
-      comments when is_list(comments) ->
-        Enum.find(comments, fn
-          %{"body" => body} when is_binary(body) -> String.starts_with?(String.trim_leading(body), "## Codex Workpad")
-          _ -> false
-        end)
-
-      _ ->
-        nil
-    end
-  end
-
-  defp append_workpad_note(body, note) do
-    String.trim_trailing(body) <> "\n\n" <> note
+  defp create_worker_note(issue, note, linear_client) do
+    linear_client.(@create_comment_mutation, %{"issueId" => issue["id"], "body" => "## Codex Worker Note\n\n" <> note}, [])
+    |> comment_result("commentCreate")
   end
 
   defp comment_result({:ok, %{"data" => data}}, field) when is_map(data) do
-    if get_in(data, [field, "success"]) == true, do: :ok, else: {:error, :workpad_update_failed}
+    if get_in(data, [field, "success"]) == true, do: :ok, else: {:error, :agent_note_create_failed}
   end
 
-  defp comment_result({:ok, _payload}, _field), do: {:error, :workpad_update_failed}
+  defp comment_result({:ok, _payload}, _field), do: {:error, :agent_note_create_failed}
   defp comment_result({:error, reason}, _field), do: {:error, reason}
 
   defp readiness_note(issue, heading, detail) do

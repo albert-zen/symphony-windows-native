@@ -5,7 +5,8 @@ policy remains in `../agentic-flywheel-quality.md`.
 
 ## Required Evidence
 
-Every worker handoff must record these in the PR body and Linear Workpad:
+Every worker handoff must record these in the PR body and a Linear
+`## Codex Worker Note`:
 
 - PR body follows `.github/pull_request_template.md`.
 - Local focused validation for the changed behavior.

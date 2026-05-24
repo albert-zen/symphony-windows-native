@@ -26,8 +26,10 @@ read [agentic-flywheel-quality.md](agentic-flywheel-quality.md).
   standards/spec findings and move issues to the next review state.
 - Human manager: the upper-level product and quality owner who orders work,
   handles ambiguous tradeoffs, reviews results, and keeps production saturated.
-- Codex Workpad: one persistent Linear comment that records the current plan,
-  validation, blockers, PR, and review status.
+- Codex Worker Note: one append-only Linear comment per worker round that
+  records plan, validation, blockers, PR, and handoff evidence.
+- Codex Review Note: one append-only Linear comment per review round that
+  records standards/spec findings and state decision.
 
 ## The loop
 
@@ -39,8 +41,8 @@ read [agentic-flywheel-quality.md](agentic-flywheel-quality.md).
    for automation.
 5. Worker Symphony claims eligible `Ready for Agent` or `Rework` issues and
    starts a Codex session in a fresh workspace.
-6. The agent moves the issue to `In Progress`, creates or updates the single
-   `## Codex Workpad`, and implements only the linked issue.
+6. The agent moves the issue to `In Progress`, creates a new
+   `## Codex Worker Note` for that worker round, and implements only the linked issue.
 7. The agent pushes a focused branch, opens a PR, records validation and review
    evidence, and waits for required checks.
 8. The issue moves to `Agent Review` only after the PR exists and required
@@ -75,8 +77,8 @@ Before starting unattended work, prepare the project:
 3. Keep GitHub issues as the durable implementation specs. Linear descriptions
    can mirror GitHub, but implementation discussion should stay in GitHub when
    it needs to be public or reviewable later.
-4. Configure the worker workflow prompt to require a single `## Codex Workpad`,
-   focused branches, validation evidence, PR creation, and no `Agent Review`
+4. Configure the worker workflow prompt to require append-only `## Codex Worker Note`
+   comments, focused branches, validation evidence, PR creation, and no `Agent Review`
    transition while required checks are pending or failing.
 5. Configure a reviewer workflow prompt that performs review only and moves
    issues to `Human Review`, `Rework`, `Needs Human Context`, or `Blocked`.
@@ -96,7 +98,7 @@ Before starting unattended work, prepare the project:
    claim behavior, review readiness, and CI reporting are reliable.
 8. Move the next issue from `Backlog` to `Ready for Agent`.
 9. Start the worker and reviewer Symphony instances and monitor the dashboards
-   and Linear Workpad.
+   and Linear agent notes.
 
 For the Windows-native optimization project, use
 [`WORKFLOW.optimization.windows.example.md`](../WORKFLOW.optimization.windows.example.md)
@@ -144,7 +146,7 @@ same time usually creates stale branches, repeated validation, and misleading
 
 Generated work compounds quickly when low-quality PRs are allowed to become the
 base for later agents. Keep this document focused on setup and operating rhythm;
-put quality rules, local validation fallback, blocker protocol, Workpad
+put quality rules, local validation fallback, blocker protocol, agent note
 discipline, review readiness, and PR conventions in
 [agentic-flywheel-quality.md](agentic-flywheel-quality.md).
 
@@ -162,13 +164,13 @@ or park cleanly:
 2. If immediate pause is needed, remove `Ready for Agent` from the worker
    `tracker.dispatch_states` or stop the worker Symphony process.
 3. Let active agents finish their current turn when possible.
-4. For unfinished active issues, update the Workpad with the current branch,
+4. For unfinished active issues, create a worker note with the current branch,
    last validation result, exact blocker or pause reason, and next resume step.
 5. Move truly blocked work to `Blocked` when that state exists. If it does not,
    record `Blocked state missing` and keep the issue active for manager triage.
 6. Do not move issues to `Agent Review` only because a branch or PR exists.
 
-When resuming, inspect the Workpad first, then the PR or branch, then restart
+When resuming, inspect the latest worker/review notes first, then the PR or branch, then restart
 Symphony with the same workflow boundaries.
 
 ## Reusing the playbook on another project
@@ -180,7 +182,7 @@ To reuse this pattern outside Symphony:
    [`agents/issue-tracker.md`](agents/issue-tracker.md) as the default state
    model.
 3. Add a workflow prompt that encodes the team's branch, commit, validation,
-   Workpad, blocker, and review rules.
+   worker/review note, blocker, and review rules.
 4. Add a project-local quality document equivalent to
    `agentic-flywheel-quality.md`.
 5. Start with one trusted repository and one agent at a time.
@@ -210,7 +212,7 @@ settings explicit. Treat this as the minimum hard configuration for a new repo:
   coverage policy, formatter/lint commands, and any platform-specific lane such
   as a Windows-native test profile.
 - **Agent entrypoint:** add a repo-level `AGENTS.md` that names the project
-  commands, branch/commit/PR rules, Workpad rules, blocker protocol, and known
+  commands, branch/commit/PR rules, worker/review note rules, blocker protocol, and known
   local pitfalls. Add language- or package-specific nested `AGENTS.md` files
   when needed.
 - **Manager ownership:** define which work is worker-safe and which must stay

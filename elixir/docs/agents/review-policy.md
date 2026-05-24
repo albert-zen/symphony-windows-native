@@ -7,7 +7,8 @@ behavior.
 ## Review States
 
 `Agent Review` is the machine review queue. A worker may move an issue there
-only after the linked PR, checks, Workpad, and evidence are review-ready.
+only after the linked PR, checks, latest worker note, and evidence are
+review-ready.
 
 `Human Review` means the reviewer agent found no blocking findings and human
 acceptance, merge, or final product judgment remains.
@@ -38,9 +39,16 @@ Spec Review checks:
 
 ## Reviewer Output
 
-Reviewer agents write a concise review result to the Workpad or PR:
+Reviewer agents create a new append-only `## Codex Review Note` for each review
+round. Do not edit previous worker or reviewer notes; the note history is the
+version history for the issue. Also copy findings to the PR conversation when
+that helps code review.
 
 ```markdown
+## Codex Review Note
+
+Round: <n>
+
 ## Standards Review
 
 ### Blocking

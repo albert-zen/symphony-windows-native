@@ -1498,7 +1498,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert settings.codex.review_readiness_required_checks == ["make-all", "validate-pr-description", "windows-native-test"]
     assert settings.codex.review_readiness_guarded_states == ["Agent Review"]
 
-    assert workflow.prompt =~ "## Codex Workpad"
+    assert workflow.prompt =~ "## Codex Worker Note"
     assert workflow.prompt =~ "capability/preflight evidence"
     assert workflow.prompt =~ "Run or cite"
     assert workflow.prompt =~ "mix symphony.preflight.windows --capabilities-only --json"

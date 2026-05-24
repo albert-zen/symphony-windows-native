@@ -16,8 +16,9 @@ Use these states for the agent build workflow:
   poll for new implementation work.
 - `In Progress`: a worker has claimed the issue and is implementing or
   validating it.
-- `Agent Review`: worker handoff queue. The PR, required checks, Workpad, and
-  evidence must be ready before a worker moves an issue here.
+- `Agent Review`: worker handoff queue. The PR, required checks, latest
+  `## Codex Worker Note`, and evidence must be ready before a worker moves an
+  issue here.
 - `Rework`: reviewer found blocking findings. The worker should address only
   the recorded findings and return through `Agent Review`.
 - `Human Review`: reviewer passed the issue and human review, merge, or final
@@ -93,6 +94,21 @@ tracker:
 
 The worker should move `Ready for Agent` or `Rework` issues to `In Progress`
 before editing. The reviewer should not edit product code.
+
+## Agent Notes
+
+Use append-only human-facing comments as the issue's version ledger:
+
+- Worker round N creates one new comment whose first line is
+  `## Codex Worker Note` and includes `Round: N`.
+- Reviewer round N creates one new comment whose first line is
+  `## Codex Review Note` and includes `Round: N`.
+- Rework creates the next worker round and the next review round. Prior notes
+  are not edited or overwritten.
+- Legacy `## Codex Workpad` comments remain readable historical context, but
+  new automation should write worker/review notes instead.
+- Runtime-owned `## Symphony Control` comments are not part of the human audit
+  trail and should normally disappear after claim release.
 
 ## DAG Release
 

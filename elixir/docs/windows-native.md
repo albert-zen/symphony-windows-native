@@ -546,25 +546,32 @@ available in that mode, so use the branch-protection source where app-bound
 verification is required. Manager overrides must happen outside the agent tool
 call and leave an audit note in Linear or GitHub.
 The linked PR must come from Linear attachment metadata. Links written only in
-agent-mutable comments, including the Codex Workpad, are useful for humans but
+agent-mutable comments, including Codex worker/review notes, are useful for humans but
 are not authoritative for the readiness gate. The linked PR must be in the
 trusted repository and its head branch must include the Linear issue identifier
 so an arbitrary green PR cannot satisfy another issue's readiness gate.
 
 ### Progress tracking
 
-The recommended prompt pattern is to keep one persistent Linear comment whose
-first line is:
+The recommended prompt pattern is an append-only note ledger:
 
 ```md
-## Codex Workpad
+## Codex Worker Note
 ```
 
-The agent updates that comment with plan, acceptance criteria, validation
-results, commits, blockers, and review status.
+for each worker round, and:
 
-For routine failures that are recovered without changing the plan, the workpad is
-enough. A separate Linear problem comment is reserved for notable environment,
+```md
+## Codex Review Note
+```
+
+for each review round. Agents create a new note per round and do not edit or
+overwrite prior worker/review notes. The worker note records plan, acceptance
+criteria, validation results, commits, blockers, and handoff evidence. The
+review note records standards/spec findings and the review state decision.
+
+For routine failures that are recovered without changing the plan, that round's
+worker note is enough. A separate Linear problem comment is reserved for notable environment,
 validation, auth, dependency, or orchestration failures that changed the plan,
 required a workaround, or need the next operator's attention. Keep each problem
 comment concise and include:
@@ -574,8 +581,8 @@ comment concise and include:
 - whether recovery succeeded,
 - what the next operator should inspect.
 
-If the run cannot complete because of a true blocker, the agent should update
-the workpad, add the problem comment, and move the issue to `Blocked`. When the
+If the run cannot complete because of a true blocker, the agent should create
+a worker/review note, add the problem comment, and move the issue to `Blocked`. When the
 team has not configured `Blocked`, the existing Linear adapter returns
 `:state_not_found`; agents should record `Blocked state missing` and keep the
 issue in `In Progress` unless a manager explicitly chooses another state.
@@ -634,8 +641,8 @@ profile:
 make windows-native-test
 ```
 
-Agent PRs should also follow the [agentic flywheel quality discipline](agentic-flywheel-quality.md): keep one
-Linear workpad, use Conventional Commits, record validation in the PR body, and wait for required
+Agent PRs should also follow the [agentic flywheel quality discipline](agentic-flywheel-quality.md): keep
+append-only worker/review notes, use Conventional Commits, record validation in the PR body, and wait for required
 GitHub checks before moving the Linear issue to review.
 For the small-team manager and agent operating model, see the
 [agentic flywheel setup and operations playbook](agentic-flywheel-setup.md).

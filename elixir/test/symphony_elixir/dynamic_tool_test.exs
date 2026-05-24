@@ -1522,7 +1522,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert_received {:linear_mutation_allowed, "issue-1", "state-review"}
   end
 
-  test "linear_graphql rejects In Review transition when no linked PR exists and records workpad reason" do
+  test "linear_graphql rejects In Review transition when no linked PR exists and records worker note reason" do
     test_pid = self()
 
     response =
@@ -1538,7 +1538,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert get_in(payload, ["error", "code"]) == "review_readiness_rejected"
     assert get_in(payload, ["error", "message"]) =~ "no linked GitHub pull request was found"
     assert_received {:workpad_recorded, body}
-    assert body =~ "## Codex Workpad"
+    assert body =~ "## Codex Worker Note"
     assert body =~ "Review readiness transition rejected"
     refute_received {:linear_mutation_allowed, _, _}
   end
@@ -1729,7 +1729,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert body =~ ":timeout"
   end
 
-  test "linear_graphql rejects Workpad connector check evidence when PR metadata is rate limited" do
+  test "linear_graphql rejects worker note connector check evidence when PR metadata is rate limited" do
     test_pid = self()
 
     response =
@@ -1753,7 +1753,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     refute_received {:linear_mutation_allowed, _, _}
   end
 
-  test "linear_graphql accepts Workpad connector check evidence when final check endpoints are rate limited" do
+  test "linear_graphql accepts worker note connector check evidence when final check endpoints are rate limited" do
     test_pid = self()
 
     response =
@@ -1769,12 +1769,12 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     refute_received {:workpad_recorded, _}
   end
 
-  test "linear_graphql accepts Workpad connector check evidence with adjacent worker formats" do
+  test "linear_graphql accepts worker note connector check evidence with adjacent worker formats" do
     test_pid = self()
 
     issue =
       issue_with_connector_check_evidence("""
-      ## Codex Workpad
+      ## Codex Worker Note
 
       PR: https://github.com/albert-zen/symphony-windows-native/pull/42
       GitHub connector verified checks for abc123 passed:
@@ -1795,12 +1795,12 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     refute_received {:workpad_recorded, _}
   end
 
-  test "linear_graphql accepts Workpad connector check evidence from GitHub checks heading" do
+  test "linear_graphql accepts worker note connector check evidence from GitHub checks heading" do
     test_pid = self()
 
     issue =
       issue_with_connector_check_evidence("""
-      ## Codex Workpad
+      ## Codex Worker Note
 
       PR: https://github.com/albert-zen/symphony-windows-native/pull/42
       GitHub checks on `abc123`:
@@ -1821,7 +1821,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     refute_received {:workpad_recorded, _}
   end
 
-  test "linear_graphql accepts Workpad connector check evidence when branch protection requires auth" do
+  test "linear_graphql accepts worker note connector check evidence when branch protection requires auth" do
     test_pid = self()
 
     response =
@@ -2185,7 +2185,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     body =
       body ||
         """
-        ## Codex Workpad
+        ## Codex Worker Note
 
         PR: https://github.com/albert-zen/symphony-windows-native/pull/42
 
@@ -2209,13 +2209,9 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         query =~ "SymphonyReviewReadinessContext" ->
           {:ok, %{"data" => %{"issue" => issue}}}
 
-        query =~ "SymphonyReviewReadinessCreateWorkpad" ->
+        query =~ "SymphonyReviewReadinessCreateWorkerNote" ->
           send(test_pid, {:workpad_recorded, variables["body"]})
           {:ok, %{"data" => %{"commentCreate" => %{"success" => true}}}}
-
-        query =~ "SymphonyReviewReadinessUpdateWorkpad" ->
-          send(test_pid, {:workpad_recorded, variables["body"]})
-          {:ok, %{"data" => %{"commentUpdate" => %{"success" => true}}}}
 
         query =~ "issueUpdate" ->
           state_id = variables["stateId"] || get_in(variables, ["input", "stateId"])
@@ -2235,13 +2231,9 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         query =~ "SymphonyReviewReadinessContext" ->
           {:ok, %{"data" => %{"issue" => nil}}}
 
-        query =~ "SymphonyReviewReadinessCreateWorkpad" ->
+        query =~ "SymphonyReviewReadinessCreateWorkerNote" ->
           send(test_pid, {:workpad_recorded, variables["body"]})
           {:ok, %{"data" => %{"commentCreate" => %{"success" => true}}}}
-
-        query =~ "SymphonyReviewReadinessUpdateWorkpad" ->
-          send(test_pid, {:workpad_recorded, variables["body"]})
-          {:ok, %{"data" => %{"commentUpdate" => %{"success" => true}}}}
 
         query =~ "issueUpdate" ->
           state_id = variables["stateId"] || get_in(variables, ["input", "stateId"])

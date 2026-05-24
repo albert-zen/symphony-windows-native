@@ -1,6 +1,6 @@
 # Agentic flywheel quality discipline
 
-This policy defines the minimum validation, Workpad, blocker, review, and state
+This policy defines the minimum validation, agent note, blocker, review, and state
 discipline for Symphony-managed agent PRs. It is the companion to
 [agentic-flywheel-setup.md](agentic-flywheel-setup.md), which covers
 project setup and operating rhythm.
@@ -14,7 +14,8 @@ protected review destination is configured through
 
 ## Required gates
 
-Every agent PR must record these checks in the PR body and the Linear `## Codex Workpad`:
+Every agent PR must record these checks in the PR body and the Linear
+`## Codex Worker Note` for that worker round:
 
 - `validate-pr-description`: the PR body follows `.github/pull_request_template.md`.
 - `linked-issue-close`: when the Linear issue has one unambiguous origin GitHub issue in the
@@ -27,7 +28,7 @@ Every agent PR must record these checks in the PR body and the Linear `## Codex 
 - Targeted checks for the changed behavior, such as a single ExUnit file or mix task test.
 
 Agents should run focused validation before committing. `make all` should run before handoff when
-the local environment can support the full gate. If a gate cannot be run locally, the PR and workpad
+the local environment can support the full gate. If a gate cannot be run locally, the PR and worker note
 must say why, and the issue must stay out of `Agent Review` until required GitHub checks pass or a
 manager explicitly moves it.
 
@@ -101,35 +102,40 @@ Docs-only changes may skip an extra SubAgent review only when they clarify exist
 changing or encoding operating policy, workflow expectations, state transitions, quality gates, or
 review rules, and all required documentation checks pass.
 
-Record the review request and outcome in the PR conversation or Linear workpad. If the review finds
+Record the review request and outcome in the PR conversation or Linear review note. If the review finds
 blocking issues, move the Linear issue to `Rework` when the fix is bounded, or `Needs Human Context`
 when the spec is incomplete. Keep it out of `Human Review` until findings are addressed and required
 checks are green.
 
-## Workpad and blocker discipline
+## Agent note and blocker discipline
 
-Use exactly one Linear comment whose first line is:
+Use append-only Linear comments as the human audit trail:
 
 ```md
-## Codex Workpad
+## Codex Worker Note
 ```
 
-Update that comment instead of adding progress spam. Runtime-owned
-`## Symphony Control` comments are the exception to the single-comment rule:
-they are reserved for durable claim coordination and must not be used for human
-progress notes. A useful Workpad records:
+for each worker round, and:
+
+```md
+## Codex Review Note
+```
+
+for each review round. Do not update or overwrite prior worker/review notes;
+each worker/reviewer pass is a version that should remain visible. Runtime-owned
+`## Symphony Control` comments are reserved for durable claim coordination and
+must not be used for human progress notes. A useful worker note records:
 
 - Status: current phase and whether the issue is blocked.
 - Scope: GitHub issue, branch, PR, and linked acceptance criteria.
 - Plan: the next concrete steps.
 - Validation: commands run, outcomes, log paths, and CI handoff reason when
   local broad gates are ambiguous.
-- Review: reviewer requested, findings, and resolution.
 - Checks: required GitHub check status.
 - Blockers: exact missing credential, permission, environment, dependency, or
   system condition.
 
-Routine retries and recovered failures belong in the Workpad. Create a separate
+Routine retries and recovered failures belong in that round's worker note. Create a separate
 problem comment only when the failure changes the plan, requires a workaround,
 consumes operator attention, or blocks completion.
 
@@ -137,7 +143,7 @@ Environment and pipeline blockers need capability evidence, not repeated blind
 retries. Before handoff, run or cite
 `mix symphony.preflight.windows --capabilities-only --json <WORKFLOW>` when the
 failure may involve OS, shell, PowerShell, `tasklist`, GitHub CLI, Linear auth,
-coverage policy, or line endings. The Workpad entry must state the failed
+coverage policy, or line endings. The worker/review note must state the failed
 command, capability result, local recovery attempted, and manager action needed.
 If the blocker matches an existing canonical system issue, comment there with
 the new evidence instead of creating a duplicate.
@@ -145,7 +151,7 @@ the new evidence instead of creating a duplicate.
 ## Linear and GitHub state rules
 
 Agents must not move a Linear issue to `Agent Review` solely because a branch was pushed. `Agent
-Review` means a PR exists, required checks have completed and passed, and the Workpad contains
+Review` means a PR exists, required checks have completed and passed, and the latest worker note contains
 enough validation evidence for a reviewer agent to inspect the work. `Human Review` means the
 reviewer agent found no blocking standards or spec findings and human acceptance remains.
 
@@ -156,7 +162,7 @@ links, unrelated attachments, or multiple trusted issue URLs. Do not use a closi
 unrelated or still-active GitHub issue.
 
 Pending, failing, or unverifiable required checks are not review-ready. The agent must write the
-failure or blocker to the workpad and/or linked GitHub issue or PR, then keep the issue in
+failure or blocker to a worker/review note and/or linked GitHub issue or PR, then keep the issue in
 `In Progress` or return it to `Rework` when it was already in a repair loop. If the issue brief is
 insufficient, move it to `Needs Human Context`. If a true blocker prevents completion, the agent
 should move the issue to `Blocked` when that state exists. If Linear returns `:state_not_found` or
@@ -165,15 +171,15 @@ active for manager triage.
 
 Human triage for agent-written blocker comments:
 
-- Read the latest `## Codex Workpad` first, then any separate problem comment.
+- Read the latest `## Codex Worker Note` and `## Codex Review Note` first, then any separate problem comment.
 - Confirm the comment states what failed, the command/subsystem involved, recovery status, and the
   next operator inspection target.
 - If the blocker is real and `Blocked` exists, move the issue there; otherwise standardize the team
   workflow by adding `Blocked` or document the local alternative before rerunning agents.
 - If the comment describes transient recovered noise, leave the issue active and ask the agent to
-  consolidate future notes into the workpad.
+  keep future notes in the per-round worker/review note.
 
-If a required gate fails, the agent must summarize the failure in the workpad or linked GitHub issue
+If a required gate fails, the agent must summarize the failure in a worker/review note or linked GitHub issue
 and keep the Linear issue in `In Progress` or move it to `Rework` for repair. Failures discovered by
 automation should create a GitHub issue with the `symphony-optimization` label when they describe a
 system defect outside the current PR.
@@ -183,11 +189,11 @@ system defect outside the current PR.
 Use this manager-run path only for already completed work:
 
 1. Query Done Linear issues and inspect each issue's linked GitHub issue and merged PR.
-2. Confirm the Linear issue is terminal `Done`, the PR is merged, and the PR or Workpad clearly
+2. Confirm the Linear issue is terminal `Done`, the PR is merged, and the PR or agent notes clearly
    matches exactly one GitHub issue.
 3. Close the GitHub issue with a comment linking the merged PR and Linear issue.
 4. Skip any item whose Linear issue is not Done, whose PR is unmerged, or whose mapping is ambiguous.
-5. Record permission failures in the Linear Workpad or manager notes instead of guessing.
+5. Record permission failures in Linear agent notes or manager notes instead of guessing.
 
 This reconciliation is intentionally explicit. Agents should prevent new stale issues with PR closing
 keywords; they should not bulk-close GitHub issues for active or ambiguous Linear work.

@@ -46,8 +46,8 @@ This repo uses a two-instance agent workflow:
 - Review policy: [`docs/agents/review-policy.md`](docs/agents/review-policy.md).
 - Quality gates: [`docs/agents/quality-gates.md`](docs/agents/quality-gates.md).
 - Durable Linear claim coordination uses runtime-owned `## Symphony Control`
-  comments. These are separate from the human-facing `## Codex Workpad` single
-  comment rule.
+  comments. These are separate from append-only human-facing
+  `## Codex Worker Note` and `## Codex Review Note` comments.
 
 ## Environment
 
@@ -108,7 +108,7 @@ mix specs.check
 - Agent PR commits should use lightweight Conventional Commits such as
   `fix(app-server): resolve session startup lint`.
 - Do not hand off an agent PR while required GitHub checks are still pending or failing unless a
-  manager explicitly asks for that state; record blockers in the PR and Linear workpad.
+  manager explicitly asks for that state; record blockers in the PR and Linear worker/review note.
 - Validate PR body locally when needed:
 
 ```bash

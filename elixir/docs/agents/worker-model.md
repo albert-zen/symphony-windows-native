@@ -16,11 +16,12 @@ Each role owns a different decision surface.
   sessions.
 - Reviewer Codex agent: performs review only. It reports findings and moves the
   Linear issue to `Human Review`, `Rework`, `Needs Human Context`, or `Blocked`.
-- Codex Workpad: one persistent human-facing Linear comment whose first line is
-  `## Codex Workpad`. The runtime may also maintain transient
-  `## Symphony Control` system comments for durable claim coordination; those
-  control comments are not a Workpad and should not contain human progress
-  notes.
+- Codex Worker Note: one append-only human-facing Linear comment per worker
+  round whose first line is `## Codex Worker Note`.
+- Codex Review Note: one append-only human-facing Linear comment per reviewer
+  round whose first line is `## Codex Review Note`.
+- `## Symphony Control`: transient runtime-owned system comments for durable
+  claim coordination. Control comments are not human progress notes.
 
 ## Worker Assignment Packet
 
@@ -29,7 +30,7 @@ The worker prompt must include:
 - Linear identifier, title, state, URL, labels, and description.
 - Linked GitHub issue or embedded Agent Brief.
 - Blocker/dependency summary and current release reason.
-- Branch, commit, PR, and Workpad rules.
+- Branch, commit, PR, and worker-note rules.
 - Required local and CI validation commands.
 - Review readiness destination, normally `Agent Review`.
 - Decision policy for safe choices versus human context escalation.
@@ -38,6 +39,7 @@ The worker prompt must include:
 
 Before moving to `Agent Review`, the worker must leave:
 
+- a new `## Codex Worker Note` with `Round: <n>`,
 - branch name and PR URL,
 - final scope summary,
 - acceptance criteria status,
@@ -50,7 +52,7 @@ Before moving to `Agent Review`, the worker must leave:
 
 The reviewer prompt must include:
 
-- Linear issue, Workpad, PR URL, and diff scope,
+- Linear issue, prior worker/review notes, PR URL, and diff scope,
 - Agent Brief, PRD, DAG node, and acceptance criteria,
 - architecture/quality standards and relevant ADRs,
 - required validation evidence,
@@ -62,7 +64,7 @@ The reviewer prompt must include:
 
 Agents should make conservative decisions when the choice is safe, local,
 reversible, and does not change product meaning or architecture direction.
-Record the decision in the Workpad.
+Record the decision in the worker or review note for that round.
 
 Agents must move the issue to `Needs Human Context` when a decision affects:
 

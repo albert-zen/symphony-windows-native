@@ -43,7 +43,7 @@ mise exec -- mix symphony.preflight.windows .\WORKFLOW.optimization.windows.md
 ## Validation
 
 - Run focused checks while iterating, then record exact commands and outcomes in
-  the PR body and Linear `## Codex Workpad`.
+  the PR body and a Linear `## Codex Worker Note`.
 - `make all` is the broad local gate when the environment supports it.
 - `make windows-native-test` is required for Windows shell, workspace/config,
   workflow, or path-handling changes.
@@ -78,21 +78,24 @@ mise exec -- mix symphony.preflight.windows .\WORKFLOW.optimization.windows.md
 
 - Worker agents should accept `Ready for Agent` and `Rework` issues, then move
   them to `In Progress` before editing. `Todo` is not the agent release queue.
-- Use exactly one human-facing Linear comment whose first line is
-  `## Codex Workpad`; update it instead of creating progress spam. Symphony may
-  also maintain transient `## Symphony Control` system comments for durable
-  claim coordination; do not use those control comments for human progress notes.
+- Worker agents create a new append-only human-facing Linear comment whose
+  first line is `## Codex Worker Note` for each worker round. Reviewer agents
+  create a new append-only `## Codex Review Note` for each review round.
+  Do not edit or overwrite prior worker/reviewer notes; they are the per-version
+  audit trail. Symphony may also maintain transient `## Symphony Control` system
+  comments for durable claim coordination; do not use those control comments for
+  human progress notes.
 - Use the linked GitHub issue as the public implementation spec.
-- Do not accept or continue work labeled `manager-owned`, or whose Workpad says
-  `Manager classification: manager-owned`, unless the manager has decomposed a
-  narrow worker-safe subtask for you.
-- Open the PR against `main`, link it in the Workpad, and wait for required
+- Do not accept or continue work labeled `manager-owned`, or whose issue notes
+  say `Manager classification: manager-owned`, unless the manager has decomposed
+  a narrow worker-safe subtask for you.
+- Open the PR against `main`, link it in the worker note, and wait for required
   GitHub checks before moving Linear to `Agent Review`.
 - If the issue lacks enough spec, acceptance criteria, dependency state, or
   decision authority, move it to `Needs Human Context` with the missing context
   spelled out.
-- If checks are pending, failing, or unverifiable, record the exact reason in the
-  Workpad or PR and keep the issue active.
+- If checks are pending, failing, or unverifiable, record the exact reason in a
+  worker note or PR and keep the issue active.
 
 ## SubAgent Review
 
@@ -100,19 +103,19 @@ Request an independent SubAgent review before handoff for meaningful changes:
 runtime orchestration, worker startup, Linear state transitions, Codex
 app-server protocol, CI, merge/review policy, more than one subsystem, or docs
 that encode operating decisions. Record the request and findings in the PR or
-Workpad. Blocking findings keep the issue in `In Progress` or return it to
+review note. Blocking findings keep the issue in `In Progress` or return it to
 `Rework` until fixed and checks pass.
 
 ## Blockers Protocol
 
-- Keep ordinary retries and recovered failures in the Workpad.
+- Keep ordinary retries and recovered failures in the worker note for that round.
 - For a true blocker, state what failed, the command/subsystem, recovery status,
-  and the next operator action in the Workpad and, when useful for public review,
+  and the next operator action in a worker/review note and, when useful for public review,
   the linked GitHub issue or PR.
 - For environment or pipeline blockers, run or cite capability/preflight
   evidence before handoff. Prefer:
   `mise exec -- mix symphony.preflight.windows --capabilities-only --json <WORKFLOW>`.
-  The Workpad must include the failed command, capability result, local recovery
+  The worker/review note must include the failed command, capability result, local recovery
   attempted, and manager action needed.
 - If the blocker is shared pipeline friction, such as CI OS mismatch, GitHub
   auth/rate-limit verification, stale runtime deployment, durable-claim

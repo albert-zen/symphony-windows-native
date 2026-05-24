@@ -7,7 +7,7 @@ Use these paths as the default locations for durable agent workflow artifacts.
 - PRDs and specs: `elixir/docs/prd/`
 - Issue DAGs: `elixir/docs/implementation/`
 - Agent workflow rules: `elixir/docs/agents/`
-- Review evidence: Linear Workpad, GitHub PR conversation, and PR body
+- Review evidence: Linear worker/review notes, GitHub PR conversation, and PR body
   `Test Plan`
 - Runtime evidence: Symphony dashboard, worker detail pages, logs root, and
   linked CI runs

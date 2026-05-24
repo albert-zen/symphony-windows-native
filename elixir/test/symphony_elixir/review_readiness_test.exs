@@ -27,7 +27,8 @@ defmodule SymphonyElixir.Codex.ReviewReadinessTest do
     assert payload["error"]["message"] =~ "Linear review readiness transition rejected"
     assert payload["error"]["message"] =~ "no linked GitHub pull request"
     assert_receive {:linear_context_requested, "issue-1"}
-    assert_receive {:linear_workpad_created, body}
+    assert_receive {:linear_worker_note_created, body}
+    assert body =~ "## Codex Worker Note"
     assert body =~ "Review readiness transition rejected"
     refute_receive {:github_called, _url}
 
@@ -40,7 +41,7 @@ defmodule SymphonyElixir.Codex.ReviewReadinessTest do
              )
 
     assert_receive {:linear_context_requested, "issue-1"}
-    refute_receive {:linear_workpad_created, _body}
+    refute_receive {:linear_worker_note_created, _body}
     refute_receive {:github_called, _url}
   end
 
@@ -59,7 +60,8 @@ defmodule SymphonyElixir.Codex.ReviewReadinessTest do
              )
 
     assert_receive {:linear_context_requested, "issue-1"}
-    assert_receive {:linear_workpad_created, _body}
+    assert_receive {:linear_worker_note_created, body}
+    assert body =~ "## Codex Worker Note"
     refute_receive {:github_called, _url}
   end
 
@@ -206,7 +208,7 @@ defmodule SymphonyElixir.Codex.ReviewReadinessTest do
     fn
       query, %{"issueId" => issue_id, "body" => body}, _opts when is_binary(query) ->
         if String.contains?(query, "commentCreate") do
-          send(parent, {:linear_workpad_created, body})
+          send(parent, {:linear_worker_note_created, body})
           {:ok, %{"data" => %{"commentCreate" => %{"success" => true}}}}
         else
           {:error, {:unexpected_linear_query, query, issue_id}}

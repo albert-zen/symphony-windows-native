@@ -12,8 +12,10 @@ isolated workspaces, and starts Codex app-server sessions.
 - Worker Symphony: dispatcher for implementation work.
 - Reviewer Symphony: dispatcher for independent agent review.
 - Agent Brief: minimum context contract for autonomous work.
-- Codex Workpad: single Linear comment recording status, plan, evidence,
-  blockers, and review outcome.
+- Codex Worker Note: append-only Linear comment recording one worker round's
+  plan, changes, evidence, blockers, and handoff.
+- Codex Review Note: append-only Linear comment recording one review round's
+  standards/spec findings and state decision.
 - Review readiness: guard that prevents premature movement into the machine
   review queue.
 

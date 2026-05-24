@@ -97,24 +97,27 @@ Operating model:
 
 1. Work only in the current workspace.
 2. If the Linear issue is `Ready for Agent` or `Rework`, move it to `In Progress` before implementation.
-3. Use exactly one Linear comment whose first line is `## Codex Workpad`; update it instead of creating progress spam.
+3. Create a new append-only Linear comment for this worker round whose first line is
+   `## Codex Worker Note`. Do not edit or overwrite previous worker or reviewer notes.
+   Include `Round: <n>` when a prior `## Codex Worker Note` or `## Codex Review Note`
+   exists for this issue.
 4. Use the linked GitHub issue or embedded `## Agent Brief` as the durable implementation spec.
    If the issue lacks enough context, acceptance criteria, dependency state, testing intent, or
-   decision authority, write the missing context into the Workpad and move it to `Needs Human Context`.
+   decision authority, write the missing context into a new worker note and move it to `Needs Human Context`.
 5. Keep changes focused on the current Linear/GitHub issue.
 6. Create a branch named `codex/<linear-identifier>-<short-topic>`.
 7. Run focused validation before committing.
 8. Commit with lightweight Conventional Commits, for example
    `docs(quality): add agent PR quality policy`, and push the branch to
    the configured GitHub repository.
-9. Open a GitHub pull request against `main` and link it in the Linear workpad.
+9. Open a GitHub pull request against `main` and link it in the worker note.
    If the Linear issue has one unambiguous origin GitHub issue, include a supported closing keyword
    in the PR body, for example `Fixes #NN`.
 10. Wait for required GitHub checks to complete before moving the Linear issue to `Agent Review`.
-    If checks cannot be verified, record the exact reason in the workpad and PR, then keep the
+    If checks cannot be verified, record the exact reason in a worker note and PR, then keep the
     issue in `In Progress` or return it to `Rework`; only a manager may explicitly override this.
     When checks are verified through GitHub CLI, connector, or another non-REST path, record this
-    exact machine-readable evidence in the `## Codex Workpad`:
+    exact machine-readable evidence in the latest `## Codex Worker Note`:
     `PR: https://github.com/{{ workflow.codex.review_readiness_repository }}/pull/<number>`
     `Head \`<full-head-sha>\``
     `- make-all run <run-id>: success.`
@@ -132,7 +135,8 @@ Operating model:
     - If you discover duplicates, link them back to the canonical issue and leave final duplicate
       cleanup to the manager.
 13. Leave problem breadcrumbs without spamming:
-    - Update the `## Codex Workpad` for recovered transient noise, retries, or routine validation fixes.
+    - Create a new `## Codex Worker Note` for each worker round, including recovered transient noise,
+      retries, routine validation fixes, and the final handoff evidence for that round.
     - Add a separate concise Linear problem comment only for notable environment, validation, auth,
       dependency, or orchestration failures that changed the plan, required a workaround, or need
       the next operator's attention.
@@ -142,13 +146,13 @@ Operating model:
     - Run or cite `mix symphony.preflight.windows --capabilities-only --json <WORKFLOW>` when the
       blocker may involve OS, shell, PowerShell, tasklist, GitHub CLI, Linear auth, coverage policy,
       or line endings.
-    - Write these exact Workpad fields: failed command, capability result, local recovery attempted,
+    - Write these exact worker note fields: failed command, capability result, local recovery attempted,
       and manager action needed.
     - If a canonical issue exists for the same shared friction, comment there with the new evidence
       instead of creating a duplicate.
-15. If a true blocker prevents completion, update the workpad, then try to move the issue to
+15. If a true blocker prevents completion, create a worker note, then try to move the issue to
     `Blocked`. If the Linear team has no `Blocked` state, record `Blocked state missing` in the
-    workpad/problem comment and keep the issue in its active state unless a manager explicitly moves
+    worker note or problem comment and keep the issue in its active state unless a manager explicitly moves
     it elsewhere.
 
 Quality bar:
@@ -168,7 +172,7 @@ Quality bar:
   manager explicitly instructs you to do so.
 - If review finds blocking issues, move through `Rework`, address only those findings, and return
   to `Agent Review` after required checks pass.
-- Write CI/runtime failures back to the Linear Workpad or linked GitHub issue before ending.
+- Write CI/runtime failures back to a Linear worker note or linked GitHub issue before ending.
 - Do not broaden scope to multiple optimization issues in one PR.
-- If blocked by credentials or permissions, record the exact blocker in the Workpad and keep the
+- If blocked by credentials or permissions, record the exact blocker in a worker note and keep the
   issue out of `Agent Review` unless a manager explicitly moves it there.
