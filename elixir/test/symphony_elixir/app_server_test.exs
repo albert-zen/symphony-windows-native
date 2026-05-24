@@ -276,6 +276,55 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server treats failed turn completion as a hard failure" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-failed-completion-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-90")
+      codex_binary = Path.join(test_root, "fake-codex")
+      File.mkdir_p!(workspace)
+
+      write_fake_codex!(codex_binary, [
+        ~s({"id":1,"result":{}}),
+        ~s({"id":2,"result":{"thread":{"id":"thread-90"}}}),
+        ~s({"id":3,"result":{"turn":{"id":"turn-90"}}}),
+        ~s({"method":"turn/completed","params":{"turn":{"id":"turn-90","status":"failed","error":{"message":"bad request"}}}})
+      ])
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-failed-completion",
+        identifier: "MT-90",
+        title: "Failed turn completion",
+        description: "Ensure app-server failed completion is not treated as success",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-90",
+        labels: ["backend"]
+      }
+
+      test_pid = self()
+      on_message = fn message -> send(test_pid, {:app_server_message, message}) end
+
+      assert {:error, {:turn_failed, reason}} =
+               AppServer.run(workspace, "Fail this turn", issue, on_message: on_message)
+
+      assert reason["status"] == "failed"
+      assert get_in(reason, ["error", "message"]) == "bad request"
+      assert_received {:app_server_message, %{event: :turn_completed}}
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server fails when command execution approval is required under safer defaults" do
     test_root =
       Path.join(

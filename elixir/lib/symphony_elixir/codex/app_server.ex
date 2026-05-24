@@ -4,7 +4,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   """
 
   require Logger
-  alias SymphonyElixir.{Codex.DynamicTool, Config, LocalShell, PathSafety, SSH}
+  alias SymphonyElixir.{Codex.DynamicTool, Config, LocalShell, PathSafety, Redactor, SSH}
 
   @initialize_id 1
   @thread_start_id 2
@@ -450,7 +450,14 @@ defmodule SymphonyElixir.Codex.AppServer do
          _turn_context
        ) do
     emit_turn_event(on_message, :turn_completed, payload, payload_string, port, payload)
-    {:ok, :turn_completed}
+
+    case failed_completed_turn_reason(payload) do
+      nil ->
+        {:ok, :turn_completed}
+
+      reason ->
+        {:error, {:turn_failed, reason}}
+    end
   end
 
   defp handle_decoded_payload(
@@ -613,10 +620,35 @@ defmodule SymphonyElixir.Codex.AppServer do
             metadata
           )
 
-          Logger.debug("Codex notification: #{inspect(method)}")
+          log_notification(method, payload)
           continue_receive_loop(port, on_message, loop_options, turn_context)
         end
     end
+  end
+
+  defp failed_completed_turn_reason(%{"params" => %{"turn" => %{"status" => "failed"} = turn}}) do
+    Map.take(turn, ["id", "status", "error"])
+  end
+
+  defp failed_completed_turn_reason(%{"params" => %{"turn" => %{"error" => error} = turn}})
+       when not is_nil(error) do
+    Map.take(turn, ["id", "status", "error"])
+  end
+
+  defp failed_completed_turn_reason(_payload), do: nil
+
+  defp log_notification("error", payload) do
+    details =
+      payload
+      |> Map.get("params", payload)
+      |> Redactor.redact()
+      |> inspect(limit: 50, printable_limit: @max_stream_log_bytes)
+
+    Logger.warning("Codex error notification: #{details}")
+  end
+
+  defp log_notification(method, _payload) do
+    Logger.debug("Codex notification: #{inspect(method)}")
   end
 
   defp handle_steer_message(
