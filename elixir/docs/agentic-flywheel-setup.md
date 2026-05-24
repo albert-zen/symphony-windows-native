@@ -1,22 +1,29 @@
-# Small-team agentic build flywheel
+# Agentic flywheel setup and operations
 
-This playbook describes a lightweight agentic build loop for small teams using
-Linear, GitHub, Symphony, and Codex. It is intentionally smaller than an
-enterprise harness: the durable system is a queue, a thin orchestrator, clear
-quality gates, and a human manager who keeps the loop pointed at the right work.
+This playbook describes how to set up and operate an agentic build loop using
+Linear, GitHub, Symphony, and Codex. It covers project setup, the runtime loop,
+manager responsibilities, worker and reviewer handoff, pause and resume, and
+how to reuse the pattern on another repository.
 
 Use this pattern when a project has enough repeatable engineering work for
 automation, but still needs human product judgment, review, and prioritization.
+The canonical state machine and role boundaries live under
+[`docs/agents/`](agents/). For the quality discipline that makes the loop safe,
+read [agentic-flywheel-quality.md](agentic-flywheel-quality.md).
 
 ## Roles
 
 - Linear project: the private operating queue and state machine.
 - GitHub issues: the durable public implementation backlog and acceptance
   criteria.
-- Symphony: a thin dispatcher that polls eligible Linear work, creates isolated
-  workspaces, and starts Codex app-server sessions.
-- Codex agents: implementers that make scoped changes, validate them, open PRs,
-  and leave evidence.
+- Worker Symphony: a dispatcher that polls `Ready for Agent` and `Rework`,
+  creates isolated workspaces, and starts implementer Codex sessions.
+- Reviewer Symphony: a dispatcher that polls `Agent Review` and starts
+  reviewer Codex sessions.
+- Worker Codex agents: implementers that make scoped changes, validate them,
+  open PRs, and leave evidence.
+- Reviewer Codex agents: reviewers that do not edit code and instead report
+  standards/spec findings and move issues to the next review state.
 - Human manager: the upper-level product and quality owner who orders work,
   handles ambiguous tradeoffs, reviews results, and keeps production saturated.
 - Codex Workpad: one persistent Linear comment that records the current plan,
@@ -28,18 +35,20 @@ automation, but still needs human product judgment, review, and prioritization.
 2. The manager mirrors or routes one small piece of work into the Linear
    flywheel project.
 3. Backlog work stays parked in `Backlog`; Symphony does not poll it.
-4. The manager moves one issue at a time to `Todo` when it is eligible for
-   automation.
-5. Symphony claims eligible `Todo` or active work and starts a Codex session in
-   a fresh workspace.
+4. The manager moves ready DAG nodes to `Ready for Agent` when they are eligible
+   for automation.
+5. Worker Symphony claims eligible `Ready for Agent` or `Rework` issues and
+   starts a Codex session in a fresh workspace.
 6. The agent moves the issue to `In Progress`, creates or updates the single
    `## Codex Workpad`, and implements only the linked issue.
 7. The agent pushes a focused branch, opens a PR, records validation and review
    evidence, and waits for required checks.
-8. The issue moves to review only after the PR exists and required checks pass.
-   If review finds blocking issues, the work stays in or returns to an active
-   state until those findings are addressed.
-9. Defects discovered while running the loop become new GitHub issues and, when
+8. The issue moves to `Agent Review` only after the PR exists and required
+   checks pass. Reviewer Symphony then runs an independent standards/spec
+   review.
+9. Passing review moves the issue to `Human Review`; blocking findings move it
+   to `Rework`; missing spec context moves it to `Needs Human Context`.
+10. Defects discovered while running the loop become new GitHub issues and, when
    appropriate, Linear mirrors in the flywheel project.
 
 This makes the flywheel self-improving: the system uses normal engineering
@@ -52,37 +61,58 @@ Before starting unattended work, prepare the project:
 1. Create or choose a Linear project dedicated to the flywheel.
 2. Configure states so parked work is not eligible for polling:
    - `Backlog`: parked, not polled.
-   - `Todo`: eligible for Symphony.
-   - `In Progress`: active agent work.
+   - `Needs Human Context`: missing spec, acceptance criteria, dependency
+     state, or decision authority.
+   - `Ready for Agent`: eligible for worker Symphony.
+   - `In Progress`: active worker implementation.
    - `Blocked`: missing dependency, credentials, environment, or orchestration
      capability.
-   - `In Review`: PR exists, required checks passed, and review is requested or
-     underway. Work with unresolved blocking review findings stays in or returns
-     to an active work state.
+   - `Agent Review`: PR exists, required checks passed, and reviewer Symphony
+     should inspect the result.
+   - `Rework`: reviewer found bounded blocking findings for a worker to fix.
+   - `Human Review`: reviewer passed the work and human acceptance remains.
    - `Done`, `Canceled`, `Cancelled`, `Duplicate`: terminal states.
 3. Keep GitHub issues as the durable implementation specs. Linear descriptions
    can mirror GitHub, but implementation discussion should stay in GitHub when
    it needs to be public or reviewable later.
-4. Configure the workflow prompt to require a single `## Codex Workpad`, focused
-   branches, validation evidence, PR creation, and no review transition while
-   required checks are pending or failing.
-5. On Windows, copy the optimization workflow example, edit it for the project,
-   and run preflight from `elixir/`:
+4. Configure the worker workflow prompt to require a single `## Codex Workpad`,
+   focused branches, validation evidence, PR creation, and no `Agent Review`
+   transition while required checks are pending or failing.
+5. Configure a reviewer workflow prompt that performs review only and moves
+   issues to `Human Review`, `Rework`, `Needs Human Context`, or `Blocked`.
+6. On Windows, copy the worker and reviewer workflow examples, edit them for
+   the project, and run preflight from `elixir/`:
 
    ```powershell
    Copy-Item .\WORKFLOW.optimization.windows.example.md .\WORKFLOW.optimization.windows.md
+   Copy-Item .\WORKFLOW.optimization.reviewer.windows.example.md .\WORKFLOW.optimization.reviewer.windows.md
    notepad .\WORKFLOW.optimization.windows.md
+   notepad .\WORKFLOW.optimization.reviewer.windows.md
    mise exec -- mix symphony.preflight.windows .\WORKFLOW.optimization.windows.md
+   mise exec -- mix symphony.preflight.windows .\WORKFLOW.optimization.reviewer.windows.md
    ```
 
-6. Start with `agent.max_concurrent_agents: 1`. Increase concurrency only after
+7. Start with `agent.max_concurrent_agents: 1`. Increase concurrency only after
    claim behavior, review readiness, and CI reporting are reliable.
-7. Move the next issue from `Backlog` to `Todo`.
-8. Start Symphony and monitor the dashboard and Linear Workpad.
+8. Move the next issue from `Backlog` to `Ready for Agent`.
+9. Start the worker and reviewer Symphony instances and monitor the dashboards
+   and Linear Workpad.
 
 For the Windows-native optimization project, use
 [`WORKFLOW.optimization.windows.example.md`](../WORKFLOW.optimization.windows.example.md)
-as the baseline workflow.
+as the worker baseline and
+[`WORKFLOW.optimization.reviewer.windows.example.md`](../WORKFLOW.optimization.reviewer.windows.example.md)
+as the reviewer baseline. Start both local files together with
+`scripts/start-agent-flywheel.ps1` after editing the Linear project slug,
+repository URL, workspace roots, and required checks.
+
+The flywheel start script treats the two instances as one startup unit by
+default: both worker and reviewer must start, publish PID metadata, and listen
+on their configured ports. If reviewer startup fails after the worker is up, the
+script stops the worker and prints the failed phase, reason, worker/reviewer log
+roots, and cleanup status. Use `-AllowPartial` only for explicit debugging when
+you want to keep a successfully started worker while investigating reviewer
+startup; the script reports `Partial startup` in that mode.
 
 ## Keeping production saturated
 
@@ -94,98 +124,49 @@ Good saturation looks like:
 
 - A small number of active issues, each scoped to one PR.
 - A ready queue of `Backlog` issues that can be promoted one at a time.
-- Clear GitHub acceptance criteria before an issue reaches `Todo`.
+- Clear GitHub acceptance criteria before an issue reaches `Ready for Agent`.
 - Explicit dependency notes so prerequisite work lands or deploys before
-  dependent issues are released to `Todo`.
+  dependent issues are released to `Ready for Agent`.
 - Fast human responses to true blockers.
 - Follow-up issues for discovered defects instead of broadening the active PR.
 
-Avoid moving many speculative issues to `Todo` before the claim, lease, and
-quality gates are proven. A small team gets better throughput from predictable
-handoffs than from maximum parallelism.
+Avoid moving many speculative issues to `Ready for Agent` before the claim,
+lease, and quality gates are proven. A small team gets better throughput from
+predictable handoffs than from maximum parallelism.
 
 Dependent work is not independent capacity. If issue B depends on issue A,
 keep B parked in `Backlog` until A is merged and deployed when deployment is
-part of the unblock condition. Releasing both into `Todo` at the same time
-usually creates stale branches, repeated validation, and misleading `Blocked`
-states.
+part of the unblock condition. Releasing both into `Ready for Agent` at the
+same time usually creates stale branches, repeated validation, and misleading
+`Blocked` states.
 
-## Guardrails that stop quality debt from compounding
+## Quality discipline
 
 Generated work compounds quickly when low-quality PRs are allowed to become the
-base for later agents. These guardrails are the minimum bar:
+base for later agents. Keep this document focused on setup and operating rhythm;
+put quality rules, local validation fallback, blocker protocol, Workpad
+discipline, review readiness, and PR conventions in
+[agentic-flywheel-quality.md](agentic-flywheel-quality.md).
 
-- Workers should start from the repository-level
-  [agent entrypoint playbook](../../AGENTS.md) so recurring Windows and
-  flywheel facts are not rediscovered every run.
-- One issue, one branch, one PR.
-- Branches use `codex/<linear-identifier>-<short-topic>`.
-- Commits use lightweight Conventional Commits.
-- The Linear Workpad records the plan, validation, blockers, PR link, review
-  status, and any CI/runtime failures.
-- The PR body follows the repository template and includes concrete validation
-  evidence.
-- PRs for Linear issues with one unambiguous origin GitHub issue include a closing
-  keyword such as `Fixes #NN` in the PR body.
-- `make all` is the repository gate when the local environment supports it.
-- `windows-native-test` runs for Windows shell, workspace/config, workflow, or
-  path-handling changes.
-- CI, lint, formatter, and test gates must not be weakened, skipped, disabled,
-  or relaxed to land agent work.
-- Required GitHub checks must complete and pass before an agent moves Linear to
-  `In Review`.
-- Meaningful changes get an independent SubAgent review loop before handoff.
-  This includes docs that encode operating decisions, workflow policy, state
-  transitions, quality gates, or review rules. Manager review is still useful,
-  but manager-only approval does not satisfy this gate.
-- Blocking review findings keep the issue in `In Progress` or return it to
-  `Todo` until fixed.
-
-See [agent-quality-flywheel.md](agent-quality-flywheel.md) for the detailed PR
-quality policy used by this repository.
-
-See [manager-agent-runbook.md](manager-agent-runbook.md) for the manager
-orchestration loop used to review completed work, investigate blockers, release
-ready issues into `Todo`, keep workers saturated, and verify deployed system
-changes.
-
-## Workpad discipline
-
-Use exactly one Linear comment whose first line is:
-
-```md
-## Codex Workpad
-```
-
-Update that comment instead of adding progress spam. A useful Workpad has:
-
-- Status: current phase and whether the issue is blocked.
-- Scope: GitHub issue, branch, PR, and linked acceptance criteria.
-- Plan: the next few concrete steps.
-- Validation: commands run and outcomes.
-- Review: reviewer requested, findings, and resolution.
-- Checks: required GitHub check status.
-- Blockers: exact missing credential, permission, environment, dependency, or
-  system condition.
-
-Use a separate Linear problem comment only when a failure changes the plan,
-requires a workaround, consumes operator attention, or blocks completion. Routine
-retry noise belongs in the Workpad.
+Managers should use [manager-agent-runbook.md](manager-agent-runbook.md) for the
+operational loop: review completed work, investigate blockers, release ready
+issues into `Ready for Agent`, keep workers saturated, and verify deployed
+system changes.
 
 ## Pausing safely
 
 Pause the flywheel by stopping new dispatch first, then letting active work land
 or park cleanly:
 
-1. Stop moving new issues from `Backlog` to `Todo`.
-2. If immediate pause is needed, remove `Todo` from `tracker.dispatch_states` or
-   stop the Symphony process.
+1. Stop moving new issues from `Backlog` to `Ready for Agent`.
+2. If immediate pause is needed, remove `Ready for Agent` from the worker
+   `tracker.dispatch_states` or stop the worker Symphony process.
 3. Let active agents finish their current turn when possible.
 4. For unfinished active issues, update the Workpad with the current branch,
    last validation result, exact blocker or pause reason, and next resume step.
 5. Move truly blocked work to `Blocked` when that state exists. If it does not,
    record `Blocked state missing` and keep the issue active for manager triage.
-6. Do not move issues to `In Review` only because a branch or PR exists.
+6. Do not move issues to `Agent Review` only because a branch or PR exists.
 
 When resuming, inspect the Workpad first, then the PR or branch, then restart
 Symphony with the same workflow boundaries.
@@ -195,11 +176,13 @@ Symphony with the same workflow boundaries.
 To reuse this pattern outside Symphony:
 
 1. Create a dedicated Linear project or label route for agentic work.
-2. Decide which Linear states are active and terminal.
+2. Decide which Linear states are active and terminal, using
+   [`agents/issue-tracker.md`](agents/issue-tracker.md) as the default state
+   model.
 3. Add a workflow prompt that encodes the team's branch, commit, validation,
    Workpad, blocker, and review rules.
 4. Add a project-local quality document equivalent to
-   `agent-quality-flywheel.md`.
+   `agentic-flywheel-quality.md`.
 5. Start with one trusted repository and one agent at a time.
 6. Make every automation defect visible as a normal backlog issue.
 7. Expand concurrency only after the team trusts the claim behavior, CI signal,
@@ -207,12 +190,13 @@ To reuse this pattern outside Symphony:
 
 ### Project configuration checklist
 
-Before moving real work into `Todo`, make these project-specific settings
-explicit. Treat this as the minimum hard configuration for a new repo:
+Before moving real work into `Ready for Agent`, make these project-specific
+settings explicit. Treat this as the minimum hard configuration for a new repo:
 
 - **Linear routing:** project slug, team, eligible labels if any, and exact state
-  names. Keep `Backlog` out of `tracker.dispatch_states`; normally only `Todo`
-  should be dispatchable.
+  names. Keep `Backlog` out of `tracker.dispatch_states`; worker instances
+  normally dispatch only `Ready for Agent` and `Rework`; reviewer instances
+  normally dispatch only `Agent Review`.
 - **GitHub routing:** repository owner/name, trusted issue labels, branch base,
   PR template, and required checks. Required check names must match the checks
   GitHub actually reports.

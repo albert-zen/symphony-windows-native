@@ -235,7 +235,8 @@ explicit review target.
 The optimization example is a fixed-project routing template. Replace
 `YOUR_LINEAR_PROJECT_SLUG` with the slug for the Linear project you want
 Symphony to poll. Keep `Backlog` out of `tracker.dispatch_states`; parked issues
-remain invisible to Symphony until a human moves one issue at a time to `Todo`.
+remain invisible to Symphony until a human moves ready nodes to
+`Ready for Agent`.
 
 Keep the public example generic. Operator-specific project names, workspace
 paths, and repository owners should live in a local workflow file such as
@@ -251,16 +252,18 @@ tracker:
   labels:
     - symphony-optimization
   dispatch_states:
-    - Todo
+    - Ready for Agent
+    - Rework
   active_states:
-    - Todo
+    - Ready for Agent
     - In Progress
+    - Rework
 ```
 
 The label match and `dispatch_states` apply only to candidate dispatch.
 Already-running issues are still reconciled by `active_states` so Symphony keeps
-valid workers alive after they move from `Todo` to `In Progress`, and stops them
-cleanly when they move to a terminal state.
+valid workers alive after they move from `Ready for Agent` to `In Progress`,
+and stops them cleanly when they move to a terminal state.
 
 To find the right Linear values, use the Linear UI for the project slug when
 possible, or query Linear GraphQL with your own API key. Do not commit API keys,
@@ -288,6 +291,40 @@ Use `-Background` when you want the launcher to return after starting a hidden P
 .\scripts\start-windows-native.ps1 -WorkflowPath .\WORKFLOW.windows.md -Port 4011 -Background
 ```
 
+For the two-instance worker/reviewer flywheel, create local workflow files from
+the optimization examples and start both instances with distinct ports and log
+roots:
+
+```powershell
+Copy-Item .\WORKFLOW.optimization.windows.example.md .\WORKFLOW.optimization.windows.md
+Copy-Item .\WORKFLOW.optimization.reviewer.windows.example.md .\WORKFLOW.optimization.reviewer.windows.md
+notepad .\WORKFLOW.optimization.windows.md
+notepad .\WORKFLOW.optimization.reviewer.windows.md
+.\scripts\start-agent-flywheel.ps1 `
+  -WorkerWorkflowPath .\WORKFLOW.optimization.windows.md `
+  -ReviewerWorkflowPath .\WORKFLOW.optimization.reviewer.windows.md `
+  -WorkerPort 4011 `
+  -ReviewerPort 4012
+```
+
+`start-agent-flywheel.ps1` is all-or-nothing by default. It preflights the
+workflow files, `LINEAR_API_KEY`, `mise`, live PID metadata, and listening ports,
+then waits for both background instances to publish PID metadata and listen on
+their ports. If the worker starts but the reviewer fails, the script stops the
+worker, reports the failure phase and reason, and prints both log roots plus the
+worker/reviewer cleanup status.
+
+For debugging a reviewer-only startup failure, pass `-AllowPartial` to keep the
+worker running. The script still reports `Partial startup` and the reviewer
+failure details:
+
+```powershell
+.\scripts\start-agent-flywheel.ps1 `
+  -WorkerWorkflowPath .\WORKFLOW.optimization.windows.md `
+  -ReviewerWorkflowPath .\WORKFLOW.optimization.reviewer.windows.md `
+  -AllowPartial
+```
+
 Or run the escript directly:
 
 ```powershell
@@ -295,10 +332,12 @@ $env:LINEAR_API_KEY = [Environment]::GetEnvironmentVariable("LINEAR_API_KEY", "U
 mise exec -- escript .\bin\symphony .\WORKFLOW.windows.md --port 4011 --logs-root "$env:LOCALAPPDATA\Symphony\logs" --i-understand-that-this-will-be-running-without-the-usual-guardrails
 ```
 
-Open the dashboard:
+Open the dashboard. The second URL is used only when the reviewer instance is
+running:
 
 ```text
 http://127.0.0.1:4011/
+http://127.0.0.1:4012/
 ```
 
 ## Stop Symphony
@@ -309,6 +348,13 @@ Stop a launcher started by `start-windows-native.ps1`:
 .\scripts\stop-windows-native.ps1 -Force
 ```
 
+Stop the two flywheel instances by pointing at their separate PID files:
+
+```powershell
+.\scripts\stop-windows-native.ps1 -PidFile "$env:LOCALAPPDATA\Symphony\agent-flywheel\symphony.worker.pid.json" -Force
+.\scripts\stop-windows-native.ps1 -PidFile "$env:LOCALAPPDATA\Symphony\agent-flywheel\symphony.reviewer.pid.json" -Force
+```
+
 The stop script reads the PID metadata and verifies that the target command line is a
 `start-windows-native.ps1` process before terminating that process tree. If the PID file is missing,
 pass `-WorkflowPath` to locate a matching launcher process:
@@ -317,14 +363,17 @@ pass `-WorkflowPath` to locate a matching launcher process:
 .\scripts\stop-windows-native.ps1 -WorkflowPath .\WORKFLOW.windows.md -Force
 ```
 
-Linear claim leases are also cleaned up as workers stop. If the host or runtime
-exits before a release comment is written, the next runtime startup checks active
-Linear claim comments before dispatch. A claim owned by the same Windows host is
-released only when its recorded OS process ID is no longer alive; claims from
-other hosts, malformed owners, or still-running local processes remain protected.
-While another active lease is preserved, the issue appears in the dashboard
-backoff queue with an `external_claim` reason instead of being shown as a local
-running worker.
+Linear claim leases are also cleaned up as workers stop. Symphony stores active
+claim state in runtime-owned `## Symphony Control` Linear comments and removes
+the active control comment on normal release, falling back to a release update if
+delete fails. This avoids appending separate human-facing claim and release
+comments for normal dispatch. If the host or runtime exits before a release is
+written, the next runtime startup checks active Linear claim state before
+dispatch. A claim owned by the same Windows host is released only when its
+recorded OS process ID is no longer alive; claims from other hosts, malformed
+owners, or still-running local processes remain protected. While another active
+lease is preserved, the issue appears in the dashboard backoff queue with an
+`external_claim` reason instead of being shown as a local running worker.
 
 ## Apply merged runtime updates
 
@@ -401,17 +450,20 @@ agent how to use Linear.
 A practical flow is:
 
 - `Backlog`: not picked up by Symphony.
-- `Todo`: Symphony can pick this up. The agent should move it to `In Progress`.
-- `In Progress`: the agent implements and validates.
+- `Needs Human Context`: the issue lacks enough spec, acceptance criteria,
+  dependency state, or decision authority for autonomous work.
+- `Ready for Agent`: worker Symphony can pick this up. The agent should move it
+  to `In Progress`.
+- `In Progress`: the worker implements and validates.
 - `Blocked`: the agent cannot complete because a required tool, auth grant,
   dependency, environment, or orchestration condition is missing. Add this state
   to the Linear team before enabling blocked-state transitions; if it is absent,
   agents must record `Blocked state missing` and leave the issue in its active
   state for a manager to triage.
-- `Human Review`: the agent has created or updated a PR, required checks are passing, and review is
-  requested or underway.
-- `Rework`: the agent should handle reviewer feedback.
-- `Merging`: the agent should run the repository's merge/land process.
+- `Agent Review`: the worker has created or updated a PR, required checks are
+  passing, and reviewer Symphony should inspect the work.
+- `Rework`: reviewer found bounded blocking findings for a worker to fix.
+- `Human Review`: reviewer passed the work and human acceptance remains.
 - `Done`: terminal. Symphony stops the active agent.
 - `Canceled`, `Cancelled`, `Duplicate`: terminal.
 
@@ -477,7 +529,11 @@ steer submission; read-only dashboard and JSON views remain available.
 
 ### Review readiness
 
-Agent-initiated moves to `In Review` are guarded by review readiness checks.
+Agent-initiated moves to the machine review queue are guarded by review
+readiness checks. Configure the protected destination states with
+`codex.review_readiness_guarded_states`; older workflow files default to
+`In Review`, while the two-instance optimization flywheel should set this to
+`Agent Review`.
 The tool only allows that transition when the issue has a linked GitHub PR and
 the required checks on the PR head are complete and successful. If GitHub branch
 protection metadata is private or unavailable to the Windows runtime, configure
@@ -533,7 +589,7 @@ returns from init, so dashboard and app readiness are not blocked by old
 workspace removal or `hooks.before_remove`.
 
 Startup cleanup is retention-aware. It queries terminal states plus configured
-active states and the protected `In Review` and `Blocked` states, preserves any
+active states and protected review/blocker states, preserves any
 non-terminal issue workspace, and removes only terminal issue workspaces whose
 `updated_at` timestamp is older than `workspace.startup_cleanup_ttl_ms`. The
 default TTL is seven days. Set the TTL to `0` only when an operator needs
@@ -578,11 +634,11 @@ profile:
 make windows-native-test
 ```
 
-Agent PRs should also follow the [agent quality flywheel](agent-quality-flywheel.md): keep one
+Agent PRs should also follow the [agentic flywheel quality discipline](agentic-flywheel-quality.md): keep one
 Linear workpad, use Conventional Commits, record validation in the PR body, and wait for required
 GitHub checks before moving the Linear issue to review.
 For the small-team manager and agent operating model, see the
-[small-team agentic build flywheel playbook](small-team-agentic-flywheel.md).
+[agentic flywheel setup and operations playbook](agentic-flywheel-setup.md).
 
 ## Troubleshooting
 

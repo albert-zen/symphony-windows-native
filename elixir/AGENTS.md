@@ -30,8 +30,24 @@ forcing every worker to read every project document.
 
 Use [`../SPEC.md`](../SPEC.md) when changing public behavior or contracts. Use
 [`docs/windows-native.md`](docs/windows-native.md) for Windows setup/runtime
-details, and [`docs/agent-quality-flywheel.md`](docs/agent-quality-flywheel.md)
+details, and [`docs/agentic-flywheel-quality.md`](docs/agentic-flywheel-quality.md)
 for PR quality policy.
+
+## Agent Workflow
+
+This repo uses a two-instance agent workflow:
+
+- Worker Symphony polls `Ready for Agent` and `Rework`, then starts implementer
+  Codex sessions.
+- Reviewer Symphony polls `Agent Review`, then starts review-only Codex
+  sessions.
+- State machine and issue readiness rules: [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md).
+- Worker/reviewer responsibilities: [`docs/agents/worker-model.md`](docs/agents/worker-model.md).
+- Review policy: [`docs/agents/review-policy.md`](docs/agents/review-policy.md).
+- Quality gates: [`docs/agents/quality-gates.md`](docs/agents/quality-gates.md).
+- Durable Linear claim coordination uses runtime-owned `## Symphony Control`
+  comments. These are separate from the human-facing `## Codex Workpad` single
+  comment rule.
 
 ## Environment
 
@@ -43,13 +59,15 @@ for PR quality policy.
 ## Codebase-Specific Conventions
 
 - Runtime config is loaded from `WORKFLOW.md` front matter via `SymphonyElixir.Workflow` and `SymphonyElixir.Config`.
-- Agent PRs must follow the quality policy in [`docs/agent-quality-flywheel.md`](docs/agent-quality-flywheel.md).
+- Agent PRs must follow the quality policy in [`docs/agentic-flywheel-quality.md`](docs/agentic-flywheel-quality.md).
 - Keep the implementation aligned with [`../SPEC.md`](../SPEC.md) where practical.
   - The implementation may be a superset of the spec.
   - The implementation must not conflict with the spec.
   - If implementation changes meaningfully alter the intended behavior, update the spec in the same
     change where practical so the spec stays current.
 - Prefer adding config access through `SymphonyElixir.Config` instead of ad-hoc env reads.
+- Do not run Codex app-server automation with `model_reasoning_effort=minimal`;
+  use `low` or higher so app-server's default tool set is accepted by the API.
 - Workspace safety is critical:
   - Never run Codex turn cwd in source repo.
   - Workspaces must stay under configured workspace root.

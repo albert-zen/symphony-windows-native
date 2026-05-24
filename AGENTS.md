@@ -13,6 +13,9 @@ policy or recurring pitfalls change.
   [`elixir/docs/manager-agent-runbook.md`](elixir/docs/manager-agent-runbook.md)
   for review, blocker triage, issue release, waiting, and deployment
   verification.
+- **Workflow policy:** read [`elixir/docs/agents/issue-tracker.md`](elixir/docs/agents/issue-tracker.md)
+  and [`elixir/docs/agents/worker-model.md`](elixir/docs/agents/worker-model.md)
+  when changing Linear states, agent routing, or review/rework behavior.
 
 ## Windows Paths And Commands
 
@@ -73,15 +76,21 @@ mise exec -- mix symphony.preflight.windows .\WORKFLOW.optimization.windows.md
 
 ## Linear And GitHub Flow
 
-- If a Linear issue starts in `Todo`, move it to `In Progress` before editing.
-- Use exactly one Linear comment whose first line is `## Codex Workpad`; update
-  it instead of creating progress spam.
+- Worker agents should accept `Ready for Agent` and `Rework` issues, then move
+  them to `In Progress` before editing. `Todo` is not the agent release queue.
+- Use exactly one human-facing Linear comment whose first line is
+  `## Codex Workpad`; update it instead of creating progress spam. Symphony may
+  also maintain transient `## Symphony Control` system comments for durable
+  claim coordination; do not use those control comments for human progress notes.
 - Use the linked GitHub issue as the public implementation spec.
 - Do not accept or continue work labeled `manager-owned`, or whose Workpad says
   `Manager classification: manager-owned`, unless the manager has decomposed a
   narrow worker-safe subtask for you.
 - Open the PR against `main`, link it in the Workpad, and wait for required
-  GitHub checks before moving Linear to `In Review`.
+  GitHub checks before moving Linear to `Agent Review`.
+- If the issue lacks enough spec, acceptance criteria, dependency state, or
+  decision authority, move it to `Needs Human Context` with the missing context
+  spelled out.
 - If checks are pending, failing, or unverifiable, record the exact reason in the
   Workpad or PR and keep the issue active.
 
@@ -92,7 +101,7 @@ runtime orchestration, worker startup, Linear state transitions, Codex
 app-server protocol, CI, merge/review policy, more than one subsystem, or docs
 that encode operating decisions. Record the request and findings in the PR or
 Workpad. Blocking findings keep the issue in `In Progress` or return it to
-`Todo` until fixed and checks pass.
+`Rework` until fixed and checks pass.
 
 ## Blockers Protocol
 
@@ -124,6 +133,10 @@ Workpad. Blocking findings keep the issue in `In Progress` or return it to
 
 - PowerShell wrappers can corrupt `codex app-server` JSON-RPC stdio; start Codex
   directly unless the wrapper is proven quiet.
+- `codex app-server` with `model_reasoning_effort=minimal` can fail before the
+  first agent message when the default tool set includes tools such as
+  `image_gen` or `web_search`. Use `low` or higher for Linear automation
+  workflows.
 - Windows CRLF and snapshot rendering can differ from Unix expectations.
 - Fake `ssh`, `gh`, and Codex fixtures may assume Unix shebang/chmod behavior.
 - Stale `main` or a checkout where `origin` still points at the upstream

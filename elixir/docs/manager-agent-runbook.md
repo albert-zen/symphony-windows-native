@@ -6,14 +6,18 @@ fresh machine where the operator needs to understand the expected rhythm before
 touching the queue.
 
 The manager agent is not primarily an implementer. Its job is to keep the
-flywheel honest: shape the next work, keep parallel workers fed, review finished
-work against the original intent, investigate blockers to root cause, and turn
-system defects into durable issues.
+flywheel honest: shape the next work, keep worker and reviewer queues fed,
+review finished work against the original intent, investigate blockers to root
+cause, and turn system defects into durable issues.
+
+The canonical state machine and role split live in
+[`agents/issue-tracker.md`](agents/issue-tracker.md) and
+[`agents/worker-model.md`](agents/worker-model.md).
 
 ## Operating posture
 
-- Treat `Backlog` as parked work. Symphony claims `Todo` and active work, not
-  Backlog.
+- Treat `Backlog` as parked work. Worker Symphony claims `Ready for Agent` and
+  `Rework`; reviewer Symphony claims `Agent Review`.
 - Move work forward only after the public GitHub issue has a clear spec,
   testing intent, and acceptance criteria.
 - Prefer orchestration over hand repair. If a worker can finish the issue after
@@ -23,8 +27,8 @@ system defects into durable issues.
   defects where waiting for a worker would increase risk.
 - Review is intent-based. Passing tests and green CI are required evidence, but
   they do not prove the human request was satisfied.
-- Worker completion is a manager handoff, not a done state. A PR that reaches
-  review still needs manager review, state cleanup, and sometimes deployment.
+- Worker completion is a reviewer handoff, not a done state. A PR that reaches
+  `Agent Review` still needs reviewer and often human review before completion.
 - Keep the system saturated, not chaotic. Raise concurrency only after claim
   behavior, review readiness, and CI signal are trustworthy.
 - Treat repeated pipeline friction as a product defect in the flywheel, not as a
@@ -41,15 +45,17 @@ planes:
    runtime commit, PID file, and workflow path.
 2. Check GitHub open PRs, required checks, and recently updated optimization
    issues.
-3. Check Linear states for the optimization project across `Backlog`, `Todo`,
-   `In Progress`, `In Review`, `Blocked`, and terminal states.
+3. Check Linear states for the optimization project across `Backlog`,
+   `Needs Human Context`, `Ready for Agent`, `In Progress`, `Agent Review`,
+   `Rework`, `Human Review`, `Blocked`, and terminal states.
 4. Confirm the running runtime commit matches `origin/main` after any recently
    merged system PR. If not, rebuild and restart before launching more work.
-5. Review completed or `In Review` work before releasing another issue.
+5. Review completed or `Human Review` work, and check `Agent Review` throughput,
+   before releasing another issue.
 6. Inspect `Blocked` work to root cause. Do not let new workers rediscover a
    shared blocker.
 7. Only then choose the next Backlog issue, complete its spec/testing/acceptance,
-   classify it as worker-safe or manager-owned, and move it to `Todo`.
+   classify it as worker-safe or manager-owned, and move it to `Ready for Agent`.
 
 The useful default rhythm is review, triage, release, wait, then repeat. Worker
 runs often take 10 to 20 minutes; the manager should use that time to review
@@ -68,7 +74,7 @@ Examples:
 - Choosing the canonical issue for a repeated system defect, marking duplicates,
   or defining defect intake policy.
 - Deciding whether a dependency chain is resolved enough to release downstream
-  work to `Todo`.
+  work to `Ready for Agent`.
 - Applying privacy-sensitive history cleanup or deployment/restart changes.
 - Root-causing why active work is `Blocked`, stale, duplicated, or running on
   old code.
@@ -89,7 +95,8 @@ Mark manager-owned work explicitly so it is not released accidentally:
   Workpad`.
 - Keep the issue in `Backlog` until a manager handles it or creates narrower
   worker-safe subtasks.
-- Do not move manager-owned issues to `Todo` merely to keep concurrency high.
+- Do not move manager-owned issues to `Ready for Agent` merely to keep
+  concurrency high.
 
 ## Worker blocker handoff
 
@@ -134,8 +141,9 @@ Run this loop until the operator deliberately pauses the flywheel.
    - Check the dashboard for active workers, queue depth, token pressure, retry
      noise, and rate-limit status.
    - Check GitHub PRs, checks, mergeability, and recently changed issues.
-   - Check Linear state across `Backlog`, `Todo`, `In Progress`, `In Review`,
-     `Blocked`, and terminal states.
+   - Check Linear state across `Backlog`, `Needs Human Context`,
+     `Ready for Agent`, `In Progress`, `Agent Review`, `Rework`,
+     `Human Review`, `Blocked`, and terminal states.
    - Check runtime logs, PID files, workflow config, and the deployed commit
      when the runtime may be stale.
    - For worker detail pages, use the processed conversation surface for normal
@@ -146,9 +154,11 @@ Run this loop until the operator deliberately pauses the flywheel.
 2. Review completed work first.
    - Read the original human request, the GitHub issue, the Linear Workpad, the
      PR diff, CI results, and review evidence.
-   - Request independent SubAgent review for meaningful changes before handoff.
-   - Merge only when the implementation satisfies intent and required checks are
-     green, or return the issue to active work with concrete findings.
+   - Inspect `Agent Review` items through reviewer Symphony. Do not substitute
+     green CI for reviewer judgment.
+   - Accept `Human Review` items only when the implementation satisfies intent
+     and required checks are green, or move the issue to `Rework` or
+     `Needs Human Context` with concrete findings.
 3. Investigate blockers immediately.
    - A blocked issue needs a root cause, not just a label.
    - Classify the blocker as worker implementation, stale base, failing CI,
@@ -166,8 +176,8 @@ Run this loop until the operator deliberately pauses the flywheel.
      it. Do not release manager-owned work merely to fill a concurrency slot.
    - Complete the GitHub issue spec, testing intent, and acceptance criteria.
    - Add links between GitHub and Linear.
-   - Move it to `Todo` only when there is available capacity and the task is
-     ready for an isolated worker.
+   - Move it to `Ready for Agent` only when there is available capacity and the
+     task is ready for an isolated worker.
 5. Wait deliberately.
    - Worker runs commonly take 10 to 20 minutes.
    - During long waits, use a heartbeat automation or a local sleep interval,
@@ -186,7 +196,7 @@ Use this checklist before accepting a PR:
 - The PR body preserves the repository template headings and records concrete
   validation.
 - Required checks passed; pending, failing, or missing checks are explained and
-  resolved before review state.
+  resolved before `Agent Review` or `Human Review`.
 - Windows-specific behavior was validated when paths, shells, workflow config,
   workspace cleanup, or runtime orchestration changed.
 - Coverage, lint, formatter, CI, review-readiness, and PR-body gates were not
@@ -197,8 +207,9 @@ Use this checklist before accepting a PR:
   describe system behavior beyond the active PR.
 
 When a PR fails this checklist, leave a specific GitHub PR review comment and
-update the Linear Workpad with the review outcome before moving the issue back
-to active work. Do not leave it in `In Review` just because a branch exists.
+update the Linear Workpad with the review outcome before moving the issue to
+`Rework` or `Needs Human Context`. Do not leave it in `Agent Review` just
+because a branch exists.
 
 ## Blocker investigation
 
@@ -241,10 +252,11 @@ Before creating a new system issue:
 This keeps the flywheel from manufacturing review debt while it is trying to fix
 itself.
 
-## Releasing work to Todo
+## Releasing work to Ready for Agent
 
-Backlog issues are not ready by default. Before moving an issue to `Todo`, the
-manager should ensure the public GitHub issue includes:
+Backlog issues are not ready by default. Before moving an issue to
+`Ready for Agent`, the manager should ensure the public GitHub issue or Linear
+description includes:
 
 - Problem statement and user-facing intent.
 - Scope boundaries and explicit non-goals.
@@ -254,12 +266,15 @@ manager should ensure the public GitHub issue includes:
 - Testing intent: focused local checks, broad gates, and Windows-specific checks
   when relevant.
 - Acceptance criteria that a reviewer can verify from the final behavior.
+- Decision policy that names safe agent choices and decisions that require
+  human context.
 - Links to related issues, PRs, prior failures, and Linear mirror.
 
 Use a `## Dependencies` section or an explicit `Depends on:` line in the GitHub
 issue when the work must wait for another issue, PR, deployment, credential, or
-system capability. Do not move that issue to `Todo` while the dependency is
-active, unmerged, blocked, or merged-but-not-deployed when deployment matters.
+system capability. Do not move that issue to `Ready for Agent` while the
+dependency is active, unmerged, blocked, or merged-but-not-deployed when
+deployment matters.
 After the dependency is resolved, mark it with `[x]`, `resolved by`, `merged in`,
 or `deployed in`, then record the dependency resolution in the Workpad when
 releasing the issue.
@@ -279,7 +294,8 @@ were independent work.
 
 After the worker claims the issue, avoid changing the task underneath it. If the
 intent changes, update the GitHub issue and Workpad, then decide whether to let
-the current worker continue or return the issue to `Todo`.
+the current worker continue, move the issue to `Needs Human Context`, or return
+it to `Ready for Agent`.
 
 ## Saturation and waiting
 
@@ -289,8 +305,8 @@ concurrency, while preserving review quality.
 - Start with low concurrency on a new deployment.
 - Increase concurrency after the runtime proves it can claim, run, report, and
   hand off reliably.
-- Keep a small prepared Backlog so the next issue can move to `Todo` quickly
-  after a review or merge.
+- Keep a small prepared Backlog so the next issue can move to
+  `Ready for Agent` quickly after a review or merge.
 - Prefer reviewing finished work over launching new work.
 - During quiet periods, wait 5 to 10 minutes and inspect again.
 
@@ -333,11 +349,11 @@ On a new machine or fresh deployment, confirm:
 - Runtime directory and workflow file paths match the local machine.
 - GitHub CLI is installed and authenticated.
 - Linear access works through the connector or `LINEAR_API_KEY`.
-- The Linear project has the expected active, review, blocked, duplicate, and
-  terminal states.
+- The Linear project has the expected active, review, context, blocked,
+  duplicate, and terminal states.
 - The workflow config sets the intended concurrency and worker reasoning effort.
 - Dashboard URL, PID files, logs, and workspace root are known.
-- `Backlog` remains parked and `Todo` is the release valve.
+- `Backlog` remains parked and `Ready for Agent` is the worker release valve.
 - The manager has a plan for review, blockers, deployment, and waiting before
   launching many workers.
 

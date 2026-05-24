@@ -12,14 +12,20 @@ tracker:
   # Optional: uncomment only if this project is shared with unrelated work.
   # labels:
   #   - symphony-optimization
-  # Poll only release-ready work. Keep Backlog and In Progress out of dispatch_states.
+  # Poll only worker-ready work. Keep Backlog and In Progress out of dispatch_states.
   dispatch_states:
-    - Todo
-  # Keep In Progress active so workers are not stopped after they claim a Todo issue.
+    - Ready for Agent
+    - Rework
+  # Keep In Progress active so workers are not stopped after they claim an issue.
   active_states:
-    - Todo
+    - Ready for Agent
     - In Progress
+    - Rework
   terminal_states:
+    - Agent Review
+    - Human Review
+    - Needs Human Context
+    - Blocked
     - Done
     - Canceled
     - Cancelled
@@ -52,6 +58,7 @@ agent:
 codex:
   command: codex --config shell_environment_policy.inherit=all --config model=gpt-5.5 --config model_reasoning_effort=medium app-server
   approval_policy: never
+  read_timeout_ms: 30000
   thread_sandbox: danger-full-access
   # Used when GitHub branch protection required-check metadata is private or unavailable.
   review_readiness_repository: YOUR_GITHUB_OWNER/YOUR_REPO
@@ -64,6 +71,8 @@ codex:
     - make-all
     - validate-pr-description
     - windows-native-test
+  review_readiness_guarded_states:
+    - Agent Review
   turn_sandbox_policy:
     type: dangerFullAccess
 ---
@@ -87,9 +96,11 @@ No description provided.
 Operating model:
 
 1. Work only in the current workspace.
-2. If the Linear issue is Todo, move it to In Progress before implementation.
+2. If the Linear issue is `Ready for Agent` or `Rework`, move it to `In Progress` before implementation.
 3. Use exactly one Linear comment whose first line is `## Codex Workpad`; update it instead of creating progress spam.
-4. Use the linked GitHub issue as the durable public implementation spec.
+4. Use the linked GitHub issue or embedded `## Agent Brief` as the durable implementation spec.
+   If the issue lacks enough context, acceptance criteria, dependency state, testing intent, or
+   decision authority, write the missing context into the Workpad and move it to `Needs Human Context`.
 5. Keep changes focused on the current Linear/GitHub issue.
 6. Create a branch named `codex/<linear-identifier>-<short-topic>`.
 7. Run focused validation before committing.
@@ -99,9 +110,9 @@ Operating model:
 9. Open a GitHub pull request against `main` and link it in the Linear workpad.
    If the Linear issue has one unambiguous origin GitHub issue, include a supported closing keyword
    in the PR body, for example `Fixes #NN`.
-10. Wait for required GitHub checks to complete before moving the Linear issue to `In Review`.
+10. Wait for required GitHub checks to complete before moving the Linear issue to `Agent Review`.
     If checks cannot be verified, record the exact reason in the workpad and PR, then keep the
-    issue in `In Progress` or return it to `Todo`; only a manager may explicitly override this.
+    issue in `In Progress` or return it to `Rework`; only a manager may explicitly override this.
     When checks are verified through GitHub CLI, connector, or another non-REST path, record this
     exact machine-readable evidence in the `## Codex Workpad`:
     `PR: https://github.com/{{ workflow.codex.review_readiness_repository }}/pull/<number>`
@@ -109,7 +120,7 @@ Operating model:
     `- make-all run <run-id>: success.`
     `- validate-pr-description run <run-id>: success.`
     `- windows-native-test run <run-id>: success.`
-11. Do not move unrelated Backlog issues to Todo.
+11. Do not move unrelated Backlog issues to `Ready for Agent`.
 12. If you discover an automation/system defect:
     - Search existing open and recently closed GitHub issues plus Linear mirrors for the same root
       cause before creating anything new.
@@ -147,17 +158,17 @@ Quality bar:
   GitHub base ref for manager-side stale-base checks unless the workflow
   explicitly configures another trusted remote.
 - Run `mix format` for touched Elixir files.
-- Follow `docs/agent-quality-flywheel.md` for PR quality gates, review loop rules, and defect
+- Follow `docs/agentic-flywheel-quality.md` for PR quality gates, review loop rules, and defect
   protocol.
 - Run focused Windows shell and workspace/config tests when touching Windows runtime or workflow
   behavior:
   `make windows-native-test`.
-- Do not move the issue to `In Review` while required checks are pending or failing.
-- For non-trivial changes, request manager/subagent review before handoff and record the review
-  request plus findings in the PR and/or Workpad.
-- If review finds blocking issues, keep the issue in `In Progress` or return it to `Todo` until
-  the findings are addressed and required checks pass.
+- Do not move the issue to `Agent Review` while required checks are pending or failing.
+- `Agent Review` is the reviewer-agent queue. Do not move directly to `Human Review` unless a
+  manager explicitly instructs you to do so.
+- If review finds blocking issues, move through `Rework`, address only those findings, and return
+  to `Agent Review` after required checks pass.
 - Write CI/runtime failures back to the Linear Workpad or linked GitHub issue before ending.
 - Do not broaden scope to multiple optimization issues in one PR.
 - If blocked by credentials or permissions, record the exact blocker in the Workpad and keep the
-  issue out of `In Review` unless a manager explicitly moves it there.
+  issue out of `Agent Review` unless a manager explicitly moves it there.

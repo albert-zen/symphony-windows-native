@@ -15,7 +15,9 @@ clean.
 
 For a full walkthrough, read [docs/windows-native.md](docs/windows-native.md).
 For the small-team operating model behind the optimization loop, read
-[docs/small-team-agentic-flywheel.md](docs/small-team-agentic-flywheel.md).
+[docs/agentic-flywheel-setup.md](docs/agentic-flywheel-setup.md). The current
+two-instance worker/reviewer state machine is defined in
+[docs/agents/issue-tracker.md](docs/agents/issue-tracker.md).
 
 Quick setup:
 
@@ -41,13 +43,16 @@ Useful lifecycle commands:
 
 ```powershell
 .\scripts\start-windows-native.ps1 -WorkflowPath .\WORKFLOW.windows.md -Port 4011 -Background
+.\scripts\start-agent-flywheel.ps1 -WorkerWorkflowPath .\WORKFLOW.optimization.windows.md -ReviewerWorkflowPath .\WORKFLOW.optimization.reviewer.windows.md
 .\scripts\stop-windows-native.ps1 -Force
 .\scripts\install-windows-native-service.ps1 -WorkflowPath .\WORKFLOW.windows.md -Port 4011
 .\scripts\cleanup-windows-native.ps1 -WorkflowPath .\WORKFLOW.windows.md -IssueIdentifier ALB-11
 ```
 
-The install helper creates a Task Scheduler entry for the current Windows user. The cleanup helper
-requires explicit targets and refuses source-checkout-like workspace roots.
+The flywheel helper starts separate worker and reviewer background instances
+with separate ports, logs, and PID files. The install helper creates a Task
+Scheduler entry for the current Windows user. The cleanup helper requires
+explicit targets and refuses source-checkout-like workspace roots.
 
 Do not commit `WORKFLOW.windows.md` if it contains private repository URLs, project slugs, or other
 local details. Use `WORKFLOW.windows.safe.example.md` for first runs and
@@ -78,7 +83,7 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
 1. Make sure your codebase is set up to work well with agents: see
    [Harness engineering](https://openai.com/index/harness-engineering/).
    For Symphony-managed PRs in this repo, also follow the
-   [agent quality flywheel policy](docs/agent-quality-flywheel.md).
+   [agentic flywheel quality policy](docs/agentic-flywheel-quality.md).
 2. Get a new personal token in Linear via Settings → Security & access → Personal API keys, and
    set it as the `LINEAR_API_KEY` environment variable.
 3. Copy this directory's `WORKFLOW.md` to your repo.
@@ -92,8 +97,8 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
      least one matching label. Prefer a fixed Linear project first; use labels when that project
      must contain unrelated work.
    - When creating a workflow based on this repo, note that it depends on non-standard Linear
-     issue statuses: "Rework", "Human Review", and "Merging". You can customize them in
-     Team Settings → Workflow in Linear.
+     issue statuses: "Ready for Agent", "Needs Human Context", "Agent Review", "Rework", and
+     "Human Review". You can customize them in Team Settings → Workflow in Linear.
 6. Follow the instructions below to install the required runtime dependencies and start the service.
 
 ## Prerequisites
