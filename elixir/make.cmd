@@ -3,7 +3,9 @@ setlocal
 
 set "MIX_CMD=%MIX%"
 if "%MIX_CMD%"=="" for %%I in (mix.bat) do set "MIX_CMD=%%~$PATH:I"
-if "%MIX_CMD%"=="" set "MIX_CMD=mix.bat"
+if "%MIX_CMD%"=="" for %%I in (mix.exe) do set "MIX_CMD=%%~$PATH:I"
+if "%MIX_CMD%"=="" for %%I in (mix) do set "MIX_CMD=%%~$PATH:I"
+if "%MIX_CMD%"=="" set "MIX_CMD=mix"
 
 if "%~1"=="" goto help
 

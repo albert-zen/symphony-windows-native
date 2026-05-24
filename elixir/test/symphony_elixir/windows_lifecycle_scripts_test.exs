@@ -23,6 +23,7 @@ defmodule SymphonyElixir.WindowsLifecycleScriptsTest do
   test "Windows lifecycle scripts parse in PowerShell" do
     for script <- [
           "start-windows-native.ps1",
+          "start-agent-flywheel.ps1",
           "stop-windows-native.ps1",
           "install-windows-native-service.ps1",
           "cleanup-windows-native.ps1"
@@ -37,6 +38,60 @@ defmodule SymphonyElixir.WindowsLifecycleScriptsTest do
                  "-Command",
                  command
                ])
+    end
+  end
+
+  test "agent flywheel start script is all-or-nothing by default with explicit partial mode" do
+    script = File.read!(script_path("start-agent-flywheel.ps1"))
+
+    assert script =~ "[switch]$AllowPartial"
+    assert script =~ "Wait-AgentFlywheelInstance"
+    assert script =~ "Assert-AgentFlywheelPreflight"
+    assert script =~ "Test-AgentFlywheelProcessAlive"
+    assert script =~ "Test-AgentFlywheelPortAvailable"
+    assert script =~ "Get-NetTCPConnection"
+    assert script =~ "Invoke-AgentFlywheelStop -Name \"worker\""
+    assert script =~ "Worker cleanup:"
+    assert script =~ "Reviewer cleanup:"
+    assert script =~ "Failure phase:"
+    assert script =~ "Failure reason:"
+    assert script =~ "Partial startup: worker instance is still running; reviewer failed."
+    assert script =~ "LINEAR_API_KEY"
+  end
+
+  test "agent flywheel failure reason prefers reviewer stderr log" do
+    script = script_path("start-agent-flywheel.ps1")
+
+    logs_root =
+      Path.join(System.tmp_dir!(), "symphony-flywheel-logs-#{System.unique_integer([:positive])}")
+
+    command = """
+    $script = Get-Content -Raw -LiteralPath #{shell_quote(script)}
+    $entrypoint = $script.IndexOf('# Entry point.')
+    if ($entrypoint -lt 0) { throw 'flywheel script entrypoint marker not found' }
+    $helpers = $script.Substring(0, $entrypoint)
+    . ([scriptblock]::Create($helpers))
+
+    New-Item -ItemType Directory -Force -Path #{shell_quote(logs_root)} | Out-Null
+    Set-Content -LiteralPath (Join-Path #{shell_quote(logs_root)} 'symphony.stderr.log') -Value @('first', 'reviewer failed because port is occupied')
+
+    $reason = Get-AgentFlywheelFailureReason 'reviewer' #{shell_quote(logs_root)} 'fallback reason'
+    if ($reason -ne 'reviewer stderr: reviewer failed because port is occupied') {
+      throw "unexpected reason: $reason"
+    }
+    """
+
+    try do
+      assert {"", 0} =
+               run_powershell!([
+                 "-NoProfile",
+                 "-ExecutionPolicy",
+                 "Bypass",
+                 "-Command",
+                 command
+               ])
+    after
+      File.rm_rf(logs_root)
     end
   end
 
