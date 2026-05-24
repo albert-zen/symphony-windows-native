@@ -195,6 +195,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:command_watchdog_block_on_stall, :boolean, default: false)
       field(:review_readiness_repository, :string)
       field(:review_readiness_required_checks, {:array, :string}, default: [])
+      field(:review_readiness_guarded_states, {:array, :string}, default: ["In Review"])
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -216,7 +217,8 @@ defmodule SymphonyElixir.Config.Schema do
           :command_watchdog_repeated_output_limit,
           :command_watchdog_block_on_stall,
           :review_readiness_repository,
-          :review_readiness_required_checks
+          :review_readiness_required_checks,
+          :review_readiness_guarded_states
         ],
         empty_values: []
       )
@@ -352,7 +354,9 @@ defmodule SymphonyElixir.Config.Schema do
 
   @spec normalize_issue_state(String.t()) :: String.t()
   def normalize_issue_state(state_name) when is_binary(state_name) do
-    String.downcase(state_name)
+    state_name
+    |> String.trim()
+    |> String.downcase()
   end
 
   @doc false
@@ -419,7 +423,8 @@ defmodule SymphonyElixir.Config.Schema do
       | approval_policy: normalize_keys(settings.codex.approval_policy),
         turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy),
         review_readiness_repository: normalize_repository(settings.codex.review_readiness_repository),
-        review_readiness_required_checks: normalize_required_checks(settings.codex.review_readiness_required_checks)
+        review_readiness_required_checks: normalize_required_checks(settings.codex.review_readiness_required_checks),
+        review_readiness_guarded_states: normalize_issue_states(settings.codex.review_readiness_guarded_states)
     }
 
     observability = %{

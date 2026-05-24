@@ -29,6 +29,7 @@ defmodule SymphonyElixir.CoreTest do
     assert config.agent.max_turns == 20
     assert config.codex.review_readiness_repository == nil
     assert config.codex.review_readiness_required_checks == []
+    assert config.codex.review_readiness_guarded_states == ["In Review"]
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: "invalid")
 
@@ -92,6 +93,12 @@ defmodule SymphonyElixir.CoreTest do
 
     assert Config.settings!().codex.review_readiness_repository == "Albert-Zen/symphony-windows-native"
     assert Config.settings!().codex.review_readiness_required_checks == ["make-all", "windows-native-test"]
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_review_readiness_guarded_states: [" Agent Review ", "", "Agent Review", "Human Review"]
+    )
+
+    assert Config.settings!().codex.review_readiness_guarded_states == ["Agent Review", "Human Review"]
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_review_readiness_repository: "   ")
     assert Config.settings!().codex.review_readiness_repository == nil
@@ -408,8 +415,9 @@ defmodule SymphonyElixir.CoreTest do
         tracker_kind: "memory",
         workspace_root: test_root,
         workspace_startup_cleanup_ttl_ms: 60_000,
-        tracker_active_states: ["Todo", "In Progress", "In Review", "Blocked"],
+        tracker_active_states: ["Todo", "In Progress", "Blocked"],
         tracker_terminal_states: ["Done", "Canceled"],
+        codex_review_readiness_guarded_states: ["Agent Review"],
         poll_interval_ms: 30_000
       )
 
@@ -433,7 +441,7 @@ defmodule SymphonyElixir.CoreTest do
         %Issue{
           id: "issue-active",
           identifier: "MT-ACTIVE",
-          state: "In Review",
+          state: "Agent Review",
           updated_at: DateTime.add(now, -120_000, :millisecond)
         }
       ])
@@ -458,6 +466,7 @@ defmodule SymphonyElixir.CoreTest do
 
       snapshot = Orchestrator.snapshot(orchestrator_name, 1_000)
       assert snapshot.workspace_cleanup.status == :completed
+      assert snapshot.workspace_cleanup.checked == 3
       assert snapshot.workspace_cleanup.cleaned == 1
       assert snapshot.workspace_cleanup.preserved == 2
       assert snapshot.workspace_cleanup.ttl_ms == 60_000
@@ -761,13 +770,7 @@ defmodule SymphonyElixir.CoreTest do
     issue_id = "issue-resume"
     ref = make_ref()
     orchestrator_name = Module.concat(__MODULE__, :ContinuationOrchestrator)
-    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
-
-    on_exit(fn ->
-      if Process.alive?(pid) do
-        Process.exit(pid, :normal)
-      end
-    end)
+    pid = start_memory_orchestrator!(orchestrator_name)
 
     initial_state = :sys.get_state(pid)
 
@@ -803,13 +806,7 @@ defmodule SymphonyElixir.CoreTest do
     issue_id = "issue-crash"
     ref = make_ref()
     orchestrator_name = Module.concat(__MODULE__, :CrashRetryOrchestrator)
-    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
-
-    on_exit(fn ->
-      if Process.alive?(pid) do
-        Process.exit(pid, :normal)
-      end
-    end)
+    pid = start_memory_orchestrator!(orchestrator_name)
 
     initial_state = :sys.get_state(pid)
 
@@ -845,13 +842,7 @@ defmodule SymphonyElixir.CoreTest do
     issue_id = "issue-crash-initial"
     ref = make_ref()
     orchestrator_name = Module.concat(__MODULE__, :InitialCrashRetryOrchestrator)
-    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
-
-    on_exit(fn ->
-      if Process.alive?(pid) do
-        Process.exit(pid, :normal)
-      end
-    end)
+    pid = start_memory_orchestrator!(orchestrator_name)
 
     initial_state = :sys.get_state(pid)
 
@@ -885,13 +876,7 @@ defmodule SymphonyElixir.CoreTest do
   test "stale retry timer messages do not consume newer retry entries" do
     issue_id = "issue-stale-retry"
     orchestrator_name = Module.concat(__MODULE__, :StaleRetryOrchestrator)
-    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
-
-    on_exit(fn ->
-      if Process.alive?(pid) do
-        Process.exit(pid, :normal)
-      end
-    end)
+    pid = start_memory_orchestrator!(orchestrator_name)
 
     initial_state = :sys.get_state(pid)
     current_retry_token = make_ref()
@@ -1043,13 +1028,7 @@ defmodule SymphonyElixir.CoreTest do
     issue_id = "issue-retry-dispatch-crash"
     ref = make_ref()
     orchestrator_name = Module.concat(__MODULE__, :RetryDispatchCrashOrchestrator)
-    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
-
-    on_exit(fn ->
-      if Process.alive?(pid) do
-        Process.exit(pid, :normal)
-      end
-    end)
+    pid = start_memory_orchestrator!(orchestrator_name)
 
     initial_state = :sys.get_state(pid)
 
@@ -1236,6 +1215,25 @@ defmodule SymphonyElixir.CoreTest do
   defp assert_due_in_range(due_at_ms, earliest_ms, latest_ms, min_delay_ms, max_delay_ms) do
     assert due_at_ms >= earliest_ms + min_delay_ms
     assert due_at_ms <= latest_ms + max_delay_ms
+  end
+
+  defp start_memory_orchestrator!(orchestrator_name) do
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+    end)
+
+    pid
   end
 
   defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)

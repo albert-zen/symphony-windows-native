@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.Codex.ReviewReadiness do
   @moduledoc """
-  Guards agent-initiated Linear `In Review` transitions.
+  Guards agent-initiated Linear transitions into configured review states.
   """
 
   @github_api "https://api.github.com"
@@ -131,7 +131,7 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
 
   defp authorize_destination(issue, destination_state, variables, linear_client, github_client) do
     cond do
-      not in_review_state?(destination_state) ->
+      not review_readiness_guarded_state?(destination_state) ->
         :ok
 
       manager_override?(variables) ->
@@ -381,9 +381,7 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
     end
   end
 
-  defp in_review_state?(state_name) when is_binary(state_name) do
-    normalize(state_name) == "in review"
-  end
+  defp review_readiness_guarded_state?(state_name), do: Config.review_readiness_guarded_state?(state_name)
 
   defp manager_override?(variables) do
     truthy?(Map.get(variables, "symphonyManagerOverride") || Map.get(variables, :symphonyManagerOverride)) and
@@ -1411,7 +1409,7 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
     message = rejection_message(reason)
 
     if is_binary(issue["id"]) do
-      _ = upsert_workpad(issue, readiness_note(issue, "In Review transition rejected", message), linear_client)
+      _ = upsert_workpad(issue, readiness_note(issue, "Review readiness transition rejected", message), linear_client)
     end
 
     {:error,
@@ -1419,7 +1417,7 @@ defmodule SymphonyElixir.Codex.ReviewReadiness do
       %{
         "error" => %{
           "code" => "review_readiness_rejected",
-          "message" => "Linear In Review transition rejected: #{message}",
+          "message" => "Linear review readiness transition rejected: #{message}",
           "reason" => inspect(reason)
         }
       }}}

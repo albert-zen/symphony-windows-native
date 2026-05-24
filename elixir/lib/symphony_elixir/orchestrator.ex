@@ -18,7 +18,7 @@ defmodule SymphonyElixir.Orchestrator do
   @max_recent_codex_events 80
   @max_completed_agent_messages 120
   @steer_request_timeout_ms 3_000
-  @startup_cleanup_preserved_states ["In Review", "Blocked"]
+  @startup_cleanup_preserved_states ["Blocked"]
   @workspace_cleanup_progress_notify_every 10
   @empty_codex_totals %{
     input_tokens: 0,
@@ -1127,7 +1127,10 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp cleanup_candidate_states(settings) do
-    (settings.tracker.terminal_states ++ settings.tracker.active_states ++ @startup_cleanup_preserved_states)
+    (settings.tracker.terminal_states ++
+       settings.tracker.active_states ++
+       settings.codex.review_readiness_guarded_states ++
+       @startup_cleanup_preserved_states)
     |> Enum.map(&String.trim/1)
     |> Enum.reject(&(&1 == ""))
     |> Enum.uniq()

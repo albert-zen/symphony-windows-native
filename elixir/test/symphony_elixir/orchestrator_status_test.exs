@@ -1573,8 +1573,11 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
 
+    test_pid = self()
+
     Application.put_env(:symphony_elixir, :orchestrator_status_fake_linear,
       fetch_candidate_issues: fn ->
+        send(test_pid, :startup_poll_started)
         Process.sleep(100)
         {:ok, []}
       end
@@ -1589,18 +1592,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       end
     end)
 
-    assert %{polling: %{checking?: true}} =
-             wait_for_snapshot(
-               pid,
-               fn
-                 %{polling: %{checking?: true}} ->
-                   true
-
-                 _ ->
-                   false
-               end,
-               500
-             )
+    assert_receive :startup_poll_started, 500
 
     assert %{
              polling: %{

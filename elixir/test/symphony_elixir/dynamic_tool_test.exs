@@ -1539,7 +1539,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert get_in(payload, ["error", "message"]) =~ "no linked GitHub pull request was found"
     assert_received {:workpad_recorded, body}
     assert body =~ "## Codex Workpad"
-    assert body =~ "In Review transition rejected"
+    assert body =~ "Review readiness transition rejected"
     refute_received {:linear_mutation_allowed, _, _}
   end
 

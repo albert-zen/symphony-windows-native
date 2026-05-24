@@ -61,6 +61,17 @@ defmodule SymphonyElixir.Config do
 
   def max_concurrent_agents_for_state(_state_name), do: settings!().agent.max_concurrent_agents
 
+  @spec review_readiness_guarded_state?(term()) :: boolean()
+  def review_readiness_guarded_state?(state_name) when is_binary(state_name) do
+    normalized_state_name = Schema.normalize_issue_state(state_name)
+
+    settings!().codex.review_readiness_guarded_states
+    |> Enum.map(&Schema.normalize_issue_state/1)
+    |> Enum.member?(normalized_state_name)
+  end
+
+  def review_readiness_guarded_state?(_state_name), do: false
+
   @spec codex_turn_sandbox_policy(Path.t() | nil) :: map()
   def codex_turn_sandbox_policy(workspace \\ nil) do
     case Schema.resolve_runtime_turn_sandbox_policy(settings!(), workspace) do

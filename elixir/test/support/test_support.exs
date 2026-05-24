@@ -261,6 +261,9 @@ defmodule SymphonyElixir.TestSupport do
 
       const rl = readline.createInterface({ input: process.stdin, terminal: false });
 
+      process.stdin.on("end", () => process.exit(0));
+      process.stdin.on("close", () => process.exit(0));
+
       rl.on("line", line => {
         count += 1;
         writeTrace(line);
@@ -373,6 +376,7 @@ defmodule SymphonyElixir.TestSupport do
           codex_command_watchdog_block_on_stall: false,
           codex_review_readiness_repository: nil,
           codex_review_readiness_required_checks: [],
+          codex_review_readiness_guarded_states: ["In Review"],
           hook_after_create: nil,
           hook_before_run: nil,
           hook_after_run: nil,
@@ -421,6 +425,7 @@ defmodule SymphonyElixir.TestSupport do
     codex_command_watchdog_block_on_stall = Keyword.get(config, :codex_command_watchdog_block_on_stall)
     codex_review_readiness_repository = Keyword.get(config, :codex_review_readiness_repository)
     codex_review_readiness_required_checks = Keyword.get(config, :codex_review_readiness_required_checks)
+    codex_review_readiness_guarded_states = Keyword.get(config, :codex_review_readiness_guarded_states)
     hook_after_create = Keyword.get(config, :hook_after_create)
     hook_before_run = Keyword.get(config, :hook_before_run)
     hook_after_run = Keyword.get(config, :hook_after_run)
@@ -473,6 +478,7 @@ defmodule SymphonyElixir.TestSupport do
         "  command_watchdog_block_on_stall: #{yaml_value(codex_command_watchdog_block_on_stall)}",
         "  review_readiness_repository: #{yaml_value(codex_review_readiness_repository)}",
         "  review_readiness_required_checks: #{yaml_value(codex_review_readiness_required_checks)}",
+        "  review_readiness_guarded_states: #{yaml_value(codex_review_readiness_guarded_states)}",
         hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, hook_timeout_ms),
         observability_yaml(observability_enabled, observability_refresh_ms, observability_render_interval_ms),
         server_yaml(server_port, server_host),

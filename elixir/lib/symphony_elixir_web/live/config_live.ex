@@ -232,6 +232,7 @@ defmodule SymphonyElixirWeb.ConfigLive do
                 <div><dt>Stall timeout</dt><dd><%= duration_label(@projection.config.codex.stall_timeout_ms) %></dd></div>
                 <div><dt>Watchdog</dt><dd><%= watchdog_summary(@projection.config.codex) %></dd></div>
                 <div><dt>Review repo</dt><dd><%= @projection.config.codex.review_readiness_repository || "n/a" %></dd></div>
+                <div><dt>Guarded states</dt><dd><%= list_label(@projection.config.codex.review_readiness_guarded_states) %></dd></div>
                 <div><dt>Checks</dt><dd><%= list_label(@projection.config.codex.review_readiness_required_checks) %></dd></div>
               </dl>
             </section>

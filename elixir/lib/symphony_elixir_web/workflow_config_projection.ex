@@ -126,7 +126,8 @@ defmodule SymphonyElixirWeb.WorkflowConfigProjection do
         command_watchdog_repeated_output_limit: settings.codex.command_watchdog_repeated_output_limit,
         command_watchdog_block_on_stall: settings.codex.command_watchdog_block_on_stall,
         review_readiness_repository: settings.codex.review_readiness_repository,
-        review_readiness_required_checks: settings.codex.review_readiness_required_checks
+        review_readiness_required_checks: settings.codex.review_readiness_required_checks,
+        review_readiness_guarded_states: settings.codex.review_readiness_guarded_states
       },
       workspace: %{
         root: settings.workspace.root,

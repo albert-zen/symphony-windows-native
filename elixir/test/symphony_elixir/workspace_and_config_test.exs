@@ -1189,6 +1189,22 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Config.settings!().worker.max_concurrent_agents_per_host == 2
   end
 
+  test "config supports review readiness guarded states" do
+    assert Config.settings!().codex.review_readiness_guarded_states == ["In Review"]
+    assert Config.review_readiness_guarded_state?("In Review")
+    refute Config.review_readiness_guarded_state?("Agent Review")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_review_readiness_guarded_states: ["Agent Review", "Human Review", ""]
+    )
+
+    assert Config.settings!().codex.review_readiness_guarded_states == ["Agent Review", "Human Review"]
+    assert Config.review_readiness_guarded_state?(" agent review ")
+    assert Config.review_readiness_guarded_state?("Human Review")
+    refute Config.review_readiness_guarded_state?("In Review")
+    refute Config.review_readiness_guarded_state?(:not_a_state)
+  end
+
   test "schema helpers cover custom type and state limit validation" do
     assert StringOrMap.type() == :map
     assert StringOrMap.embed_as(:json) == :self
@@ -1478,8 +1494,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert {:ok, workflow} = Workflow.load(path)
     assert {:ok, settings} = Schema.parse(workflow.config)
-    assert settings.tracker.dispatch_states == ["Todo"]
+    assert settings.tracker.dispatch_states == ["Ready for Agent", "Rework"]
     assert settings.codex.review_readiness_required_checks == ["make-all", "validate-pr-description", "windows-native-test"]
+    assert settings.codex.review_readiness_guarded_states == ["Agent Review"]
 
     assert workflow.prompt =~ "## Codex Workpad"
     assert workflow.prompt =~ "capability/preflight evidence"
@@ -1504,13 +1521,32 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         identifier: "ALB-1",
         title: "Render configured repository",
         description: "Template should not hard-code the Symphony repository.",
-        state: "Todo",
+        state: "Ready for Agent",
         url: "https://linear.example/ALB-1",
         labels: []
       })
 
     assert prompt =~ "https://github.com/YOUR_GITHUB_OWNER/YOUR_REPO/pull/<number>"
     assert prompt =~ "project `YOUR_LINEAR_PROJECT_NAME`"
+  end
+
+  test "optimization reviewer Windows workflow example parses as review-only queue" do
+    path = Path.expand(Path.join([__DIR__, "..", "..", "WORKFLOW.optimization.reviewer.windows.example.md"]))
+
+    assert {:ok, workflow} = Workflow.load(path)
+    assert {:ok, settings} = Schema.parse(workflow.config)
+    assert settings.tracker.dispatch_states == ["Agent Review"]
+    assert settings.tracker.active_states == ["Agent Review"]
+    assert settings.tracker.terminal_states == ["Human Review", "Rework", "Needs Human Context", "Blocked", "Done", "Canceled", "Cancelled", "Duplicate"]
+    assert settings.codex.review_readiness_guarded_states == ["Agent Review"]
+
+    assert workflow.prompt =~ "temporary verification edits inside the reviewer workspace"
+    assert workflow.prompt =~ "Do not push reviewer edits"
+    assert workflow.prompt =~ "Standards Review"
+    assert workflow.prompt =~ "Spec Review"
+    assert workflow.prompt =~ "`Human Review`"
+    assert workflow.prompt =~ "`Rework`"
+    assert workflow.prompt =~ "`Needs Human Context`"
   end
 
   test "workflow prompt is used when building base prompt" do

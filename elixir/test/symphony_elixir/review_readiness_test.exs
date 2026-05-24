@@ -3,6 +3,66 @@ defmodule SymphonyElixir.Codex.ReviewReadinessTest do
 
   alias SymphonyElixir.Codex.ReviewReadiness
 
+  test "configured guarded states control which Linear transitions require review readiness" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_review_readiness_guarded_states: ["Agent Review"]
+    )
+
+    parent = self()
+    linear_client = review_state_linear_client(parent)
+
+    github_client = fn url, _opts ->
+      send(parent, {:github_called, url})
+      {:error, :unexpected_github_call}
+    end
+
+    assert {:error, {:review_readiness_rejected, payload}} =
+             ReviewReadiness.authorize_linear_graphql(
+               state_transition_mutation(),
+               %{"issueId" => "issue-1", "stateId" => "state-agent-review"},
+               linear_client,
+               github_client
+             )
+
+    assert payload["error"]["message"] =~ "Linear review readiness transition rejected"
+    assert payload["error"]["message"] =~ "no linked GitHub pull request"
+    assert_receive {:linear_context_requested, "issue-1"}
+    assert_receive {:linear_workpad_created, body}
+    assert body =~ "Review readiness transition rejected"
+    refute_receive {:github_called, _url}
+
+    assert :ok =
+             ReviewReadiness.authorize_linear_graphql(
+               state_transition_mutation(),
+               %{"issueId" => "issue-1", "stateId" => "state-in-review"},
+               linear_client,
+               github_client
+             )
+
+    assert_receive {:linear_context_requested, "issue-1"}
+    refute_receive {:linear_workpad_created, _body}
+    refute_receive {:github_called, _url}
+  end
+
+  test "default review readiness guard remains In Review for compatibility" do
+    parent = self()
+
+    assert {:error, {:review_readiness_rejected, _payload}} =
+             ReviewReadiness.authorize_linear_graphql(
+               state_transition_mutation(),
+               %{"issueId" => "issue-1", "stateId" => "state-in-review"},
+               review_state_linear_client(parent),
+               fn url, _opts ->
+                 send(parent, {:github_called, url})
+                 {:error, :unexpected_github_call}
+               end
+             )
+
+    assert_receive {:linear_context_requested, "issue-1"}
+    assert_receive {:linear_workpad_created, _body}
+    refute_receive {:github_called, _url}
+  end
+
   test "github_get uses GitHub CLI auth token when env tokens are absent" do
     previous_github_token = System.get_env("GITHUB_TOKEN")
     previous_gh_token = System.get_env("GH_TOKEN")
@@ -130,6 +190,61 @@ defmodule SymphonyElixir.Codex.ReviewReadinessTest do
 
       File.chmod!(path, 0o755)
     end
+  end
+
+  defp state_transition_mutation do
+    """
+    mutation UpdateIssue($issueId: String!, $stateId: String!) {
+      issueUpdate(id: $issueId, input: {stateId: $stateId}) {
+        success
+      }
+    }
+    """
+  end
+
+  defp review_state_linear_client(parent) do
+    fn
+      query, %{"issueId" => issue_id, "body" => body}, _opts when is_binary(query) ->
+        if String.contains?(query, "commentCreate") do
+          send(parent, {:linear_workpad_created, body})
+          {:ok, %{"data" => %{"commentCreate" => %{"success" => true}}}}
+        else
+          {:error, {:unexpected_linear_query, query, issue_id}}
+        end
+
+      query, %{"issueId" => issue_id}, _opts when is_binary(query) ->
+        if String.contains?(query, "SymphonyReviewReadinessContext") do
+          send(parent, {:linear_context_requested, issue_id})
+          {:ok, review_state_issue_context(issue_id)}
+        else
+          {:error, {:unexpected_linear_query, query}}
+        end
+
+      query, variables, _opts ->
+        {:error, {:unexpected_linear_query, query, variables}}
+    end
+  end
+
+  defp review_state_issue_context(issue_id) do
+    %{
+      "data" => %{
+        "issue" => %{
+          "id" => issue_id,
+          "identifier" => "ALB-1",
+          "description" => nil,
+          "team" => %{
+            "states" => %{
+              "nodes" => [
+                %{"id" => "state-agent-review", "name" => "Agent Review"},
+                %{"id" => "state-in-review", "name" => "In Review"}
+              ]
+            }
+          },
+          "attachments" => %{"nodes" => []},
+          "comments" => %{"nodes" => []}
+        }
+      }
+    }
   end
 
   defp capture_http_request! do
