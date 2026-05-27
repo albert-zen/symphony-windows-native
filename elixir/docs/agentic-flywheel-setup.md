@@ -116,6 +116,37 @@ roots, and cleanup status. Use `-AllowPartial` only for explicit debugging when
 you want to keep a successfully started worker while investigating reviewer
 startup; the script reports `Partial startup` in that mode.
 
+## Smoke testing a running flywheel
+
+Run a real Linear smoke after workflow, launcher, claim, review-readiness, or
+agent note changes. Local unit tests can prove pieces of the runtime, but the
+flywheel contract is the Linear state loop plus the two live Symphony instances.
+
+Use a disposable issue in the configured Linear project:
+
+1. Put the issue in `Ready for Agent` with a small, reversible spec that cannot
+   affect production work.
+2. Start both instances with `scripts/start-agent-flywheel.ps1`, unless they are
+   already running on the intended runtime commit.
+3. Watch the worker dashboard and Linear. The issue should move
+   `Ready for Agent` -> `In Progress`, receive a new `## Codex Worker Note`,
+   then move to `Agent Review`.
+4. Watch the reviewer dashboard. The reviewer should create a new
+   `## Codex Review Note` and move the issue to `Human Review`, `Rework`,
+   `Needs Human Context`, or `Blocked` with an explicit reason.
+5. Confirm prior worker/review notes were not edited. Rework should create the
+   next worker/review round as new comments.
+6. Confirm normal dispatch does not append human-facing claim lease/release
+   comments. Runtime-owned `## Symphony Control` comments may appear while a
+   claim is active and should be deleted or compacted on normal release.
+
+For a fake or no-op smoke, the loop should normally settle within a few minutes
+after both instances are listening. A real implementation issue may take much
+longer, but ten minutes with no state change, no new agent note, and no active
+dashboard activity is an incident to debug, not a normal wait. Start by checking
+both dashboard ports, PID metadata, runtime logs, the Linear issue comments, and
+whether the issue is held by an external `## Symphony Control` claim.
+
 ## Keeping production saturated
 
 The manager's job is not to hand-edit every solution. The manager keeps the
