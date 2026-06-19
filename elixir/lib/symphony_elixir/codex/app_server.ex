@@ -195,16 +195,21 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp start_port(workspace, nil) do
-    LocalShell.open_port(
-      Config.settings!().codex.command,
-      [
-        :binary,
-        :exit_status,
-        :stderr_to_stdout,
-        cd: String.to_charlist(workspace),
-        line: @port_line_bytes
-      ]
-    )
+    settings = Config.settings!()
+
+    with {:ok, codex_home} <- prepare_local_codex_home(settings.codex.home) do
+      LocalShell.open_port(
+        settings.codex.command,
+        [
+          :binary,
+          :exit_status,
+          :stderr_to_stdout,
+          cd: String.to_charlist(workspace),
+          env: [{~c"CODEX_HOME", String.to_charlist(codex_home)}],
+          line: @port_line_bytes
+        ]
+      )
+    end
   end
 
   defp start_port(workspace, worker_host) when is_binary(worker_host) do
@@ -213,11 +218,68 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp remote_launch_command(workspace) when is_binary(workspace) do
+    settings = Config.settings!()
+
     [
+      remote_shell_assign("codex_home", settings.codex.home),
+      "mkdir -p \"$codex_home\" \"$codex_home/sessions\"",
+      "if [ ! -e \"$codex_home/auth.json\" ] && [ -f \"$HOME/.codex/auth.json\" ]; then cp \"$HOME/.codex/auth.json\" \"$codex_home/auth.json\"; fi",
+      "if [ ! -e \"$codex_home/config.toml\" ] && [ -f \"$HOME/.codex/config.toml\" ]; then cp \"$HOME/.codex/config.toml\" \"$codex_home/config.toml\"; fi",
       "cd #{shell_escape(workspace)}",
-      "exec #{Config.settings!().codex.command}"
+      "CODEX_HOME=\"$codex_home\" exec #{settings.codex.command}"
     ]
     |> Enum.join(" && ")
+  end
+
+  @doc false
+  def remote_launch_command_for_test(workspace) when is_binary(workspace), do: remote_launch_command(workspace)
+
+  defp remote_shell_assign(variable_name, raw_path)
+       when is_binary(variable_name) and is_binary(raw_path) do
+    [
+      "#{variable_name}=#{shell_escape(raw_path)}",
+      "case \"$#{variable_name}\" in",
+      "  '~') #{variable_name}=\"$HOME\" ;;",
+      "  '~/'*) " <> variable_name <> "=\"$HOME/${" <> variable_name <> "#~/}\" ;;",
+      "esac"
+    ]
+    |> Enum.join("\n")
+  end
+
+  defp prepare_local_codex_home(home) when is_binary(home) do
+    expanded_home = Path.expand(home)
+
+    with :ok <- File.mkdir_p(expanded_home),
+         :ok <- File.mkdir_p(Path.join(expanded_home, "sessions")),
+         :ok <- copy_global_codex_file_if_missing(expanded_home, "auth.json"),
+         :ok <- copy_global_codex_file_if_missing(expanded_home, "config.toml") do
+      {:ok, expanded_home}
+    else
+      {:error, reason} -> {:error, {:codex_home_prepare_failed, expanded_home, reason}}
+    end
+  end
+
+  defp copy_global_codex_file_if_missing(codex_home, filename) do
+    destination = Path.join(codex_home, filename)
+
+    if File.exists?(destination) do
+      :ok
+    else
+      source = Path.join(default_user_codex_home(), filename)
+
+      if File.regular?(source) do
+        File.cp(source, destination)
+      else
+        :ok
+      end
+    end
+  end
+
+  defp default_user_codex_home do
+    case System.get_env("USERPROFILE") do
+      value when is_binary(value) and value != "" -> Path.join(value, ".codex")
+      _ -> Path.expand("~/.codex")
+    end
   end
 
   defp port_metadata(port, worker_host) when is_port(port) do

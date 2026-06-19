@@ -158,6 +158,7 @@ agent:
   max_concurrent_agents: 10
   max_turns: 20
 codex:
+  home: ~/code/workspaces/.codex
   command: codex app-server
 ---
 
@@ -175,6 +176,10 @@ Notes:
   - `codex.turn_sandbox_policy` defaults to a `workspaceWrite` policy rooted at the current issue workspace
 - Supported `codex.approval_policy` values depend on the targeted Codex app-server version. In the current local Codex schema, string values include `untrusted`, `on-failure`, `on-request`, and `never`, and object-form `reject` is also supported.
 - Supported `codex.thread_sandbox` values: `read-only`, `workspace-write`, `danger-full-access`.
+- `codex.home` sets `CODEX_HOME` for the launched Codex app-server. When omitted,
+  Symphony uses `<workspace.root>/.codex`, creates that directory plus `sessions`, and copies
+  missing `auth.json`/`config.toml` from the user's global Codex home without overwriting
+  existing files.
 - When `codex.turn_sandbox_policy` is set explicitly, Symphony passes the map through to Codex
   unchanged. Compatibility then depends on the targeted Codex app-server version rather than local
   Symphony validation.

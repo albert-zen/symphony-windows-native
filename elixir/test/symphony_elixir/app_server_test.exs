@@ -215,6 +215,142 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server starts codex with isolated CODEX_HOME from workflow config or workspace default" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-codex-home-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-CODEX-HOME")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-home.trace")
+      explicit_codex_home = Path.join(test_root, "explicit-codex-home")
+      previous_trace = System.get_env("SYMP_TEST_CODEX_HOME_TRACE")
+      previous_userprofile = System.get_env("USERPROFILE")
+
+      on_exit(fn ->
+        if is_binary(previous_trace) do
+          System.put_env("SYMP_TEST_CODEX_HOME_TRACE", previous_trace)
+        else
+          System.delete_env("SYMP_TEST_CODEX_HOME_TRACE")
+        end
+
+        restore_env("USERPROFILE", previous_userprofile)
+      end)
+
+      System.put_env("SYMP_TEST_CODEX_HOME_TRACE", trace_file)
+      File.mkdir_p!(workspace)
+      File.mkdir_p!(Path.join([test_root, ".codex"]))
+      File.write!(Path.join([test_root, ".codex", "auth.json"]), "global auth")
+      File.write!(Path.join([test_root, ".codex", "config.toml"]), "global config")
+      File.mkdir_p!(explicit_codex_home)
+      File.write!(Path.join(explicit_codex_home, "config.toml"), "existing config")
+      System.put_env("USERPROFILE", test_root)
+
+      write_fake_codex!(
+        codex_binary,
+        [
+          ~s({"id":1,"result":{}}),
+          ~s({"id":2,"result":{"thread":{"id":"thread-codex-home"}}}),
+          ~s({"id":3,"result":{"turn":{"id":"turn-codex-home"}}}),
+          %{stdout: ~s({"method":"turn/completed"}), exit: 0}
+        ],
+        trace_env: "SYMP_TEST_CODEX_HOME_TRACE",
+        default_trace: "/tmp/codex-home.trace",
+        startup_trace: ["env:CODEX_HOME"]
+      )
+
+      issue = %Issue{
+        id: "issue-codex-home",
+        identifier: "MT-CODEX-HOME",
+        title: "Validate isolated Codex home",
+        description: "Check CODEX_HOME process env",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-CODEX-HOME",
+        labels: ["backend"]
+      }
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        codex_home: explicit_codex_home
+      )
+
+      assert {:ok, _result} = AppServer.run(workspace, "Use configured codex home", issue)
+
+      assert File.dir?(explicit_codex_home)
+      assert File.dir?(Path.join(explicit_codex_home, "sessions"))
+      assert File.read!(Path.join(explicit_codex_home, "auth.json")) == "global auth"
+      assert File.read!(Path.join(explicit_codex_home, "config.toml")) == "existing config"
+      trace = File.read!(trace_file)
+      env_home = codex_home_from_trace!(trace)
+
+      assert SymphonyElixir.TestSupport.normalize_path_for_assertion(env_home) ==
+               SymphonyElixir.TestSupport.normalize_path_for_assertion(explicit_codex_home)
+
+      File.rm!(trace_file)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      expected_default_home = Path.join(workspace_root, ".codex")
+
+      assert {:ok, _result} = AppServer.run(workspace, "Use default codex home", issue)
+
+      assert File.dir?(expected_default_home)
+      assert File.dir?(Path.join(expected_default_home, "sessions"))
+      trace = File.read!(trace_file)
+      env_home = codex_home_from_trace!(trace)
+
+      assert SymphonyElixir.TestSupport.normalize_path_for_assertion(env_home) ==
+               SymphonyElixir.TestSupport.normalize_path_for_assertion(expected_default_home)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  defp codex_home_from_trace!(trace) do
+    trace
+    |> String.split("\n", trim: true)
+    |> Enum.find(&String.starts_with?(&1, "ENV:CODEX_HOME="))
+    |> String.trim_leading("ENV:CODEX_HOME=")
+  end
+
+  test "remote app server command prepares isolated CODEX_HOME without literal tilde paths" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-remote-codex-home-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      File.mkdir_p!(test_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: "~/.symphony-remote-workspaces",
+        codex_command: "fake-remote-codex app-server"
+      )
+
+      command = AppServer.remote_launch_command_for_test("~/.symphony-remote-workspaces/MT-REMOTE")
+
+      assert command =~ "codex_home='~/.symphony-remote-workspaces/.codex'"
+      assert command =~ "case \"$codex_home\" in"
+      assert command =~ "'~/'*) codex_home=\"$HOME/${codex_home#~/}\" ;;"
+      assert command =~ "mkdir -p \"$codex_home\" \"$codex_home/sessions\""
+      assert command =~ "[ ! -e \"$codex_home/auth.json\" ] && [ -f \"$HOME/.codex/auth.json\" ]"
+      assert command =~ "[ ! -e \"$codex_home/config.toml\" ] && [ -f \"$HOME/.codex/config.toml\" ]"
+      assert command =~ "CODEX_HOME=\"$codex_home\" exec fake-remote-codex app-server"
+      refute command =~ "CODEX_HOME='~/.symphony-remote-workspaces/.codex'"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server marks request-for-input events as a hard failure" do
     test_root =
       Path.join(

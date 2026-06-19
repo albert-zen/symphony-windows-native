@@ -944,6 +944,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert config.workspace.root == Path.join(System.tmp_dir!(), "symphony_workspaces")
     assert config.worker.max_concurrent_agents_per_host == nil
     assert config.agent.max_concurrent_agents == 10
+    assert config.codex.home == Path.join(config.workspace.root, ".codex")
     assert config.codex.command == "codex app-server"
 
     assert config.codex.approval_policy == %{
@@ -983,6 +984,18 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert Config.settings!().codex.command ==
              "codex --config 'model=\"gpt-5.5\"' app-server"
+
+    explicit_codex_home =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-explicit-codex-home-#{System.unique_integer([:positive])}"
+      )
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_home: explicit_codex_home
+    )
+
+    assert Config.settings!().codex.home == explicit_codex_home
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_labels: [" Symphony-Optimization ", "support", "support", ""]

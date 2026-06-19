@@ -171,6 +171,7 @@ defmodule SymphonyElixir.Config.Schema do
 
     @primary_key false
     embedded_schema do
+      field(:home, :string)
       field(:command, :string, default: "codex app-server")
 
       field(:approval_policy, StringOrMap,
@@ -204,6 +205,7 @@ defmodule SymphonyElixir.Config.Schema do
       |> cast(
         attrs,
         [
+          :home,
           :command,
           :approval_policy,
           :thread_sandbox,
@@ -420,7 +422,8 @@ defmodule SymphonyElixir.Config.Schema do
 
     codex = %{
       settings.codex
-      | approval_policy: normalize_keys(settings.codex.approval_policy),
+      | home: resolve_path_value(settings.codex.home, Path.join(workspace.root, ".codex")),
+        approval_policy: normalize_keys(settings.codex.approval_policy),
         turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy),
         review_readiness_repository: normalize_repository(settings.codex.review_readiness_repository),
         review_readiness_required_checks: normalize_required_checks(settings.codex.review_readiness_required_checks),
@@ -517,6 +520,8 @@ defmodule SymphonyElixir.Config.Schema do
       resolved -> resolved
     end
   end
+
+  defp resolve_path_value(nil, default), do: default
 
   defp resolve_path_value(value, default) when is_binary(value) do
     case normalize_path_token(value) do
